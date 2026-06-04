@@ -1,0 +1,35 @@
+id = "privibe"
+name = "Privibe"
+description = "CLI coding agent for private, local-first development"
+version = "0.1.0"
+schema_version = 1
+authors = ["Privibe Contributors"]
+repository = "https://github.com/privibe/privibe"
+
+[agent_servers.privibe]
+name = "Privibe"
+icon = "./icons/privibe.svg"
+
+[agent_servers.privibe.targets.darwin-aarch64]
+archive = "https://github.com/privibe/privibe/releases/download/v0.1.0/privibe-acp-darwin-aarch64-0.1.0.zip"
+cmd = "./privibe-acp"
+
+[agent_servers.privibe.targets.darwin-x86_64]
+archive = "https://github.com/privibe/privibe/releases/download/v0.1.0/privibe-acp-darwin-x86_64-0.1.0.zip"
+cmd = "./privibe-acp"
+
+[agent_servers.privibe.targets.linux-aarch64]
+archive = "https://github.com/privibe/privibe/releases/download/v0.1.0/privibe-acp-linux-aarch64-0.1.0.zip"
+cmd = "./privibe-acp"
+
+[agent_servers.privibe.targets.linux-x86_64]
+archive = "https://github.com/privibe/privibe/releases/download/v0.1.0/privibe-acp-linux-x86_64-0.1.0.zip"
+cmd = "./privibe-acp"
+
+[agent_servers.privibe.targets.windows-aarch64]
+archive = "https://github.com/privibe/privibe/releases/download/v0.1.0/privibe-acp-windows-aarch64-0.1.0.zip"
+cmd = "./privibe-acp.exe"
+
+[agent_servers.privibe.targets.windows-x86_64]
+archive = "https://github.com/privibe/privibe/releases/download/v0.1.0/privibe-acp-windows-x86_64-0.1.0.zip"
+cmd = "./privibe-acp.exe"
