@@ -1,0 +1,41 @@
+# =============================================================================
+# privibe path translation defaults — example template.
+#
+# WHY THIS FILE EXISTS:
+#   This is the documentation surface for the [paths] section that ships in
+#   every user's ~/.privibe/config.toml on first launch. The actual default values
+#   live in PathConfig (privibe/core/config/_settings.py); a roundtrip test
+#   (tests/core/test_path_config_roundtrip.py) parses this file and asserts
+#   it produces a PathConfig equal to PathConfig() with no overrides.
+#
+#   IF YOU EDIT EITHER PLACE, EDIT THE OTHER. The roundtrip test will fail
+#   loudly if the two drift.
+#
+# WHAT IT DOES:
+#   The read/write/grep/edit tools in privibe accept paths in any of the common
+#   Windows / WSL / Git Bash / Cygwin forms (C:\foo, c:/foo, /c/foo,
+#   /mnt/c/foo, /cygdrive/c/foo) and translate them to whatever shape the
+#   running interpreter understands. This avoids the round-trip cost of the
+#   model guessing the wrong dialect, getting "file not found", and retrying.
+# =============================================================================
+
+[paths]
+# Master switch for the auto-translation feature.
+# When false, the helper returns paths verbatim and aliases below also
+# stop applying — alias substitution doesn't make sense without the
+# translation pipeline that consumes it.
+enable_translation = true
+
+# Manual prefix substitutions, applied BEFORE auto-translation.
+# Useful for "really dumb things" the auto-detector can't probe its way to:
+# unusual mounts, mapped network drives, or symlinked paths the OS itself
+# can't resolve via `ls`.
+#
+# Each key is matched as a path prefix; the longest matching prefix wins.
+# Exactly one substitution per call (no chaining). The result then flows
+# through the normal auto-translation, so you don't need to write
+# WSL-specific aliases — write the canonical Windows form and auto handles
+# the rest if you're on WSL.
+[paths.aliases]
+# "/IDontExists" = "C:\\IDontExists"
+# "/data/team-share" = "//fileserver/team-share"
