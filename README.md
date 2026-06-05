@@ -85,8 +85,8 @@ uv run privibe-acp
 - Subagent work is preserved when you cancel mid-execution.
 
 ### Skills, config, packaging
-- Bundled sample skills (safe-file-edit, performing-network-changes) with
-  auto-discovery and load-error surfacing.
+- Bundled sample skill (lets-document) with auto-discovery and load-error
+  surfacing.
 - Model selection skips entries with a missing API-key env var and falls back to
   a valid model; config upgrades append commented stubs for new keys.
 - Datetime-based version stamping; `.deb` and Windows-zip build scripts.
