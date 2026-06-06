@@ -28,6 +28,8 @@ from privibe.core.config._settings import (
     cycle_message_prune_rows,
     cycle_preview_lines,
     load_dotenv_values,
+    sanitize_cycle_options,
+    sanitize_positive_int,
 )
 
 
@@ -69,4 +71,6 @@ __all__ = [
     "cycle_message_prune_rows",
     "cycle_preview_lines",
     "load_dotenv_values",
+    "sanitize_cycle_options",
+    "sanitize_positive_int",
 ]
