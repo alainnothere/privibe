@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from collections.abc import MutableMapping, Sequence
 from enum import StrEnum, auto
 import os
 from pathlib import Path
@@ -9,7 +9,13 @@ import shlex
 import tomllib
 from typing import Annotated, Any, Literal, NamedTuple
 from dotenv import dotenv_values
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 from pydantic_settings import (
@@ -418,14 +424,46 @@ def _next_in_cycle(current: int, options: tuple[int, ...]) -> int:
     return options[(idx + 1) % len(options)]
 
 
-def cycle_preview_lines(current: int) -> int:
-    """Next value in the tool-result preview-line cycle (3 -> 5 -> 10 -> 3)."""
-    return _next_in_cycle(current, TOOL_RESULT_PREVIEW_OPTIONS)
+def sanitize_cycle_options(value: Any, default: tuple[int, ...]) -> list[int]:
+    """Keep the usable options from a user-supplied cycle list, falling back to
+    *default* when nothing usable remains.
+
+    Accepts a list/tuple and keeps positive ints, preserving order while dropping
+    bools, non-ints, non-positive values, and duplicates. Returns ``list(default)``
+    when the input isn't a sequence or has no usable entries — so a malformed
+    config value degrades to the built-in cycle instead of breaking startup.
+    """
+    if isinstance(value, (list, tuple)):
+        cleaned: list[int] = []
+        for item in value:
+            if isinstance(item, bool) or not isinstance(item, int):
+                continue
+            if item > 0 and item not in cleaned:
+                cleaned.append(item)
+        if cleaned:
+            return cleaned
+    return list(default)
 
 
-def cycle_message_prune_rows(current: int) -> int:
-    """Next value in the kept-message-rows cycle (50 -> 100 -> 250 -> 500 -> 1000)."""
-    return _next_in_cycle(current, MESSAGE_PRUNE_KEEP_OPTIONS)
+def sanitize_positive_int(value: Any, default: int) -> int:
+    """Return *value* if it's a positive int, else *default*."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return default
+    return value
+
+
+def cycle_preview_lines(
+    current: int, options: Sequence[int] = TOOL_RESULT_PREVIEW_OPTIONS
+) -> int:
+    """Next value in the tool-result preview-line cycle (default 3 -> 5 -> 10)."""
+    return _next_in_cycle(current, tuple(options))
+
+
+def cycle_message_prune_rows(
+    current: int, options: Sequence[int] = MESSAGE_PRUNE_KEEP_OPTIONS
+) -> int:
+    """Next value in the kept-message-rows cycle (default 50 -> ... -> 1000)."""
+    return _next_in_cycle(current, tuple(options))
 
 
 class VibeConfig(BaseSettings):
@@ -435,7 +473,15 @@ class VibeConfig(BaseSettings):
     autocopy_to_clipboard: bool = True
     auto_detect_context_size: bool = True
     tool_result_preview_lines: int = 3
+    tool_result_preview_options: list[int] = Field(
+        default_factory=lambda: list(TOOL_RESULT_PREVIEW_OPTIONS),
+        description="Values /preview-lines cycles through (positive ints).",
+    )
     message_prune_keep_rows: int = 250
+    message_prune_keep_options: list[int] = Field(
+        default_factory=lambda: list(MESSAGE_PRUNE_KEEP_OPTIONS),
+        description="Values /scrollback cycles through (positive ints).",
+    )
     file_watcher_for_autocomplete: bool = False
     displayed_workdir: str = ""
     context_warnings: bool = False
@@ -585,6 +631,27 @@ class VibeConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="VIBE_", case_sensitive=False, extra="ignore"
     )
+
+    @field_validator(
+        "tool_result_preview_options", "message_prune_keep_options", mode="before"
+    )
+    @classmethod
+    def _sanitize_cycle_option_lists(
+        cls, value: Any, info: ValidationInfo
+    ) -> list[int]:
+        defaults = {
+            "tool_result_preview_options": TOOL_RESULT_PREVIEW_OPTIONS,
+            "message_prune_keep_options": MESSAGE_PRUNE_KEEP_OPTIONS,
+        }
+        return sanitize_cycle_options(value, defaults[info.field_name])
+
+    @field_validator(
+        "tool_result_preview_lines", "message_prune_keep_rows", mode="before"
+    )
+    @classmethod
+    def _sanitize_cycle_current_values(cls, value: Any, info: ValidationInfo) -> int:
+        defaults = {"tool_result_preview_lines": 3, "message_prune_keep_rows": 250}
+        return sanitize_positive_int(value, defaults[info.field_name])
 
     def model_dump(self, **kwargs: Any) -> dict[str, Any]:
         kwargs.setdefault("exclude_none", True)

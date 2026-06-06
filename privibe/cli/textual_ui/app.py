@@ -2037,7 +2037,10 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(UserCommandMessage(f"Auto-copy to clipboard {state}."))
 
     async def _cycle_preview_lines(self) -> None:
-        new_value = cycle_preview_lines(self.config.tool_result_preview_lines)
+        new_value = cycle_preview_lines(
+            self.config.tool_result_preview_lines,
+            self.config.tool_result_preview_options,
+        )
         VibeConfig.save_updates({"tool_result_preview_lines": new_value})
         self.agent_loop.refresh_config()
         await self._mount_and_scroll(
@@ -2045,7 +2048,10 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
     async def _cycle_scrollback(self) -> None:
-        new_value = cycle_message_prune_rows(self.config.message_prune_keep_rows)
+        new_value = cycle_message_prune_rows(
+            self.config.message_prune_keep_rows,
+            self.config.message_prune_keep_options,
+        )
         VibeConfig.save_updates({"message_prune_keep_rows": new_value})
         self.agent_loop.refresh_config()
         # Apply the new (often lower) threshold to the already-mounted history now.
