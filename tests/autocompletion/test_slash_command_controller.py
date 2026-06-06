@@ -233,3 +233,92 @@ def test_callable_entries_reflects_enabled_disabled_skills() -> None:
     controller.on_text_changed("/", cursor_index=1)
     suggestions, _ = view.suggestion_events[-1]
     assert [s.alias for s in suggestions] == ["/review", "/deploy"]
+
+
+# --- Scrolling window -------------------------------------------------------
+# When more matches exist than fit in the popup, the list must not be truncated
+# to the first N (which made later commands unreachable). Instead the popup
+# shows a fixed-size window that scrolls to follow the selection, so every match
+# can be reached by pressing down/up.
+
+WINDOW = 10
+
+
+def make_many_controller(
+    n: int,
+) -> tuple[SlashCommandController, StubView, list[tuple[str, str]]]:
+    commands = [(f"/cmd{i:02d}", f"description {i}") for i in range(n)]
+    completer = CommandCompleter(lambda: commands)
+    view = StubView()
+    controller = SlashCommandController(completer, view)
+    return controller, view, commands
+
+
+def test_short_list_is_shown_in_full_without_windowing() -> None:
+    controller, view, commands = make_many_controller(6)
+
+    controller.on_text_changed("/", cursor_index=1)
+
+    suggestions, selected = view.suggestion_events[-1]
+    assert [s.alias for s in suggestions] == [c[0] for c in commands]
+    assert selected == 0
+
+
+def test_long_list_shows_only_a_window_starting_at_the_top() -> None:
+    controller, view, _ = make_many_controller(15)
+
+    controller.on_text_changed("/", cursor_index=1)
+
+    suggestions, selected = view.suggestion_events[-1]
+    assert len(suggestions) == WINDOW
+    assert selected == 0
+    assert suggestions[0].alias == "/cmd00"
+    assert suggestions[-1].alias == "/cmd09"
+
+
+def test_window_scrolls_to_the_end_so_last_item_is_reachable() -> None:
+    controller, view, commands = make_many_controller(15)
+    controller.on_text_changed("/", cursor_index=1)
+
+    for _ in range(len(commands) - 1):  # move to the last item
+        controller.on_key(key_event("down"), text="/", cursor_index=1)
+
+    suggestions, selected = view.suggestion_events[-1]
+    assert len(suggestions) == WINDOW
+    assert [s.alias for s in suggestions] == [f"/cmd{i:02d}" for i in range(5, 15)]
+    assert suggestions[selected].alias == "/cmd14"
+    assert selected == WINDOW - 1
+
+
+def test_every_suggestion_is_reachable_by_scrolling_down() -> None:
+    # The regression: previously the list was capped at 10, so /cmd10../cmd14
+    # could never be selected. Walking the whole list must surface all of them.
+    controller, view, commands = make_many_controller(15)
+    controller.on_text_changed("/", cursor_index=1)
+
+    seen = []
+    suggestions, selected = view.suggestion_events[-1]
+    seen.append(suggestions[selected].alias)
+    for _ in range(len(commands) - 1):
+        controller.on_key(key_event("down"), text="/", cursor_index=1)
+        suggestions, selected = view.suggestion_events[-1]
+        # The selected item is always inside the rendered window.
+        assert 0 <= selected < len(suggestions)
+        seen.append(suggestions[selected].alias)
+
+    assert seen == [c[0] for c in commands]
+    assert all(len(ev.suggestions) <= WINDOW for ev in view.suggestion_events)
+
+
+def test_wraparound_from_top_jumps_window_to_the_bottom_and_back() -> None:
+    controller, view, _ = make_many_controller(15)
+    controller.on_text_changed("/", cursor_index=1)
+
+    controller.on_key(key_event("up"), text="/", cursor_index=1)  # 0 -> last
+    suggestions, selected = view.suggestion_events[-1]
+    assert suggestions[selected].alias == "/cmd14"
+
+    controller.on_key(key_event("down"), text="/", cursor_index=1)  # last -> 0
+    suggestions, selected = view.suggestion_events[-1]
+    assert suggestions[selected].alias == "/cmd00"
+    assert selected == 0
