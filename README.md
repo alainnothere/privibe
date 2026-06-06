@@ -29,6 +29,14 @@ uv sync
 
 ## Run
 
+I set up an alias on .bashrc
+
+```bash
+alias privibe='uv run --project /yourPathToPrivibeHere/privibe privibe'
+```
+
+so you can later just use it with privibe from whenever you are, or inside privibe folder with
+
 ```bash
 uv run privibe
 ```
