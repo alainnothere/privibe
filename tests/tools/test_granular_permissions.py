@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from privibe.core.tools.base import BaseToolState, ToolPermission
+from privibe.core.tools.base import BaseToolConfig, BaseToolState, ToolPermission
 from privibe.core.tools.builtins.bash import (
     Bash,
     BashArgs,
@@ -12,6 +12,22 @@ from privibe.core.tools.builtins.bash import (
     _collect_outside_dirs,
 )
 from privibe.core.tools.builtins.grep import Grep, GrepArgs, GrepToolConfig
+from privibe.core.tools.builtins.hashed_delete_block import (
+    HashedDeleteBlock,
+    HashedDeleteBlockArgs,
+)
+from privibe.core.tools.builtins.hashed_delete_line import (
+    HashedDeleteLine,
+    HashedDeleteLineArgs,
+)
+from privibe.core.tools.builtins.hashed_replace_block import (
+    HashedReplaceBlock,
+    HashedReplaceBlockArgs,
+)
+from privibe.core.tools.builtins.hashed_replace_line import (
+    HashedReplaceLine,
+    HashedReplaceLineArgs,
+)
 from privibe.core.tools.builtins.read_file import (
     ReadFile,
     ReadFileArgs,
@@ -748,3 +764,85 @@ class TestCollectOutsideDirs:
         (self.workdir / "foo" / "bar").touch()
         dirs = _collect_outside_dirs(["cat foo/bar"])
         assert len(dirs) == 0
+
+
+# Regression: the hashed edit/delete tools call resolve_file_tool_permission(),
+# which requires a keyword-only `sensitive_patterns` argument. They previously
+# omitted it, so resolve_permission() raised
+#   TypeError: resolve_file_tool_permission() missing 1 required keyword-only
+#   argument: 'sensitive_patterns'
+# on every invocation in a mode that runs permission resolution (default and
+# accept-edits). The broad except in the agent loop turned that into an opaque
+# "<tool> failed" message to the model with no approval prompt shown. These
+# tests assert resolve_permission both runs and actually honors the patterns.
+# Each tool's edit/delete list requires >=1 item; values are irrelevant since
+# resolve_permission only reads `path`. (field_name, one_minimal_item).
+_LINE_ITEM = {"line": 1, "hash": "0000", "new_content": "x"}
+_BLOCK_ITEM = {"line": 1, "hash": "0000", "end_line": 1, "end_hash": "0000", "new_content": "x"}
+_DEL_LINE_ITEM = {"line": 1, "hash": "0000"}
+_DEL_BLOCK_ITEM = {"line": 1, "hash": "0000", "end_line": 1, "end_hash": "0000"}
+
+_HASHED_TOOL_CASES = [
+    (HashedReplaceLine, HashedReplaceLineArgs, "replacements", _LINE_ITEM),
+    (HashedReplaceBlock, HashedReplaceBlockArgs, "replacements", _BLOCK_ITEM),
+    (HashedDeleteLine, HashedDeleteLineArgs, "deletions", _DEL_LINE_ITEM),
+    (HashedDeleteBlock, HashedDeleteBlockArgs, "deletions", _DEL_BLOCK_ITEM),
+]
+
+
+class TestHashedFileToolGranularPermissions:
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        self.workdir = tmp_path
+
+    @staticmethod
+    def _args(args_cls, list_field: str, item: dict, path: str):
+        return args_cls(path=path, **{list_field: [item]})
+
+    @pytest.mark.parametrize("tool_cls, args_cls, list_field, item", _HASHED_TOOL_CASES)
+    def test_outside_workdir_resolves_without_error(
+        self, tool_cls, args_cls, list_field, item
+    ):
+        tool = tool_cls(config=BaseToolConfig(), state=BaseToolState())
+        result = tool.resolve_permission(
+            self._args(args_cls, list_field, item, "/tmp/outside.txt")
+        )
+        assert isinstance(result, PermissionContext)
+        assert result.permission is ToolPermission.ASK
+        outside = [
+            rp
+            for rp in result.required_permissions
+            if rp.scope is PermissionScope.OUTSIDE_DIRECTORY
+        ]
+        assert len(outside) == 1
+
+    @pytest.mark.parametrize("tool_cls, args_cls, list_field, item", _HASHED_TOOL_CASES)
+    def test_in_workdir_returns_none(self, tool_cls, args_cls, list_field, item):
+        (self.workdir / "in_repo.txt").touch()
+        tool = tool_cls(config=BaseToolConfig(), state=BaseToolState())
+        assert (
+            tool.resolve_permission(
+                self._args(args_cls, list_field, item, "in_repo.txt")
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("tool_cls, args_cls, list_field, item", _HASHED_TOOL_CASES)
+    def test_sensitive_patterns_are_forwarded(
+        self, tool_cls, args_cls, list_field, item
+    ):
+        (self.workdir / ".env").touch()
+        tool = tool_cls(
+            config=BaseToolConfig(sensitive_patterns=["**/.env", "**/.env.*"]),
+            state=BaseToolState(),
+        )
+        result = tool.resolve_permission(self._args(args_cls, list_field, item, ".env"))
+        assert isinstance(result, PermissionContext)
+        sensitive = [
+            rp
+            for rp in result.required_permissions
+            if rp.scope is PermissionScope.FILE_PATTERN
+        ]
+        assert len(sensitive) == 1
+        assert sensitive[0].label.startswith("accessing sensitive files")

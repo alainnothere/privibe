@@ -14,7 +14,6 @@ from privibe.core.tools.base import (
     InvokeContext,
 )
 from privibe.core.tools.builtins._hashed_core import (
-    ApplyResult,
     LineReplacement,
     apply_replacements_to_file,
 )
@@ -73,6 +72,7 @@ class HashedReplace(
             allowlist=self.config.allowlist,
             denylist=self.config.denylist,
             config_permission=self.config.permission,
+            sensitive_patterns=self.config.sensitive_patterns,
         )
 
     @final
