@@ -50,6 +50,10 @@ There's also an ACP entrypoint for editor integrations:
 uv run privibe-acp
 ```
 
+## Run on windows
+
+For the most part... exactly the same, clone the source and uv run privibe... I use it daily on git bash and works correctly, I have also tried powershell and I know it works.
+
 ## How it differs from Mistral Vibe
 
 ### Local-first
