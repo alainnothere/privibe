@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from textual import events
 
-from privibe.cli.autocompletion.base import CompletionResult, CompletionView
+from privibe.cli.autocompletion.base import (
+    CompletionResult,
+    CompletionView,
+    compute_visible_window,
+)
 from privibe.core.autocompletion.completers import CommandCompleter
 
 # Number of suggestions visible in the popup at once. The full match list may be
@@ -81,29 +85,10 @@ class SlashCommandController:
         self._render_suggestions()
 
     def _render_suggestions(self) -> None:
-        window, selected_in_window = self._visible_window()
+        window, selected_in_window = compute_visible_window(
+            self._suggestions, self._selected_index, MAX_VISIBLE_SUGGESTIONS
+        )
         self._view.render_completion_suggestions(window, selected_in_window)
-
-    def _visible_window(self) -> tuple[list[tuple[str, str]], int]:
-        """Return up to MAX_VISIBLE_SUGGESTIONS items plus the selected item's
-        index within that slice.
-
-        The window scrolls to keep the selection visible (roughly centered)
-        until it reaches the list's start or end, so every match is reachable
-        instead of being truncated away after the first N.
-        """
-        count = len(self._suggestions)
-        if count <= MAX_VISIBLE_SUGGESTIONS:
-            return self._suggestions, self._selected_index
-
-        half = MAX_VISIBLE_SUGGESTIONS // 2
-        start = max(
-            0, min(self._selected_index - half, count - MAX_VISIBLE_SUGGESTIONS)
-        )
-        return (
-            self._suggestions[start : start + MAX_VISIBLE_SUGGESTIONS],
-            self._selected_index - start,
-        )
 
     def _apply_selected_completion(self, text: str, cursor_index: int) -> bool:
         if not self._suggestions:

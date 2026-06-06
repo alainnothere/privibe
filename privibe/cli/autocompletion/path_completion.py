@@ -6,10 +6,17 @@ from threading import Lock
 
 from textual import events
 
-from privibe.cli.autocompletion.base import CompletionResult, CompletionView
+from privibe.cli.autocompletion.base import (
+    CompletionResult,
+    CompletionView,
+    compute_visible_window,
+)
 from privibe.core.autocompletion.completers import PathCompleter
 
-MAX_SUGGESTIONS_COUNT = 10
+# Number of suggestions visible in the popup at once. The full match list may be
+# longer; the popup shows a window of this size that scrolls to follow the
+# selected item, so every match stays reachable.
+MAX_VISIBLE_SUGGESTIONS = 10
 
 
 class PathCompletionController:
@@ -108,24 +115,15 @@ class PathCompletionController:
                 self._last_query = None
 
     def _update_suggestions(self, suggestions: list[tuple[str, str]]) -> None:
-        if len(suggestions) > MAX_SUGGESTIONS_COUNT:
-            suggestions = suggestions[:MAX_SUGGESTIONS_COUNT]
-
         app = getattr(self._view, "app", None)
 
         if suggestions:
             self._suggestions = suggestions
             self._selected_index = 0
             if app:
-                app.call_after_refresh(
-                    self._view.render_completion_suggestions,
-                    self._suggestions,
-                    self._selected_index,
-                )
+                app.call_after_refresh(self._render_suggestions)
             else:
-                self._view.render_completion_suggestions(
-                    self._suggestions, self._selected_index
-                )
+                self._render_suggestions()
         elif app:
             app.call_after_refresh(self.reset)
         else:
@@ -157,9 +155,13 @@ class PathCompletionController:
 
         count = len(self._suggestions)
         self._selected_index = (self._selected_index + delta) % count
-        self._view.render_completion_suggestions(
-            self._suggestions, self._selected_index
+        self._render_suggestions()
+
+    def _render_suggestions(self) -> None:
+        window, selected_in_window = compute_visible_window(
+            self._suggestions, self._selected_index, MAX_VISIBLE_SUGGESTIONS
         )
+        self._view.render_completion_suggestions(window, selected_in_window)
 
     def _apply_selected_completion(self, text: str, cursor_index: int) -> bool:
         if not self._suggestions:

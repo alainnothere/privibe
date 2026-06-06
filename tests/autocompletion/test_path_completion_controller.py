@@ -184,6 +184,34 @@ def test_limits_suggestions_to_ten(file_tree: Path) -> None:
     assert selected_index == 0
 
 
+def test_scrolling_window_reaches_every_match(file_tree: Path) -> None:
+    # Regression: the match list was sliced to the first 10, so files past the
+    # tenth were unreachable. Walking the list with a scrolling window must
+    # surface every match while keeping the popup capped at 10 rows.
+    many = file_tree / "many"
+    many.mkdir()
+    expected = {f"@many/file_{i:02d}.py" for i in range(15)}
+    for i in range(15):
+        (many / f"file_{i:02d}.py").write_text("", encoding="utf-8")
+
+    controller, view = make_controller(target_matches=100)
+    controller.on_text_changed("@many/", cursor_index=6)
+
+    suggestions, selected = view.suggestions[-1]
+    assert len(suggestions) == 10  # initial window is still capped at 10 rows
+    assert selected == 0
+
+    seen = {suggestions[selected][0]}
+    for _ in range(len(expected) - 1):
+        controller.on_key(events.Key("down", None), "@many/", 6)
+        suggestions, selected = view.suggestions[-1]
+        assert len(suggestions) <= 10
+        assert 0 <= selected < len(suggestions)
+        seen.add(suggestions[selected][0])
+
+    assert seen == expected
+
+
 def test_does_not_handle_when_cursor_at_beginning_of_input(file_tree: Path) -> None:
     controller, _ = make_controller()
 
