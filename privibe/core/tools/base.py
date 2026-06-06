@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from privibe.core.rewind.undo_stack import FileUndoStack
     from privibe.core.skills.manager import SkillManager
     from privibe.core.tools.mcp_sampling import MCPSamplingHandler
-    from privibe.core.tools.permissions import PermissionContext
+    from privibe.core.tools.permissions import ApprovedRule, PermissionContext
     from privibe.core.types import (
         ApprovalCallback,
         EntrypointMetadata,
@@ -60,6 +60,11 @@ class InvokeContext:
     switch_agent_callback: SwitchAgentCallback | None = field(default=None)
     skill_manager: SkillManager | None = field(default=None)
     undo_stack: FileUndoStack | None = field(default=None)
+    # Session-approved permission rules from the parent agent, so a spawned
+    # subagent doesn't re-prompt for access the user already granted this
+    # session. Each rule is scoped by (tool_name, scope, pattern), so it only
+    # ever applies to a tool the subagent actually has.
+    session_rules: list[ApprovedRule] = field(default_factory=list)
 
 
 class ToolError(Exception):

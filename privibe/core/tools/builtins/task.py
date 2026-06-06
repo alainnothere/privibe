@@ -139,6 +139,14 @@ class Task(
         if ctx and ctx.approval_callback:
             subagent_loop.set_approval_callback(ctx.approval_callback)
 
+        # Inherit the parent's session-approved rules so the subagent doesn't
+        # re-prompt for access the user already granted this session. Rules are
+        # scoped by (tool_name, scope, pattern), so an inherited rule only ever
+        # applies to a tool the subagent actually has (e.g. file reads for the
+        # read-only explore agent); rules for tools it lacks are simply inert.
+        for rule in ctx.session_rules:
+            subagent_loop.add_session_rule(rule)
+
         accumulated_response: list[str] = []
         completed = True
         try:
