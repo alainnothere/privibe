@@ -453,6 +453,11 @@ class VibeConfig(BaseSettings):
     include_model_info: bool = True
     include_project_context: bool = True
     include_prompt_detail: bool = True
+    # Experimental: keep the volatile datetime + project context (git/tree) OUT
+    # of the system prompt and send them as a separate first injected message, so
+    # the large static system prompt stays a stable prefix the server can keep
+    # KV-cached across sessions. Opt-in; default off preserves current behavior.
+    stable_system_prefix: bool = False
     enable_notifications: bool = True
     api_timeout: float = 720.0
     auto_compact_threshold: int = 200_000

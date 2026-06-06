@@ -173,7 +173,7 @@ def _get_default_shell() -> str:
     return os.environ.get("SHELL", "sh")
 
 
-def _get_os_system_prompt() -> str:
+def _get_os_system_prompt(include_datetime: bool = True) -> str:
     shell = _get_default_shell()
     platform_name = _get_platform_name()
     prompt = f"The operating system is {platform_name} with shell `{shell}`"
@@ -184,8 +184,12 @@ def _get_os_system_prompt() -> str:
     if (hint := dialect_hint()) is not None:
         prompt += "\n" + hint
 
-    now = datetime.now().strftime("%B %d, %Y %I:%M %p")
-    prompt += f"\nThe current date and time is {now} (local time)"
+    # When stable_system_prefix is on, the (volatile) datetime is emitted in a
+    # separate injected message instead, so it doesn't invalidate the cached
+    # system prefix. See build_context_refresh_content / get_universal_system_prompt.
+    if include_datetime:
+        now = datetime.now().strftime("%B %d, %Y %I:%M %p")
+        prompt += f"\nThe current date and time is {now} (local time)"
 
     return prompt
 
@@ -253,6 +257,11 @@ def get_universal_system_prompt(
     skill_manager: SkillManager,
     agent_manager: AgentManager,
 ) -> str:
+    # When on, volatile context (datetime + project git/tree) is kept out of the
+    # system prompt and sent as a separate injected message, so the static prompt
+    # stays a stable, KV-cacheable prefix.
+    stable_prefix = config.stable_system_prefix
+
     sections = [config.system_prompt]
 
     if config.include_commit_signature:
@@ -262,7 +271,7 @@ def get_universal_system_prompt(
         sections.append(f"Your model name is: `{config.active_model}`")
 
     if config.include_prompt_detail:
-        sections.append(_get_os_system_prompt())
+        sections.append(_get_os_system_prompt(include_datetime=not stable_prefix))
         tool_prompts = []
         for tool_class in tool_manager.available_tools.values():
             if prompt := tool_class.get_tool_prompt():
@@ -281,16 +290,19 @@ def get_universal_system_prompt(
     if config.include_project_context:
         is_dangerous, reason = is_dangerous_directory()
         if is_dangerous:
+            # Safety warning always stays in the system prompt.
             template = UtilityPrompt.DANGEROUS_DIRECTORY.read()
             context = Template(template).safe_substitute(
                 reason=reason.lower(), abs_path=Path(".").resolve()
             )
-        else:
+            sections.append(context)
+        elif not stable_prefix:
+            # In stable-prefix mode the project context (git status + tree) is
+            # volatile and is emitted in the injected context message instead.
             context = ProjectContextProvider(
                 config=config.project_context, root_path=Path.cwd()
             ).get_full_context()
-
-        sections.append(context)
+            sections.append(context)
 
         mgr = get_harness_files_manager()
         user_doc = mgr.load_user_doc()
@@ -321,9 +333,10 @@ def get_universal_system_prompt(
     return "\n\n".join(sections)
 
 
-def build_context_refresh_content(config: VibeConfig) -> str:
+def build_context_refresh_content(config: VibeConfig, resumed: bool = True) -> str:
     now = datetime.now().strftime("%B %d, %Y %I:%M %p")
-    lines = [f"Session resumed. The current date and time is {now} (local time)."]
+    lead = "Session resumed. " if resumed else ""
+    lines = [f"{lead}The current date and time is {now} (local time)."]
     if config.include_project_context:
         is_dangerous, _ = is_dangerous_directory()
         if not is_dangerous:
