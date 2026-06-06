@@ -68,6 +68,8 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
 - Removed the cloud and account features (nuage/teleport), telemetry, tracing,
   the update notifier, plan offers, data-retention, and remote auth — along with
   their dead code and tests. De-branded from Mistral Vibe throughout.
+  If you find anything calling home is not intentional, I miss it, please create
+  an issue and we'll nuke that code into outer space....
 
 ### Tuned for local llama.cpp / KV cache
 - Conversation state is held in a structure (`ConversationList`) that keeps the
