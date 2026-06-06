@@ -922,6 +922,7 @@ class AgentLoop:
                     switch_agent_callback=self.switch_agent,
                     skill_manager=self.skill_manager,
                     undo_stack=self.undo_stack,
+                    session_rules=self._session_rules,
                 ),
                 **tool_call.args_dict,
             ):

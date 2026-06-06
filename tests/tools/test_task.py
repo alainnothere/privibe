@@ -4,14 +4,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.conftest import build_test_vibe_config
-from tests.mock.utils import collect_result
 from privibe.core.agents.manager import AgentManager
 from privibe.core.agents.models import BUILTIN_AGENTS, AgentType
-from privibe.core.tools.base import BaseToolState, InvokeContext, ToolError, ToolPermission
+from privibe.core.tools.base import (
+    BaseToolState,
+    InvokeContext,
+    ToolError,
+    ToolPermission,
+)
 from privibe.core.tools.builtins.task import Task, TaskArgs, TaskResult, TaskToolConfig
-from privibe.core.tools.permissions import PermissionContext
+from privibe.core.tools.permissions import (
+    ApprovedRule,
+    PermissionContext,
+    PermissionScope,
+)
 from privibe.core.types import AssistantEvent, LLMMessage, Role
+from tests.conftest import build_test_vibe_config
+from tests.mock.utils import collect_result
 
 
 @pytest.fixture
@@ -215,3 +224,80 @@ class TestTaskToolExecution:
             assert isinstance(result, TaskResult)
             assert result.completed is False
             assert "Simulated error" in result.response
+
+
+class TestTaskToolPermissionInheritance:
+    """The spawned subagent should inherit the parent's session-approved rules so
+    it doesn't re-prompt for access the user already granted this session (e.g.
+    reading a file outside the workdir / a sensitive file). Rules are scoped by
+    (tool_name, scope, pattern), so inheriting them can't widen what the subagent
+    is able to do — a rule for a tool it lacks is simply never consulted.
+    """
+
+    def _make_ctx(self, session_rules):
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        manager = AgentManager(lambda: config)
+        return InvokeContext(
+            tool_call_id="test-call-id",
+            agent_manager=manager,
+            session_rules=session_rules,
+        )
+
+    @staticmethod
+    def _mock_loop():
+        async def mock_act(task: str):
+            yield AssistantEvent(content="done")
+
+        loop = MagicMock()
+        loop.act = mock_act
+        loop.messages = [LLMMessage(role=Role.assistant, content="done")]
+        loop.set_approval_callback = MagicMock()
+        loop.add_session_rule = MagicMock()
+        return loop
+
+    @pytest.mark.asyncio
+    async def test_subagent_inherits_parent_session_rules(
+        self, task_tool: Task
+    ) -> None:
+        rules = [
+            ApprovedRule(
+                tool_name="read_file",
+                scope=PermissionScope.FILE_PATTERN,
+                session_pattern="*",
+            ),
+            ApprovedRule(
+                tool_name="read_file",
+                scope=PermissionScope.OUTSIDE_DIRECTORY,
+                session_pattern="/tmp/*",
+            ),
+        ]
+        ctx = self._make_ctx(rules)
+        loop = self._mock_loop()
+
+        with patch(
+            "privibe.core.tools.builtins.task.AgentLoop", return_value=loop
+        ):
+            await collect_result(
+                task_tool.run(TaskArgs(task="explore", agent="explore"), ctx)
+            )
+
+        assert loop.add_session_rule.call_count == len(rules)
+        assert [c.args[0] for c in loop.add_session_rule.call_args_list] == rules
+
+    @pytest.mark.asyncio
+    async def test_no_parent_rules_means_no_inheritance(
+        self, task_tool: Task
+    ) -> None:
+        ctx = self._make_ctx([])
+        loop = self._mock_loop()
+
+        with patch(
+            "privibe.core.tools.builtins.task.AgentLoop", return_value=loop
+        ):
+            await collect_result(
+                task_tool.run(TaskArgs(task="explore", agent="explore"), ctx)
+            )
+
+        loop.add_session_rule.assert_not_called()
