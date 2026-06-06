@@ -73,6 +73,7 @@ class HashedDeleteLine(
             allowlist=self.config.allowlist,
             denylist=self.config.denylist,
             config_permission=self.config.permission,
+            sensitive_patterns=self.config.sensitive_patterns,
         )
 
     @final
