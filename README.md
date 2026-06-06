@@ -3,9 +3,12 @@
 Minimal CLI coding agent for private, local-first development.
 
 privibe is a fork of [Mistral Vibe](https://github.com/mistralai/mistral-vibe)
-reworked to run against **local** models first. The cloud/account machinery is
-gone, the Mistral SDK is now an optional extra, and a lot of work has gone into
-making it fast and pleasant to use against a local
+reworked to not do any call back home of any kind and then run against **local** 
+models first, I want to be able to use it and know it will not be sending data
+of any kind anywhere.
+
+The cloud/account machinery is gone, the Mistral SDK is now an optional extra, 
+and a lot of work has gone into making it fast and pleasant to use against a local
 [llama.cpp](https://github.com/ggml-org/llama.cpp) server.
 
 If you want the original, hosted, Mistral-centric experience, use upstream
