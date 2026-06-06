@@ -977,13 +977,43 @@ class AgentLoop:
             raise
 
         except Exception as exc:
-            error_msg = f"<{TOOL_ERROR_TAG}>{tool_instance.get_name()} failed: {exc}</{TOOL_ERROR_TAG}>"
-            if isinstance(exc, ToolPermissionError):
-                self.stats.tool_calls_agreed -= 1
-                self.stats.tool_calls_rejected += 1
-            else:
-                self.stats.tool_calls_failed += 1
+            error_msg = self._classify_tool_failure(
+                tool_call, tool_instance, exc, decision
+            )
             yield self._tool_failure_event(tool_call, error_msg, decision)
+
+    def _classify_tool_failure(
+        self,
+        tool_call: ResolvedToolCall,
+        tool_instance: BaseTool,
+        exc: Exception,
+        decision: ToolDecision | None,
+    ) -> str:
+        """Build the model-facing error for a failed tool call and update stats.
+
+        Distinguishes an internal permission/approval fault (``decision is None``
+        — the exception fired before the tool ran) from a genuine tool-execution
+        failure. Both log a traceback so a bug can never hide as a bare
+        "<tool> failed" message again.
+        """
+        name = tool_instance.get_name()
+        if decision is None:
+            logger.exception(
+                "Internal error during permission/approval for tool '%s'",
+                tool_call.tool_name,
+            )
+            self.stats.tool_calls_failed += 1
+            return (
+                f"<{TOOL_ERROR_TAG}>{name}: internal error during permission "
+                f"check (see logs): {exc}</{TOOL_ERROR_TAG}>"
+            )
+        if isinstance(exc, ToolPermissionError):
+            self.stats.tool_calls_agreed -= 1
+            self.stats.tool_calls_rejected += 1
+            return f"<{TOOL_ERROR_TAG}>{name} failed: {exc}</{TOOL_ERROR_TAG}>"
+        logger.exception("Tool '%s' failed during execution", tool_call.tool_name)
+        self.stats.tool_calls_failed += 1
+        return f"<{TOOL_ERROR_TAG}>{name} failed: {exc}</{TOOL_ERROR_TAG}>"
 
     async def _handle_tool_calls(
         self, resolved: ResolvedMessage

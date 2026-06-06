@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from pydantic import BaseModel
 import pytest
 
-from tests.conftest import build_test_agent_loop, build_test_vibe_config
-from tests.mock.utils import mock_llm_chunk
-from tests.stubs.fake_backend import FakeBackend
-from tests.stubs.fake_tool import FakeTool
-from privibe.core.agent_loop import AgentLoop
+from privibe.core.agent_loop import AgentLoop, ToolDecision, ToolExecutionResponse
 from privibe.core.agents.models import BuiltinAgentName
 from privibe.core.config import VibeConfig
-from privibe.core.tools.base import ToolPermission
+from privibe.core.llm.format import ResolvedToolCall
+from privibe.core.tools.base import (
+    BaseToolConfig,
+    ToolError,
+    ToolPermission,
+    ToolPermissionError,
+)
 from privibe.core.tools.builtins.todo import TodoItem
 from privibe.core.types import (
     ApprovalCallback,
@@ -28,6 +31,10 @@ from privibe.core.types import (
     ToolResultEvent,
     UserMessageEvent,
 )
+from tests.conftest import build_test_agent_loop, build_test_vibe_config
+from tests.mock.utils import mock_llm_chunk
+from tests.stubs.fake_backend import FakeBackend
+from tests.stubs.fake_tool import FakeTool, FakeToolArgs, FakeToolState
 
 
 async def act_and_collect_events(agent_loop: AgentLoop, prompt: str) -> list[BaseEvent]:
@@ -808,3 +815,94 @@ async def test_parallel_conversation_history_has_all_tool_messages() -> None:
         "call_h3",
     }
     assert agent_loop.stats.tool_calls_succeeded == 4
+
+
+class TestToolFailureClassification:
+    """Covers AgentLoop._classify_tool_failure.
+
+    Why this exists: the hashed file tools used to raise a TypeError inside
+    resolve_permission() (a missing `sensitive_patterns` keyword argument). The
+    broad `except Exception` in _execute_tool_call reshaped that bug into a bare
+    "<tool> failed" tool result — no traceback was logged anywhere and no
+    approval prompt was shown — so the actual root cause was invisible to both
+    the user and the model. _classify_tool_failure was added to (a) log a full
+    traceback for every swallowed exception and (b) distinguish an internal
+    permission/approval fault (`decision is None`, i.e. the tool never ran) from
+    a genuine tool-execution failure. These tests lock that behavior in so the
+    silent-failure mode can't quietly come back.
+    """
+
+    @staticmethod
+    def _setup() -> tuple[AgentLoop, FakeTool, ResolvedToolCall]:
+        loop = build_test_agent_loop(backend=FakeBackend())
+        tool = FakeTool(config=BaseToolConfig(), state=FakeToolState())
+        call = ResolvedToolCall(
+            tool_name="stub_tool",
+            tool_class=FakeTool,
+            validated_args=FakeToolArgs(),
+            call_id="c1",
+        )
+        return loop, tool, call
+
+    def test_permission_phase_fault_is_internal_and_logs_traceback(self, caplog):
+        loop, tool, call = self._setup()
+        failed_before = loop.stats.tool_calls_failed
+
+        # Mirror the real call site: the exception is live inside an `except`, so
+        # logger.exception() can capture its traceback.
+        try:
+            raise TypeError(
+                "resolve_file_tool_permission() missing 1 required keyword-only "
+                "argument: 'sensitive_patterns'"
+            )
+        except TypeError as exc:
+            with caplog.at_level(logging.ERROR, logger="privibe"):
+                # decision is None => the fault happened before the tool ran.
+                msg = loop._classify_tool_failure(call, tool, exc, decision=None)
+
+        assert "internal error during permission check" in msg
+        assert "stub_tool" in msg
+        assert loop.stats.tool_calls_failed == failed_before + 1
+        # The traceback must be logged so the bug can't hide as a bare failure.
+        assert any(record.exc_info for record in caplog.records)
+        assert any(
+            "permission/approval" in record.getMessage() for record in caplog.records
+        )
+
+    def test_execution_failure_is_reported_to_model_and_logged(self, caplog):
+        loop, tool, call = self._setup()
+        failed_before = loop.stats.tool_calls_failed
+        decision = ToolDecision(
+            verdict=ToolExecutionResponse.EXECUTE,
+            approval_type=ToolPermission.ALWAYS,
+        )
+
+        try:
+            raise ToolError("boom")
+        except ToolError as exc:
+            with caplog.at_level(logging.ERROR, logger="privibe"):
+                msg = loop._classify_tool_failure(call, tool, exc, decision=decision)
+
+        assert "stub_tool failed: boom" in msg
+        assert "internal error" not in msg
+        assert loop.stats.tool_calls_failed == failed_before + 1
+        assert any(record.exc_info for record in caplog.records)
+
+    def test_permission_error_counts_as_rejected_not_failed(self):
+        loop, tool, call = self._setup()
+        failed_before = loop.stats.tool_calls_failed
+        rejected_before = loop.stats.tool_calls_rejected
+        agreed_before = loop.stats.tool_calls_agreed
+        decision = ToolDecision(
+            verdict=ToolExecutionResponse.EXECUTE,
+            approval_type=ToolPermission.ALWAYS,
+        )
+
+        msg = loop._classify_tool_failure(
+            call, tool, ToolPermissionError("denied"), decision=decision
+        )
+
+        assert "stub_tool failed: denied" in msg
+        assert loop.stats.tool_calls_failed == failed_before
+        assert loop.stats.tool_calls_rejected == rejected_before + 1
+        assert loop.stats.tool_calls_agreed == agreed_before - 1
