@@ -2088,6 +2088,19 @@ class VibeApp(App):  # noqa: PLR0904
             UserCommandMessage(f"LLM debug dump {state}. Files written to ./debug/ on each LLM call.")
         )
 
+    async def _toggle_stable_system_prefix(self) -> None:
+        new_value = not self.config.stable_system_prefix
+        VibeConfig.save_updates({"stable_system_prefix": new_value})
+        self.agent_loop.refresh_config()
+        state = "enabled" if new_value else "disabled"
+        await self._mount_and_scroll(
+            UserCommandMessage(
+                f"Stable system prefix {state}. Keeps the datetime + project context "
+                "out of the system prompt for better KV-cache reuse. Applies to new "
+                "sessions; run /reload to apply it to the current one."
+            )
+        )
+
     async def _show_active_tools(self) -> None:
         tools = self.agent_loop.tool_manager.available_tools
         names = sorted(tools.keys())

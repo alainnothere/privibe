@@ -67,3 +67,21 @@ class TestCommandRegistry:
         assert cmd is not None
         assert cmd.handler == "_toggle_autocopy"
 
+    def test_stable_prefix_command_registration(self) -> None:
+        registry = CommandRegistry()
+        assert registry.get_command_name("/stable-prefix") == "stable_prefix"
+        cmd = registry.find_command("/stable-prefix")
+        assert cmd is not None
+        assert cmd.handler == "_toggle_stable_system_prefix"
+
+    def test_every_command_handler_exists_on_the_app(self) -> None:
+        # The app dispatches via getattr(self, command.handler); guard against a
+        # typo'd or missing handler for any registered command.
+        from privibe.cli.textual_ui.app import VibeApp
+
+        registry = CommandRegistry()
+        for name, cmd in registry.commands.items():
+            assert hasattr(VibeApp, cmd.handler), (
+                f"command '{name}' -> missing handler '{cmd.handler}' on VibeApp"
+            )
+

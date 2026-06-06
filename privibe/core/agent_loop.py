@@ -52,7 +52,10 @@ from privibe.core.rewind.undo_stack import FileUndoStack
 from privibe.core.session.session_logger import SessionLogger
 from privibe.core.session.session_migration import migrate_sessions_entrypoint
 from privibe.core.skills.manager import SkillManager
-from privibe.core.system_prompt import get_universal_system_prompt
+from privibe.core.system_prompt import (
+    build_context_refresh_content,
+    get_universal_system_prompt,
+)
 from privibe.core.tools.base import (
     BaseTool,
     InvokeContext,
@@ -94,6 +97,7 @@ from privibe.core.types import (
 )
 from privibe.core.utils import (
     CANCELLATION_TAG,
+    CONTEXT_REFRESH_TAG,
     TOOL_ERROR_TAG,
     VIBE_STOP_EVENT_TAG,
     CancellationReason,
@@ -252,6 +256,9 @@ class AgentLoop:
             self.tool_manager, self.config, self.skill_manager, self.agent_manager
         )
         self.messages.add(LLMMessage(role=Role.system, content=system_prompt))
+        initial_context = self._build_initial_context_message()
+        if initial_context is not None:
+            self.messages.add(initial_context)
 
         thread = Thread(
             target=migrate_sessions_entrypoint,
@@ -292,6 +299,36 @@ class AgentLoop:
     def refresh_config(self) -> None:
         self._base_config = VibeConfig.load()
         self.agent_manager.invalidate_config()
+
+    def _build_initial_context_message(self) -> LLMMessage | None:
+        """Volatile context (datetime + project git/tree) delivered as a separate
+        injected message when stable_system_prefix is on, so the system prompt
+        stays a stable, KV-cacheable prefix. None when the flag is off.
+        """
+        if not self.config.stable_system_prefix:
+            return None
+        return LLMMessage(
+            role=Role.user,
+            content=build_context_refresh_content(self.config, resumed=False),
+            injected=True,
+        )
+
+    @staticmethod
+    def _strip_leading_initial_context(
+        messages: list[LLMMessage],
+    ) -> list[LLMMessage]:
+        """Drop a leading stable-prefix context message so a rebuild can re-derive
+        it from the current config (keeps toggling stable_system_prefix consistent
+        and avoids duplicating it). The resume-time refresh lives at the tail, so
+        only a *leading* injected context_refresh is the bootstrap one.
+        """
+        if (
+            messages
+            and messages[0].injected
+            and f"<{CONTEXT_REFRESH_TAG}>" in (messages[0].content or "")
+        ):
+            return messages[1:]
+        return messages
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         self.approval_callback = callback
@@ -1525,7 +1562,7 @@ class AgentLoop:
         # Rebuild the system prompt and replay the conversation silently so the
         # observer (UI) is not re-notified for already-displayed messages.
         # Suppress reset hooks so that rewind checkpoints survive agent/model switches.
-        non_system = list(self.messages[1:])
+        non_system = self._strip_leading_initial_context(list(self.messages[1:]))
         if not non_system:
             self.stats.reset_context_state()
 
@@ -1535,6 +1572,9 @@ class AgentLoop:
                 self.tool_manager, self.config, self.skill_manager, self.agent_manager
             )
             self.messages.add(LLMMessage(role=Role.system, content=system_prompt))
+            initial_context = self._build_initial_context_message()
+            if initial_context is not None:
+                self.messages.add(initial_context)
             for msg in non_system:
                 self.messages.add(msg)
 

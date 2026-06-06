@@ -125,6 +125,11 @@ class CommandRegistry:
                 description="Show available subagents",
                 handler="_show_available_subagents",
             ),
+            "stable_prefix": Command(
+                aliases=frozenset(["/stable-prefix"]),
+                description="Toggle keeping datetime + project context out of the system prompt for better KV-cache reuse",
+                handler="_toggle_stable_system_prefix",
+            ),
             # DEBUG LLM COMMUNICATIONS
             "llm_debug": Command(
                 aliases=frozenset(["/llm-debug"]),
