@@ -2181,14 +2181,19 @@ class VibeApp(App):  # noqa: PLR0904
         if self._load_more.widget and not self._load_more.widget.parent:
             self._load_more.widget = None
         if pruned:
+            # Pruned widgets are still in history; surface them behind a
+            # "Load more" button instead of dropping them from view.
+            await self._sync_load_more_visibility(messages_area)
             chat = self._cached_chat or self.query_one("#chat", ChatScroll)
             if chat.is_at_bottom:
                 self.call_later(chat.anchor)
 
-    async def _refresh_windowing_from_history(self) -> None:
-        if self._load_more.widget is None:
-            return
-        messages_area = self._cached_messages_area or self.query_one("#messages")
+    async def _sync_load_more_visibility(self, messages_area: Widget) -> None:
+        """Recompute backfill from history and show/hide the load-more button.
+
+        Unlike _refresh_windowing_from_history, this may *create* the button, so
+        it's used after a live prune to surface the just-pruned messages.
+        """
         has_backfill, tool_call_map = sync_backfill_state(
             history_messages=non_system_history_messages(self.agent_loop.messages),
             messages_children=list(messages_area.children),
@@ -2199,6 +2204,12 @@ class VibeApp(App):  # noqa: PLR0904
         await self._load_more.set_visible(
             messages_area, visible=has_backfill, remaining=self._windowing.remaining
         )
+
+    async def _refresh_windowing_from_history(self) -> None:
+        if self._load_more.widget is None:
+            return
+        messages_area = self._cached_messages_area or self.query_one("#messages")
+        await self._sync_load_more_visibility(messages_area)
 
     def action_copy_selection(self) -> None:
         copy_selection_to_clipboard(self, show_toast=False)
