@@ -345,6 +345,10 @@ class LLMChunk(BaseModel):
     message: LLMMessage
     usage: LLMUsage | None = None
     correlation_id: str | None = None
+    # Server-reported model id for this response (top-level "model" field of an
+    # OpenAI-compatible response). Used to notice a model swap behind a static
+    # endpoint. None for backends that don't report it.
+    served_model: str | None = None
 
     def __add__(self, other: LLMChunk) -> LLMChunk:
         if self.usage is None and other.usage is None:
@@ -355,6 +359,7 @@ class LLMChunk(BaseModel):
             message=self.message + other.message,
             usage=new_usage,
             correlation_id=other.correlation_id or self.correlation_id,
+            served_model=other.served_model or self.served_model,
         )
 
 
