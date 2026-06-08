@@ -214,7 +214,7 @@ class OpenAIAdapter(APIAdapter):
             prompt_tokens_per_second=timings.get("prompt_per_second"),
         )
 
-        return LLMChunk(message=message, usage=usage)
+        return LLMChunk(message=message, usage=usage, served_model=data.get("model"))
 
 
 ADAPTERS: dict[str, APIAdapter] = {

@@ -138,6 +138,11 @@ def _should_raise_rate_limit_error(e: Exception) -> bool:
 # we'd rather give up once than block startup or every turn.
 _CONTEXT_SIZE_TIMEOUT_S: float = 2.0
 
+# How many times a failing detection retries before giving up. The driver fires
+# on every turn, so "retry next turn up to N times" is just: don't latch failed
+# until the Nth consecutive failure. Counted only on turns where a probe ran.
+_CONTEXT_SIZE_MAX_ATTEMPTS: int = 3
+
 # Per-model, per-process detection latches, keyed by model alias. act() fires
 # detection on *every* turn, but it does real work only until it resolves or
 # fails for the *current* model; later turns short-circuit. Keying by alias
@@ -148,18 +153,30 @@ _CONTEXT_SIZE_TIMEOUT_S: float = 2.0
 # already settled this model this run, don't keep hammering." The
 # /detect-context-size toggle clears both so a manual off/on re-pulls.
 _context_size_resolved_for: str | None = None
-_context_size_failed_for: str | None = None
+# Per-alias count of consecutive failed probe attempts. Replaces the old binary
+# "failed" latch: an alias is only abandoned once it reaches
+# _CONTEXT_SIZE_MAX_ATTEMPTS, so a transient first-probe failure (e.g. the server
+# still warming up after a kill+reload) self-heals on a later turn.
+_context_size_attempts: dict[str, int] = {}
 
 
-def reset_context_size_detection_state() -> None:
-    """Clear the per-model detection latches so the next call re-detects.
+def reset_context_size_detection_state(alias: str | None = None) -> None:
+    """Clear detection latches so the next call re-detects.
 
-    Called when the user toggles auto-detection back on via /detect-context-size,
-    so a manual off/on re-pulls context size and the cosmetic model name.
+    With no argument, clears everything (used when the user toggles auto-detection
+    back on via /detect-context-size). With an *alias*, clears just that model's
+    resolved latch and attempt counter — used by the cadence re-detect and by the
+    served-model-change trigger so a re-pull happens without disturbing other
+    models' settled values.
     """
-    global _context_size_resolved_for, _context_size_failed_for
-    _context_size_resolved_for = None
-    _context_size_failed_for = None
+    global _context_size_resolved_for, _context_size_attempts
+    if alias is None:
+        _context_size_resolved_for = None
+        _context_size_attempts.clear()
+        return
+    if _context_size_resolved_for == alias:
+        _context_size_resolved_for = None
+    _context_size_attempts.pop(alias, None)
 
 
 class AgentLoop:
@@ -226,6 +243,10 @@ class AgentLoop:
         # stale name is never shown next to a different active model.
         self._detected_model_name: str | None = None
         self._detected_model_alias: str | None = None
+        # Last server-reported model id seen on a response; a change means the
+        # model behind a static endpoint was swapped (kill+reload), triggering a
+        # context-size re-detect even though the privibe alias didn't change.
+        self._last_served_model: str | None = None
         # agent steering — Steering message queue. When the user types a message
         # while the agent is running (instead of pressing Esc to cancel), the
         # message is queued here. It will be injected into the next tool result
@@ -402,22 +423,28 @@ class AgentLoop:
         window size via /props or /v1/models and update auto_compact_threshold; also
         capture the server-reported model name for cosmetic display.
 
-        Runs on every turn but does real work only until it resolves or fails for
-        the current model (per-alias latches), so repeated turns short-circuit.
-        Returns a user-facing message string when this attempt failed (so the
-        configured value is used). Returns None on success, when the backend
-        doesn't support detection, when the user has turned auto-detection off via
-        /detect-context-size, or when this model was already settled this run. The
-        2s wall-clock cap exists because a healthy /props or /v1/models lookup is
-        sub-100ms; anything slower is a configuration problem.
+        Runs on every turn but does real work only until it resolves for the
+        current model, or until it has failed _CONTEXT_SIZE_MAX_ATTEMPTS times in
+        a row (a transient first-probe failure retries on later turns). Returns a
+        user-facing message string when an attempt failed (so the configured value
+        is used); the message says "retrying (n/N)" until the budget is spent.
+        Returns None on success, when the backend doesn't support detection, when
+        the user has turned auto-detection off, or when this model is already
+        settled/abandoned this run. The 2s wall-clock cap exists because a healthy
+        /props or /v1/models lookup is sub-100ms; anything slower is a config
+        problem.
         """
-        global _context_size_resolved_for, _context_size_failed_for
+        global _context_size_resolved_for
         if not self.config.auto_detect_context_size:
             return None
 
         active_model = self.config.get_active_model()
         alias = active_model.alias
-        if alias in (_context_size_resolved_for, _context_size_failed_for):
+        if alias == _context_size_resolved_for:
+            return None
+        if _context_size_attempts.get(alias, 0) >= _CONTEXT_SIZE_MAX_ATTEMPTS:
+            # Abandoned after _CONTEXT_SIZE_MAX_ATTEMPTS consecutive failures;
+            # awaiting a cadence reset or a manual /detect-context-size re-enable.
             return None
 
         provider = self.config.get_provider_for_model(active_model)
@@ -441,37 +468,27 @@ class AgentLoop:
             async with asyncio.timeout(_CONTEXT_SIZE_TIMEOUT_S):
                 info = await backend.fetch_model_endpoint_info(active_model.name)
         except TimeoutError:
-            _context_size_failed_for = alias
             logger.warning(
-                "Context size lookup at %s exceeded %.0fs — disabling auto-detection "
-                "for this model this run; using configured value (%d tokens).",
+                "Context size lookup at %s exceeded %.0fs.",
                 models_url,
                 _CONTEXT_SIZE_TIMEOUT_S,
-                active_model.auto_compact_threshold,
             )
-            return (
+            return self._record_context_failure(
+                active_model,
                 f"Could not retrieve context size from {models_url} within "
-                f"{_CONTEXT_SIZE_TIMEOUT_S:.0f}s. Auto-detection is disabled for "
-                f"the rest of this run; the configured value "
-                f"({active_model.auto_compact_threshold} tokens) will be used. "
-                f"Retry with /detect-context-size."
+                f"{_CONTEXT_SIZE_TIMEOUT_S:.0f}s.",
             )
         except Exception as exc:
-            _context_size_failed_for = alias
             logger.warning(
-                "Context size lookup at %s failed (%s) — disabling auto-detection "
-                "for this model this run; using configured value (%d tokens).",
+                "Context size lookup at %s failed (%s).",
                 models_url,
                 exc,
-                active_model.auto_compact_threshold,
                 exc_info=True,
             )
-            return (
+            return self._record_context_failure(
+                active_model,
                 f"Could not retrieve context size from {models_url} "
-                f"({type(exc).__name__}). Auto-detection is disabled for the rest "
-                f"of this run; the configured value "
-                f"({active_model.auto_compact_threshold} tokens) will be used. "
-                f"Retry with /detect-context-size."
+                f"({type(exc).__name__}).",
             )
 
         # Cosmetic model name (display only — never touches config or matching).
@@ -481,21 +498,15 @@ class AgentLoop:
 
         ctx_size = info.context_size
         if ctx_size is None:
-            _context_size_failed_for = alias
             logger.info(
-                "Context size not found in endpoint response for model '%s' "
-                "at %s — disabling auto-detection for this model this run; "
-                "falling back to configured value (%d tokens).",
+                "Context size not found in endpoint response for model '%s' at %s.",
                 active_model.name,
                 provider.api_base,
-                active_model.auto_compact_threshold,
             )
-            return (
+            return self._record_context_failure(
+                active_model,
                 f"Context size not exposed by {models_url} for model "
-                f"'{active_model.name}'. Auto-detection is disabled for the rest "
-                f"of this run; the configured value "
-                f"({active_model.auto_compact_threshold} tokens) will be used. "
-                f"Retry with /detect-context-size."
+                f"'{active_model.name}'.",
             )
 
         logger.info(
@@ -514,7 +525,78 @@ class AgentLoop:
                     model.auto_compact_threshold = ctx_size
                     break
         _context_size_resolved_for = alias
+        _context_size_attempts.pop(alias, None)
         return None
+
+    def _record_context_failure(self, active_model: ModelConfig, detail: str) -> str:
+        """Count a failed detection attempt and build the user-facing message.
+
+        Retries on later turns until _CONTEXT_SIZE_MAX_ATTEMPTS consecutive
+        failures. Once the budget is spent: if no re-detect cadence is configured
+        we turn auto-detection off for this run (so the UI matches and a single
+        /detect-context-size re-enables); if a cadence is set we leave it on and
+        let the cadence reset retry later.
+        """
+        alias = active_model.alias
+        attempts = _context_size_attempts.get(alias, 0) + 1
+        _context_size_attempts[alias] = attempts
+        configured = active_model.auto_compact_threshold
+
+        if attempts < _CONTEXT_SIZE_MAX_ATTEMPTS:
+            return (
+                f"{detail} Retrying ({attempts}/{_CONTEXT_SIZE_MAX_ATTEMPTS}) on "
+                f"the next turn; meanwhile the configured value ({configured} "
+                f"tokens) is used."
+            )
+
+        if self.config.context_size_redetect_every > 0:
+            return (
+                f"{detail} Detection failed {attempts} times; the configured value "
+                f"({configured} tokens) is used. Will retry every "
+                f"{self.config.context_size_redetect_every} turns "
+                f"(per /detect-context-size)."
+            )
+
+        # No cadence: turn auto-detection off for this run so the UI reflects it
+        # and one /detect-context-size press re-enables + re-pulls.
+        self._base_config.auto_detect_context_size = False
+        self.agent_manager.config.auto_detect_context_size = False
+        logger.warning(
+            "Context-size auto-detection disabled for this run after %d failed "
+            "attempts for model '%s'; using configured value (%d tokens).",
+            attempts,
+            active_model.name,
+            configured,
+        )
+        return (
+            f"{detail} Auto-detection disabled after {attempts} attempts; the "
+            f"configured value ({configured} tokens) is used. Re-enable with "
+            f"/detect-context-size."
+        )
+
+    def _note_served_model(self, served_model: str | None) -> None:
+        """Re-detect when the model behind a static endpoint changes.
+
+        The user's workflow is kill+reload a different model at the same endpoint
+        (no privibe alias switch, so no switch event). Every chat response carries
+        the server's model id; when it changes from the last one we saw, clear the
+        active model's detection latch and re-pull so the context window tracks the
+        newly loaded model. Only the id is in the response, so the size still comes
+        from a /props re-probe. First observation just records the baseline.
+        """
+        if not served_model:
+            return
+        if served_model == self._last_served_model:
+            return
+        changed = self._last_served_model is not None
+        self._last_served_model = served_model
+        if not changed:
+            return
+        logger.info(
+            "Served model changed (%s); re-detecting context size.", served_model
+        )
+        reset_context_size_detection_state(self.config.get_active_model().alias)
+        asyncio.ensure_future(self.resolve_context_size())
 
     async def _save_messages(self) -> None:
         await self.session_logger.save_interaction(
@@ -604,6 +686,12 @@ class AgentLoop:
         # Auto-detect context size (and the cosmetic model name) every turn. The
         # call self-guards: it short-circuits when disabled or already settled for
         # the current model, so this does real work only until it first resolves.
+        # When a re-detect cadence is configured, clear the active model's latch
+        # every N turns so a fresh probe runs (catches a same-id reload with a
+        # different -c that the served-model trigger cannot see).
+        cadence = self.config.context_size_redetect_every
+        if cadence > 0 and self._act_call_count % cadence == 0:
+            reset_context_size_detection_state(self.config.get_active_model().alias)
         asyncio.ensure_future(self.resolve_context_size())
         self._append_shims_for_dangling_tool_calls()
         async for event in self._conversation_loop(
@@ -1236,6 +1324,7 @@ class AgentLoop:
                 raise AgentLoopLLMResponseError(
                     "Usage data missing in non-streaming completion response"
                 )
+            self._note_served_model(result.served_model)
             self._update_stats(usage=result.usage, time_seconds=end_time - start_time)
 
             processed_message = self.format_handler.process_api_response_message(
@@ -1299,6 +1388,7 @@ class AgentLoop:
                 max_tokens=max_tokens,
                 metadata=self._build_metadata(),
             ):
+                self._note_served_model(chunk.served_model)
                 processed_message = self.format_handler.process_api_response_message(
                     chunk.message
                 )

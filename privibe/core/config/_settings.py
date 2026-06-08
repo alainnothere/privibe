@@ -413,6 +413,11 @@ DEFAULT_TTS_MODELS = [
 
 TOOL_RESULT_PREVIEW_OPTIONS = (3, 5, 10)
 MESSAGE_PRUNE_KEEP_OPTIONS = (50, 100, 250, 500, 1000)
+# The single /detect-context-size control cycles through poll cadences. 0 here
+# means "auto" (detect on model change + retry, no polling); 1/2/5/10 also force
+# a re-detect every N turns. "off" is a separate state held by
+# auto_detect_context_size=False (see cycle_context_size_mode).
+_CONTEXT_SIZE_POLL_CYCLE = (0, 1, 2, 5, 10)
 
 
 def _next_in_cycle(current: int, options: tuple[int, ...]) -> int:
@@ -466,12 +471,42 @@ def cycle_message_prune_rows(
     return _next_in_cycle(current, tuple(options))
 
 
+def cycle_context_size_mode(auto_detect: bool, every: int) -> tuple[bool, int]:
+    """Advance the single /detect-context-size control one step.
+
+    One control, two fields: returns the next (auto_detect_context_size,
+    context_size_redetect_every) pair. Cycle is
+    off -> auto (detect on model change, no polling) -> every 1 -> 2 -> 5 -> 10
+    -> back to off, so no confusing master/cadence mismatch is reachable.
+    """
+    if not auto_detect:
+        return (True, 0)  # off -> auto
+    try:
+        idx = _CONTEXT_SIZE_POLL_CYCLE.index(every)
+    except ValueError:
+        return (True, 0)  # unknown cadence -> auto
+    nxt = idx + 1
+    if nxt >= len(_CONTEXT_SIZE_POLL_CYCLE):
+        return (False, 0)  # past 'every 10' -> off
+    return (True, _CONTEXT_SIZE_POLL_CYCLE[nxt])
+
+
+def context_size_mode_label(auto_detect: bool, every: int) -> str:
+    """Human-readable label for the current /detect-context-size state."""
+    if not auto_detect:
+        return "off"
+    if every == 0:
+        return "auto (re-detect when the model changes)"
+    return f"re-detect every {every} turn(s)"
+
+
 class VibeConfig(BaseSettings):
     active_model: str = "local"
     vim_keybindings: bool = False
     disable_welcome_banner_animation: bool = False
     autocopy_to_clipboard: bool = True
     auto_detect_context_size: bool = True
+    context_size_redetect_every: int = 0
     tool_result_preview_lines: int = 3
     tool_result_preview_options: list[int] = Field(
         default_factory=lambda: list(TOOL_RESULT_PREVIEW_OPTIONS),

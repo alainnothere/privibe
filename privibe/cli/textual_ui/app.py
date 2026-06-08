@@ -88,6 +88,8 @@ from privibe.core.audio_recorder import AudioRecorder
 from privibe.core.autocompletion.path_prompt_adapter import render_path_prompt
 from privibe.core.config import (
     VibeConfig,
+    context_size_mode_label,
+    cycle_context_size_mode,
     cycle_message_prune_rows,
     cycle_preview_lines,
 )
@@ -2060,20 +2062,30 @@ class VibeApp(App):  # noqa: PLR0904
             UserCommandMessage(f"Message scrollback set to {new_value} rows.")
         )
 
-    async def _toggle_auto_detect_context_size(self) -> None:
-        new_value = not self.config.auto_detect_context_size
-        VibeConfig.save_updates({"auto_detect_context_size": new_value})
-        self.agent_loop.refresh_config()
+    async def _cycle_context_size_detection(self) -> None:
+        """Single context-size control: off -> auto -> every 1/2/5/10 turns -> off.
 
-        if not new_value:
+        Drives both the master enable and the poll cadence so there is never a
+        master-off/cadence-set mismatch.
+        """
+        auto, every = cycle_context_size_mode(
+            self.config.auto_detect_context_size,
+            self.config.context_size_redetect_every,
+        )
+        VibeConfig.save_updates(
+            {"auto_detect_context_size": auto, "context_size_redetect_every": every}
+        )
+        self.agent_loop.refresh_config()
+        label = context_size_mode_label(auto, every)
+
+        if not auto:
             await self._mount_and_scroll(
-                UserCommandMessage("Context-size auto-detection disabled.")
+                UserCommandMessage(f"Context-size detection: {label}.")
             )
             return
 
-        # Re-enabling: clear the per-model "already settled this run" latches so
-        # this retry actually re-pulls context size and the model name, then run
-        # detection now and refresh the banner with whatever name was detected.
+        # (Re)enabled: clear the per-model "already settled this run" latches so a
+        # fresh detect runs now and re-pulls the context size and model name.
         from privibe.core import agent_loop as _agent_loop_module
         _agent_loop_module.reset_context_size_detection_state()
         ctx_msg = await self.agent_loop.resolve_context_size()
@@ -2081,7 +2093,7 @@ class VibeApp(App):  # noqa: PLR0904
             await self._mount_and_scroll(WarningMessage(ctx_msg, show_border=False))
         else:
             await self._mount_and_scroll(
-                UserCommandMessage("Context-size auto-detection enabled.")
+                UserCommandMessage(f"Context-size detection: {label}.")
             )
         self._refresh_banner()
         # DEBUG LLM COMMUNICATIONS

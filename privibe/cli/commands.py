@@ -97,8 +97,8 @@ class CommandRegistry:
             ),
             "detect_context_size": Command(
                 aliases=frozenset(["/detect-context-size"]),
-                description="Toggle context-size auto-detection on startup; re-enabling also retries detection now",
-                handler="_toggle_auto_detect_context_size",
+                description="Cycle context-size detection (off → auto → re-detect every 1/2/5/10 turns)",
+                handler="_cycle_context_size_detection",
             ),
             "preview_lines": Command(
                 aliases=frozenset(["/preview-lines"]),
