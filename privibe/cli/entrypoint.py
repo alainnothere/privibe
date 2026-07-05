@@ -77,6 +77,14 @@ def parse_arguments() -> argparse.Namespace:
         "or custom from ~/.privibe/agents/NAME.toml)",
     )
     parser.add_argument(
+        "--model",
+        metavar="ALIAS",
+        help="Model alias to use for this run, overriding active_model from "
+        "config. Must match a model alias configured in config.toml "
+        "(for example one served by an OpenRouter provider). "
+        "The override is not persisted.",
+    )
+    parser.add_argument(
         "--list-tools",
         action="store_true",
         help="List all available tools with their descriptions and exit.",
