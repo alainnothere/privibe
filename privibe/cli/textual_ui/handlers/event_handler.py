@@ -100,6 +100,7 @@ class EventHandler:
                 cancelled=event.cancelled,
                 duration=event.duration,
                 tool_call_id=event.tool_call_id,
+                file_diff=event.file_diff,
             )
         return event
 

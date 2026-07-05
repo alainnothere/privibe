@@ -15,6 +15,7 @@ from pydantic import (
     ValidationInfo,
     field_validator,
     model_validator,
+    PrivateAttr,
 )
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
@@ -502,6 +503,7 @@ def context_size_mode_label(auto_detect: bool, every: int) -> str:
 
 class VibeConfig(BaseSettings):
     active_model: str = "local"
+    _fallback_from_model: str | None = PrivateAttr(default=None)  # Stores original model before fallback
     vim_keybindings: bool = False
     disable_welcome_banner_animation: bool = False
     autocopy_to_clipboard: bool = True
@@ -732,6 +734,7 @@ class VibeConfig(BaseSettings):
                     self.active_model,
                     model.alias,
                 )
+                self._fallback_from_model = self.active_model
                 self.active_model = model.alias
                 return model
 

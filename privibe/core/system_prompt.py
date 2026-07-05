@@ -14,7 +14,12 @@ from privibe.core.paths import VIBE_HOME
 from privibe.core.paths.dialect import dialect_hint
 from privibe.core.prompts import UtilityPrompt
 from privibe.core.types import LLMMessage, Role
-from privibe.core.utils import CONTEXT_REFRESH_TAG, is_dangerous_directory, is_windows
+from privibe.core.utils import (
+    CONTEXT_REFRESH_TAG,
+    is_dangerous_directory,
+    is_windows,
+    resolve_windows_bash,
+)
 
 if TYPE_CHECKING:
     from privibe.core.agents import AgentManager
@@ -162,24 +167,41 @@ def _get_platform_name() -> str:
     return platform_names.get(sys.platform, "Unix-like")
 
 
-def _get_default_shell() -> str:
-    """Get the default shell used by asyncio.create_subprocess_shell.
+def _get_bash_search_paths_override(config: VibeConfig | None) -> list[str] | None:
+    """User's [tools.bash] bash_search_paths, or None to use the defaults.
 
-    On Unix, uses $SHELL env var and default to sh.
-    On Windows, this is COMSPEC or cmd.exe.
+    Mirrors the absent-vs-empty semantics of the bash tool: a missing field
+    means "use the built-in default paths", an explicit [] opts out of the
+    static path search.
+    """
+    if config is None:
+        return None
+    return config.tools.get("bash", {}).get("bash_search_paths")
+
+
+def _get_default_shell(config: VibeConfig | None = None) -> str:
+    """Get the shell the bash tool actually executes commands with.
+
+    On Unix, uses $SHELL env var and defaults to sh.
+    On Windows, the resolved Git Bash when found, else COMSPEC or cmd.exe.
     """
     if is_windows():
+        if bash := resolve_windows_bash(_get_bash_search_paths_override(config)):
+            return bash
         return os.environ.get("COMSPEC", "cmd.exe")
     return os.environ.get("SHELL", "sh")
 
 
-def _get_os_system_prompt(include_datetime: bool = True) -> str:
-    shell = _get_default_shell()
+def _get_os_system_prompt(
+    include_datetime: bool = True, config: VibeConfig | None = None
+) -> str:
+    shell = _get_default_shell(config)
     platform_name = _get_platform_name()
     prompt = f"The operating system is {platform_name} with shell `{shell}`"
 
     if is_windows():
-        prompt += "\n" + _get_windows_system_prompt()
+        bash_path = resolve_windows_bash(_get_bash_search_paths_override(config))
+        prompt += "\n" + _get_windows_system_prompt(bash_path)
 
     if (hint := dialect_hint()) is not None:
         prompt += "\n" + hint
@@ -194,13 +216,26 @@ def _get_os_system_prompt(include_datetime: bool = True) -> str:
     return prompt
 
 
-def _get_windows_system_prompt() -> str:
+def _get_windows_system_prompt(bash_path: str | None = None) -> str:
+    if bash_path:
+        return (
+            "### SHELL NOTES (Git Bash):\n"
+            f"- The `bash` tool runs commands through Git Bash (`{bash_path}`): "
+            "Unix commands (`ls`, `grep`, `cat`, ...) and bash syntax work\n"
+            "- Paths may appear in Unix form like `/c/Users/...`; Windows forms are also understood\n"
+            "- Commands resolve to their Unix versions, not cmd.exe builtins "
+            "(e.g. `date` prints the date instead of prompting to set it)\n"
+            "- For Windows-native tooling, invoke it explicitly: "
+            "`cmd //c <command>` or `powershell.exe -Command <command>`"
+        )
     return (
         "### COMMAND COMPATIBILITY RULES (MUST FOLLOW):\n"
-        "- DO NOT use Unix commands like `ls`, `grep`, `cat` - they won't work on Windows\n"
+        "- The `bash` tool executes commands via `cmd.exe` (Git Bash was not found) - use cmd syntax, not bash\n"
+        "- DO NOT rely on Unix commands like `ls`, `grep`, `cat` - they may not exist\n"
         "- Use: `dir` (Windows) for directory listings\n"
         "- Use: backslashes (\\\\) for paths\n"
         "- Check command availability with: `where command` (Windows)\n"
+        "- DO NOT use interactive cmd builtins like `date` or `time` without `/T` - they prompt for input\n"
         "- Script shebang: Not applicable on Windows\n"
         "### ALWAYS verify commands work on the detected platform before suggesting them"
     )
@@ -271,7 +306,9 @@ def get_universal_system_prompt(
         sections.append(f"Your model name is: `{config.active_model}`")
 
     if config.include_prompt_detail:
-        sections.append(_get_os_system_prompt(include_datetime=not stable_prefix))
+        sections.append(
+            _get_os_system_prompt(include_datetime=not stable_prefix, config=config)
+        )
         tool_prompts = []
         for tool_class in tool_manager.available_tools.values():
             if prompt := tool_class.get_tool_prompt():

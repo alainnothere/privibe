@@ -74,8 +74,8 @@ ln -sf "$DEB_NAME" "$LATEST_NAME"
 echo "==> Symlink: $LATEST_NAME -> $DEB_NAME"
 
 # ── 5. Install ───────────────────────────────────────────────────────────────
-echo "==> Installing..."
-sudo dpkg -i "$DEB_NAME"
+#echo "==> Installing..."
+#sudo dpkg -i "$DEB_NAME"
 
 echo ""
 echo "Done. Run: privibe"

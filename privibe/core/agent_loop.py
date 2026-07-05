@@ -48,6 +48,8 @@ from privibe.core.middleware import (
 from privibe.core.plan_session import PlanSession
 from privibe.core.prompts import UtilityPrompt
 from privibe.core.rewind import RewindManager
+from privibe.core.rewind.diffing import build_file_diff
+from privibe.core.rewind.manager import FileSnapshot
 from privibe.core.rewind.undo_stack import FileUndoStack
 from privibe.core.session.session_logger import SessionLogger
 from privibe.core.session.session_migration import migrate_sessions_entrypoint
@@ -82,6 +84,7 @@ from privibe.core.types import (
     CompactEndEvent,
     CompactStartEvent,
     EntrypointMetadata,
+    FileDiff,
     LLMChunk,
     LLMMessage,
     LLMUsage,
@@ -1075,6 +1078,7 @@ class AgentLoop:
                 cancelled=getattr(result_model, "cancelled", False),
                 duration=duration,
                 tool_call_id=tool_call.call_id,
+                file_diff=self._file_diff_for(snapshot, tool_call.tool_name),
             )
             self.stats.tool_calls_succeeded += 1
 
@@ -1093,6 +1097,7 @@ class AgentLoop:
                     result=result_model,
                     cancelled=True,
                     tool_call_id=tool_call.call_id,
+                    file_diff=self._file_diff_for(snapshot, tool_call.tool_name),
                 )
             else:
                 cancel = str(
@@ -1283,6 +1288,29 @@ class AgentLoop:
             cancelled=cancelled,
             tool_call_id=tool_call.call_id,
         )
+
+    def _file_diff_for(
+        self, snapshot: FileSnapshot | None, tool_name: str
+    ) -> FileDiff | None:
+        """Build a display-only red/green diff for a file-mutating tool.
+
+        `snapshot.content` is the pre-edit file (captured before invoke); the
+        post-edit content is read fresh here. None for non-file tools. Never
+        raises -- a diff is a display nicety and must not break the tool flow.
+        """
+        if snapshot is None:
+            return None
+        try:
+            new_bytes: bytes | None = Path(snapshot.path).read_bytes()
+        except (FileNotFoundError, IsADirectoryError, OSError):
+            new_bytes = None
+        try:
+            return build_file_diff(
+                snapshot.path, snapshot.content, new_bytes, tool_name=tool_name
+            )
+        except Exception:
+            logger.warning("Failed to build file diff for %s", snapshot.path)
+            return None
 
     async def _chat(
         self, max_tokens: int | None = None, model_override: ModelConfig | None = None

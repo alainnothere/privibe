@@ -400,6 +400,24 @@ class ToolCallEvent(BaseEvent):
     timeout: int | None = None
 
 
+class FileDiff(BaseModel):
+    """A red/green diff of a file-mutating tool's change, for display only.
+
+    Rows are (css_class, text) pairs so the widget can mount them directly.
+    kind:
+      - "diff":   `hunks` holds one list of rows per difflib hunk (already
+                  per-run cropped); the widget applies the hunk budget.
+      - "sample": one synthetic hunk (head/tail sample) for changes too large
+                  to diff; `note` unused.
+      - "binary": no rows; `note` carries the "no diff shown" message.
+    """
+
+    path: str
+    kind: str
+    hunks: list[list[tuple[str, str]]] = []
+    note: str | None = None
+
+
 class ToolResultEvent(BaseEvent):
     tool_name: str
     tool_class: type[BaseTool] | None
@@ -410,6 +428,7 @@ class ToolResultEvent(BaseEvent):
     cancelled: bool = False
     duration: float | None = None
     tool_call_id: str
+    file_diff: FileDiff | None = None
 
 
 class ToolStreamEvent(BaseEvent):
@@ -449,7 +468,6 @@ class AgentProfileChangedEvent(BaseEvent):
     """Emitted when the active agent profile changes during a turn."""
 
     agent_name: str
-
 
 
 class OutputFormat(StrEnum):

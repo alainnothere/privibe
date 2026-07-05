@@ -30,7 +30,11 @@ from privibe.core.tools.permissions import (
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import is_path_within_workdir, normalize_tool_path
 from privibe.core.types import ToolResultEvent, ToolStreamEvent
-from privibe.core.utils import is_windows
+from privibe.core.utils import (
+    DEFAULT_BASH_SEARCH_PATHS,
+    is_windows,
+    resolve_windows_bash,
+)
 
 
 @lru_cache(maxsize=1)
@@ -64,9 +68,10 @@ def _extract_commands(command: str) -> list[str]:
     return commands
 
 
-def _get_subprocess_encoding() -> str:
-    if sys.platform == "win32":
-        # Windows console uses OEM code page (e.g., cp850, cp1252)
+def _get_subprocess_encoding(windows_bash: bool = False) -> str:
+    if sys.platform == "win32" and not windows_bash:
+        # cmd.exe output uses the OEM code page (e.g., cp850, cp1252); Git
+        # Bash tools emit UTF-8.
         import ctypes
 
         return f"cp{ctypes.windll.kernel32.GetOEMCP()}"
@@ -79,19 +84,21 @@ def _get_shell_executable() -> str | None:
     return os.environ.get("SHELL")
 
 
-def _get_base_env() -> dict[str, str]:
+def _get_base_env(windows_bash: bool = False) -> dict[str, str]:
     base_env = {**os.environ, "CI": "true", "NONINTERACTIVE": "1", "NO_TTY": "1"}
 
-    if is_windows():
+    if is_windows() and not windows_bash:
         base_env["GIT_PAGER"] = "more"
         base_env["PAGER"] = "more"
     else:
         base_env["TERM"] = "dumb"
-        base_env["DEBIAN_FRONTEND"] = "noninteractive"
         base_env["GIT_PAGER"] = "cat"
         base_env["PAGER"] = "cat"
         base_env["LESS"] = "-FX"
-        base_env["LC_ALL"] = "en_US.UTF-8"
+        if not is_windows():
+            base_env["DEBIAN_FRONTEND"] = "noninteractive"
+            # Not set under Git Bash: MSYS may not ship the en_US.UTF-8 locale.
+            base_env["LC_ALL"] = "en_US.UTF-8"
 
     return base_env
 
@@ -123,54 +130,65 @@ async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
+# On Windows both backends are reachable — Git Bash when found, cmd.exe as the
+# fallback (and via `cmd //c` from inside bash) — so the default lists there
+# are the union of both worlds. Entries for the inactive backend are harmless:
+# allowlisting `cat` under cmd or denying `cmd /k` under bash never fires.
+
+
 def _get_default_allowlist() -> list[str]:
     common = ["cd", "echo", "git diff", "git log", "git status", "tree", "whoami"]
+    unix = [
+        "cat",
+        "file",
+        "head",
+        "ls",
+        "pwd",
+        "stat",
+        "tail",
+        "uname",
+        "wc",
+        "which",
+    ]
 
     if is_windows():
-        return common + ["dir", "findstr", "more", "type", "ver", "where"]
-    else:
-        return common + [
-            "cat",
-            "file",
-            "head",
-            "ls",
-            "pwd",
-            "stat",
-            "tail",
-            "uname",
-            "wc",
-            "which",
-        ]
+        return common + unix + ["dir", "findstr", "more", "type", "ver", "where"]
+    return common + unix
 
 
 def _get_default_denylist() -> list[str]:
     common = ["gdb", "pdb", "passwd"]
+    unix = [
+        "nano",
+        "vim",
+        "vi",
+        "emacs",
+        "bash -i",
+        "sh -i",
+        "zsh -i",
+        "fish -i",
+        "dash -i",
+        "screen",
+        "tmux",
+    ]
 
     if is_windows():
-        return common + ["cmd /k", "powershell -NoExit", "pwsh -NoExit", "notepad"]
-    else:
-        return common + [
-            "nano",
-            "vim",
-            "vi",
-            "emacs",
-            "bash -i",
-            "sh -i",
-            "zsh -i",
-            "fish -i",
-            "dash -i",
-            "screen",
-            "tmux",
+        return common + unix + [
+            "cmd /k",
+            "powershell -NoExit",
+            "pwsh -NoExit",
+            "notepad",
         ]
+    return common + unix
 
 
 def _get_default_denylist_standalone() -> list[str]:
     common = ["python", "python3", "ipython"]
+    unix = ["bash", "sh", "nohup", "vi", "vim", "emacs", "nano", "su"]
 
     if is_windows():
-        return common + ["cmd", "powershell", "pwsh", "notepad"]
-    else:
-        return common + ["bash", "sh", "nohup", "vi", "vim", "emacs", "nano", "su"]
+        return common + unix + ["cmd", "powershell", "pwsh", "notepad"]
+    return common + unix
 
 
 _PATH_COMMANDS = {
@@ -256,6 +274,16 @@ class BashToolConfig(BaseToolConfig):
         default=["sudo"],
         description="Command prefixes that always ASK regardless of arity approval.",
     )
+    bash_search_paths: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_BASH_SEARCH_PATHS),
+        description=(
+            "Windows only: locations checked (in order) for Git Bash. Entries "
+            "may be a bash.exe path or a Git install directory. Checked before "
+            "auto-detection (git on PATH, then `which bash`). Set to [] to "
+            "skip the static search and rely on auto-detection only; remove "
+            "the field to restore the built-in defaults."
+        ),
+    )
 
 
 class BashArgs(BaseModel):
@@ -292,8 +320,17 @@ class Bash(
     def get_status_text(cls) -> str:
         return "Running command"
 
+    def _windows_bash(self) -> str | None:
+        """Resolved Git Bash path on Windows; None on Unix or when not found."""
+        if not is_windows():
+            return None
+        return resolve_windows_bash(self.config.bash_search_paths)
+
     def resolve_permission(self, args: BashArgs) -> PermissionContext | None:  # noqa: PLR0911, PLR0912
-        if is_windows():
+        if is_windows() and self._windows_bash() is None:
+            # cmd.exe fallback: commands are cmd syntax, which the bash
+            # grammar can't parse — skip fine-grained resolution and let the
+            # blanket ASK permission apply.
             return None
 
         command_parts = _extract_commands(args.command)
@@ -437,21 +474,37 @@ class Bash(
         max_bytes = self.config.max_output_bytes
 
         proc = None
+        windows_bash = self._windows_bash()
         try:
             # start_new_session is Unix-only, on Windows it's ignored
             kwargs: dict[Literal["start_new_session"], bool] = (
                 {} if is_windows() else {"start_new_session": True}
             )
 
-            proc = await asyncio.create_subprocess_shell(
-                args.command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.DEVNULL,
-                env=_get_base_env(),
-                executable=_get_shell_executable(),
-                **kwargs,
-            )
+            if windows_bash is not None:
+                # Git Bash on Windows. exec + "-c" rather than shell mode with
+                # executable=: in shell mode on Windows Python passes `/c`,
+                # which bash does not understand.
+                proc = await asyncio.create_subprocess_exec(
+                    windows_bash,
+                    "-c",
+                    args.command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    env=_get_base_env(windows_bash=True),
+                    **kwargs,
+                )
+            else:
+                proc = await asyncio.create_subprocess_shell(
+                    args.command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    env=_get_base_env(),
+                    executable=_get_shell_executable(),
+                    **kwargs,
+                )
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -461,7 +514,7 @@ class Bash(
                 await _kill_process_tree(proc)
                 raise self._build_timeout_error(args.command, timeout)
 
-            encoding = _get_subprocess_encoding()
+            encoding = _get_subprocess_encoding(windows_bash=windows_bash is not None)
             stdout = (
                 stdout_bytes.decode(encoding, errors="replace")[:max_bytes]
                 if stdout_bytes

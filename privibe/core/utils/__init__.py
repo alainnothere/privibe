@@ -15,7 +15,11 @@ from privibe.core.utils.display import compact_reduction_display
 from privibe.core.utils.http import get_server_url_from_api_base, get_user_agent
 from privibe.core.utils.matching import name_matches
 from privibe.core.utils.paths import is_dangerous_directory
-from privibe.core.utils.platform import is_windows
+from privibe.core.utils.platform import (
+    DEFAULT_BASH_SEARCH_PATHS,
+    is_windows,
+    resolve_windows_bash,
+)
 from privibe.core.utils.retry import async_generator_retry, async_retry
 from privibe.core.utils.tags import (
     CANCELLATION_TAG,
@@ -34,6 +38,7 @@ from privibe.core.utils.time import utc_now
 __all__ = [
     "CANCELLATION_TAG",
     "CONTEXT_REFRESH_TAG",
+    "DEFAULT_BASH_SEARCH_PATHS",
     "KNOWN_TAGS",
     "TOOL_ERROR_TAG",
     "VIBE_STOP_EVENT_TAG",
@@ -52,6 +57,7 @@ __all__ = [
     "is_user_cancellation_event",
     "is_windows",
     "name_matches",
+    "resolve_windows_bash",
     "run_sync",
     "utc_now",
 ]

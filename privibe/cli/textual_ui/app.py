@@ -423,7 +423,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         self.call_after_refresh(self._refresh_banner)
         self._show_skill_load_errors()
-        self._show_model_fallback_warning()
+        await self._show_model_fallback_warning()
 
         if self._show_resume_picker:
             self.run_worker(self._show_session_picker(), exclusive=False)
@@ -1162,6 +1162,7 @@ class VibeApp(App):  # noqa: PLR0904
                     active_model_label=self._active_model_label(),
                 )
             await self._mount_and_scroll(UserCommandMessage("Configuration reloaded."))
+            await self._show_model_fallback_warning()
         except Exception as e:
             await self._mount_and_scroll(
                 ErrorMessage(
@@ -1981,22 +1982,27 @@ class VibeApp(App):  # noqa: PLR0904
                 timeout=10,
             )
 
-    def _show_model_fallback_warning(self) -> None:
+    async def _show_model_fallback_warning(self) -> None:
         config = self.config
+        print(f"DEBUG: _fallback_from_model={config._fallback_from_model}, active_model={config.active_model}")
         try:
-            active = config.get_active_model()
+            config.get_active_model()
         except ValueError:
-            self.notify(
-                f"Active model '{config.active_model}' not found and no models are configured.",
-                severity="error",
-                timeout=10,
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Active model '{config.active_model}' not found and no models are configured.",
+                    collapsed=False,
+                )
             )
             return
-        if active.alias != config.active_model:
-            self.notify(
-                f"Active model '{config.active_model}' not found, using '{active.alias}' instead.",
-                severity="warning",
-                timeout=10,
+
+        if config._fallback_from_model is not None:
+            await self._mount_and_scroll(
+                WarningMessage(
+                    f"Active model '{config._fallback_from_model}' not found or missing API key, "
+                    f"using '{config.active_model}' instead.",
+                    show_border=False,
+                )
             )
 
     async def _show_clipboard_warning(self) -> None:
