@@ -489,7 +489,10 @@ async def test_fill_missing_tool_responses_inserts_placeholders() -> None:
 async def test_parallel_tool_calls_produce_correct_events() -> None:
     """Two tool calls in one LLM response should execute in parallel and produce correct events."""
     tool_call_1 = make_todo_tool_call("call_p1", index=0)
-    tool_call_2 = make_todo_tool_call("call_p2", index=1)
+    # Distinct arguments: identical same-round calls are deduplicated.
+    tool_call_2 = make_todo_tool_call(
+        "call_p2", index=1, arguments='{"action": "write", "todos": []}'
+    )
     backend = FakeBackend([
         [
             mock_llm_chunk(
@@ -543,7 +546,10 @@ async def test_parallel_tool_calls_with_approval_callback() -> None:
         return (ApprovalResponse.YES, None)
 
     tool_call_1 = make_todo_tool_call("call_a1", index=0)
-    tool_call_2 = make_todo_tool_call("call_a2", index=1)
+    # Distinct arguments: identical same-round calls are deduplicated.
+    tool_call_2 = make_todo_tool_call(
+        "call_a2", index=1, arguments='{"action": "write", "todos": []}'
+    )
     agent_loop = make_agent_loop(
         auto_approve=False,
         todo_permission=ToolPermission.ASK,
@@ -590,7 +596,18 @@ async def test_parallel_approvals_can_run_concurrently() -> None:
         concurrency -= 1
         return (ApprovalResponse.YES, None)
 
-    tool_calls = [make_todo_tool_call(f"call_s{i}", index=i) for i in range(3)]
+    # Distinct arguments per call: identical same-round calls are deduplicated.
+    tool_calls = [
+        make_todo_tool_call(
+            f"call_s{i}",
+            index=i,
+            arguments=json.dumps({
+                "action": "write",
+                "todos": [{"id": f"todo_s{i}", "content": f"Task {i}"}],
+            }),
+        )
+        for i in range(3)
+    ]
     agent_loop = make_agent_loop(
         auto_approve=False,
         todo_permission=ToolPermission.ASK,
@@ -620,7 +637,10 @@ async def test_parallel_mixed_approval_and_rejection() -> None:
         return (ApprovalResponse.NO, "Denied by user")
 
     tc_yes = make_todo_tool_call("call_yes", index=0)
-    tc_no = make_todo_tool_call("call_no", index=1)
+    # Distinct arguments: identical same-round calls are deduplicated.
+    tc_no = make_todo_tool_call(
+        "call_no", index=1, arguments='{"action": "write", "todos": []}'
+    )
     agent_loop = make_agent_loop(
         auto_approve=False,
         todo_permission=ToolPermission.ASK,
@@ -651,7 +671,18 @@ async def test_parallel_mixed_approval_and_rejection() -> None:
 @pytest.mark.asyncio
 async def test_parallel_three_tools_all_succeed() -> None:
     """Three parallel tool calls should all complete successfully."""
-    tool_calls = [make_todo_tool_call(f"call_t{i}", index=i) for i in range(3)]
+    # Distinct arguments per call: identical same-round calls are deduplicated.
+    tool_calls = [
+        make_todo_tool_call(
+            f"call_t{i}",
+            index=i,
+            arguments=json.dumps({
+                "action": "write",
+                "todos": [{"id": f"todo_t{i}", "content": f"Task {i}"}],
+            }),
+        )
+        for i in range(3)
+    ]
     agent_loop = make_agent_loop(
         auto_approve=True,
         backend=FakeBackend([
@@ -716,8 +747,14 @@ async def test_parallel_one_tool_error_does_not_block_others() -> None:
 @pytest.mark.asyncio
 async def test_parallel_all_rejected_no_callback() -> None:
     """Parallel tools with no approval callback should all be skipped."""
+    # Distinct arguments per call: identical same-round calls are deduplicated,
+    # and this test must exercise the missing-callback rejection for both.
     tc1 = make_todo_tool_call("call_nc1", index=0)
-    tc2 = make_todo_tool_call("call_nc2", index=1)
+    tc2 = make_todo_tool_call(
+        "call_nc2",
+        index=1,
+        arguments=json.dumps({"action": "write", "todos": []}),
+    )
     agent_loop = make_agent_loop(
         auto_approve=False,
         todo_permission=ToolPermission.ASK,
@@ -750,7 +787,10 @@ async def test_parallel_all_permission_never() -> None:
         return (ApprovalResponse.YES, None)
 
     tc1 = make_todo_tool_call("call_nv1", index=0)
-    tc2 = make_todo_tool_call("call_nv2", index=1)
+    # Distinct arguments: identical same-round calls are deduplicated.
+    tc2 = make_todo_tool_call(
+        "call_nv2", index=1, arguments='{"action": "write", "todos": []}'
+    )
     agent_loop = make_agent_loop(
         auto_approve=False,
         todo_permission=ToolPermission.NEVER,
@@ -775,7 +815,18 @@ async def test_parallel_all_permission_never() -> None:
 @pytest.mark.asyncio
 async def test_parallel_tool_call_events_emitted_before_results() -> None:
     """All ToolCallEvents must appear before any ToolResultEvent in the event stream."""
-    tool_calls = [make_todo_tool_call(f"call_o{i}", index=i) for i in range(3)]
+    # Distinct arguments per call: identical same-round calls are deduplicated.
+    tool_calls = [
+        make_todo_tool_call(
+            f"call_o{i}",
+            index=i,
+            arguments=json.dumps({
+                "action": "write",
+                "todos": [{"id": f"todo_o{i}", "content": f"Task {i}"}],
+            }),
+        )
+        for i in range(3)
+    ]
     agent_loop = make_agent_loop(
         auto_approve=True,
         backend=FakeBackend([
@@ -796,7 +847,18 @@ async def test_parallel_tool_call_events_emitted_before_results() -> None:
 @pytest.mark.asyncio
 async def test_parallel_conversation_history_has_all_tool_messages() -> None:
     """All parallel tool results must appear in the conversation messages."""
-    tool_calls = [make_todo_tool_call(f"call_h{i}", index=i) for i in range(4)]
+    # Distinct arguments per call: identical same-round calls are deduplicated.
+    tool_calls = [
+        make_todo_tool_call(
+            f"call_h{i}",
+            index=i,
+            arguments=json.dumps({
+                "action": "write",
+                "todos": [{"id": f"todo_h{i}", "content": f"Task {i}"}],
+            }),
+        )
+        for i in range(4)
+    ]
     agent_loop = make_agent_loop(
         auto_approve=True,
         backend=FakeBackend([

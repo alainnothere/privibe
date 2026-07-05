@@ -1186,9 +1186,40 @@ class AgentLoop:
         the same file can never race or be applied out of order. bash counts as
         read-only here: its prompt forbids file edits and routes them to the
         dedicated tools.
+
+        Before partitioning, identical tool calls within this one batch (same
+        tool name and same arguments) are deduplicated: only the first is
+        executed, and each later duplicate gets a tool response saying it was a
+        duplicate of the executed call. Identical calls in separate assistant
+        messages are unaffected.
         """
-        readonly = [tc for tc in tool_calls if not tc.tool_class.mutates_files]
-        mutating = [tc for tc in tool_calls if tc.tool_class.mutates_files]
+        deduped: list[ResolvedToolCall] = []
+        seen: dict[tuple[str, str], str] = {}
+        for tc in tool_calls:
+            key = (tc.tool_name, json.dumps(tc.args_dict, sort_keys=True, default=str))
+            first_id = seen.get(key)
+            if first_id is None:
+                seen[key] = tc.call_id
+                deduped.append(tc)
+                continue
+            self.stats.tool_calls_rejected += 1
+            skip_reason = (
+                f"Duplicate call not executed: this {tc.tool_name} call is identical "
+                f"to another call in the same assistant message (call id '{first_id}'), "
+                "which was executed once. See that call's result. If you intended to "
+                "run the same call again, issue it in your next message."
+            )
+            yield ToolResultEvent(
+                tool_name=tc.tool_name,
+                tool_class=tc.tool_class,
+                skipped=True,
+                skip_reason=skip_reason,
+                tool_call_id=tc.call_id,
+            )
+            self._handle_tool_response(tc, skip_reason, "skipped")
+
+        readonly = [tc for tc in deduped if not tc.tool_class.mutates_files]
+        mutating = [tc for tc in deduped if tc.tool_class.mutates_files]
 
         if readonly:
             async for event in self._run_concurrent_group(readonly):

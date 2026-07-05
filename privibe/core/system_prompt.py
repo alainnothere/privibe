@@ -286,6 +286,15 @@ def _get_available_subagents_section(agent_manager: AgentManager) -> str:
     return "\n".join(lines)
 
 
+DUPLICATE_TOOL_CALL_NOTE = (
+    "### Duplicate tool calls\n"
+    "If a single assistant message contains two identical tool calls (same tool, "
+    "same arguments), only the first is executed. Each duplicate returns a notice "
+    "naming the executed call instead of a result. To run the same call twice, "
+    "issue it again in a later message."
+)
+
+
 def get_universal_system_prompt(
     tool_manager: ToolManager,
     config: VibeConfig,
@@ -315,6 +324,8 @@ def get_universal_system_prompt(
                 tool_prompts.append(prompt)
         if tool_prompts:
             sections.append("\n---\n".join(tool_prompts))
+
+        sections.append(DUPLICATE_TOOL_CALL_NOTE)
 
         skills_section = _get_available_skills_section(skill_manager)
         if skills_section:
