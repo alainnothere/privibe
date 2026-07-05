@@ -523,6 +523,8 @@ StatusMessage {
 .tool-result-content {
     width: 1fr;
     height: auto;
+    max-height: 50vh;
+    overflow-y: auto;
     padding: 0;
 }
 
@@ -571,6 +573,11 @@ StatusMessage {
 
 .tool-result-warning {
     color: ansi_yellow;
+}
+
+.tool-result-diff {
+    width: 100%;
+    height: auto;
 }
 
 .diff-header {

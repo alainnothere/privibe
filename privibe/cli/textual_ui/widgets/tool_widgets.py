@@ -21,6 +21,7 @@ from privibe.core.tools.builtins.search_replace import (
 )
 from privibe.core.tools.builtins.todo import TodoArgs, TodoResult
 from privibe.core.tools.builtins.write_file import WriteFileArgs, WriteFileResult
+from privibe.core.types import FileDiff
 
 
 def _truncate_lines(content: str, max_lines: int) -> tuple[str, str | None]:
@@ -62,6 +63,37 @@ def render_diff_line(line: str) -> Static:
         return NoMarkupStatic(line, classes="diff-range")
     else:
         return NoMarkupStatic(line, classes="diff-context")
+
+
+class FileDiffWidget(Vertical):
+    """Renders a FileDiff: one row per (css_class, text), hunks capped to a budget.
+
+    The budget (max_hunks) is the tool_result_preview_lines value, reused as a
+    hunk count. Overflow appends a "N more changes below" tail. A binary/sample
+    FileDiff renders as-is (no budget overflow for the single sample hunk).
+    """
+
+    def __init__(self, file_diff: FileDiff, max_hunks: int = 3) -> None:
+        super().__init__()
+        self.file_diff = file_diff
+        self.max_hunks = max(1, max_hunks)
+        self.add_class("tool-result-diff")
+
+    def compose(self) -> ComposeResult:
+        diff = self.file_diff
+        if diff.note:
+            yield NoMarkupStatic(diff.note, classes="diff-header")
+            return
+        shown = diff.hunks[: self.max_hunks] if diff.kind == "diff" else diff.hunks
+        for hunk in shown:
+            for css_class, text in hunk:
+                yield NoMarkupStatic(text, classes=css_class)
+        remaining = len(diff.hunks) - len(shown)
+        if remaining > 0:
+            label = "change" if remaining == 1 else "changes"
+            yield NoMarkupStatic(
+                f"{remaining} more {label} below", classes="diff-header"
+            )
 
 
 class ToolApprovalWidget[TArgs: BaseModel](Vertical):
@@ -140,7 +172,9 @@ class BashResultWidget(ToolResultWidget[BashResult]):
         if self.collapsed:
             truncation_info = None
             if self.result.stdout:
-                content, truncation_info = _truncate_lines(self.result.stdout, self.preview_lines)
+                content, truncation_info = _truncate_lines(
+                    self.result.stdout, self.preview_lines
+                )
                 yield NoMarkupStatic(content, classes="tool-result-detail")
             else:
                 yield NoMarkupStatic("(no content)", classes="tool-result-detail")
@@ -181,7 +215,9 @@ class WriteFileResultWidget(ToolResultWidget[WriteFileResult]):
         if self.collapsed:
             truncation_info = None
             if self.result.content:
-                content, truncation_info = _truncate_lines(self.result.content, self.preview_lines)
+                content, truncation_info = _truncate_lines(
+                    self.result.content, self.preview_lines
+                )
                 yield Markdown(f"```{ext}\n{content}\n```")
             yield from self._footer(truncation_info)
             return

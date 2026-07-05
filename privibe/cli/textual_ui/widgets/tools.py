@@ -10,7 +10,11 @@ from privibe.cli.textual_ui.widgets.loading import _format_elapsed
 from privibe.cli.textual_ui.widgets.messages import ExpandingBorder, NonSelectableStatic
 from privibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from privibe.cli.textual_ui.widgets.status_message import StatusMessage
-from privibe.cli.textual_ui.widgets.tool_widgets import get_result_widget
+from privibe.cli.textual_ui.widgets.tool_widgets import (
+    FileDiffWidget,
+    _truncate_lines,
+    get_result_widget,
+)
 from privibe.core.tools.ui import ToolUIDataAdapter
 from privibe.core.types import ToolCallEvent, ToolResultEvent
 
@@ -176,6 +180,21 @@ class ToolResultMessage(Static):
 
         return f"{self._tool_name} completed"
 
+    def _preview_lines(self) -> int:
+        app_config = getattr(self.app, "config", None)
+        return getattr(app_config, "tool_result_preview_lines", 3)
+
+    async def _mount_truncated(self, text: str, max_lines: int) -> None:
+        """Mount text clamped to max_lines so it can't overdraw the input area."""
+        if self._content_container is None:
+            return
+        content, truncation_info = _truncate_lines(text, max_lines)
+        await self._content_container.mount(NoMarkupStatic(content))
+        if truncation_info:
+            await self._content_container.mount(
+                NoMarkupStatic(truncation_info, classes="tool-result-hint")
+            )
+
     async def _render_result(self) -> None:
         if self._content_container is None:
             return
@@ -192,23 +211,44 @@ class ToolResultMessage(Static):
                 self.display = False
             return
 
+        preview_lines = self._preview_lines()
+
         if self._event.error:
             self.add_class("error-text")
-            await self._content_container.mount(
-                NoMarkupStatic(f"Error: {self._event.error}")
-            )
+            await self._mount_truncated(f"Error: {self._event.error}", preview_lines)
             self.display = True
             return
 
         if self._event.skipped:
             self.add_class("warning-text")
             reason = self._event.skip_reason or "User skipped"
-            await self._content_container.mount(NoMarkupStatic(f"Skipped: {reason}"))
+            await self._mount_truncated(f"Skipped: {reason}", preview_lines)
             self.display = True
             return
 
         self.remove_class("error-text")
         self.remove_class("warning-text")
+
+        # File-mutating tools render a red/green diff instead of a field dump.
+        # search_replace keeps its own diff widget for now (retiring that path is
+        # a separate, decoupled change).
+        if (
+            self._event.file_diff is not None
+            and self._event.tool_name != "search_replace"
+        ):
+            warnings: list[str] = []
+            if self._event.tool_class is not None:
+                adapter = ToolUIDataAdapter(self._event.tool_class)
+                warnings = adapter.get_result_display(self._event).warnings
+            for warning in warnings:
+                await self._content_container.mount(
+                    NoMarkupStatic(f"⚠ {warning}", classes="tool-result-warning")
+                )
+            await self._content_container.mount(
+                FileDiffWidget(self._event.file_diff, max_hunks=preview_lines)
+            )
+            self.display = True
+            return
 
         if self._event.tool_class is None:
             self.display = False
@@ -217,8 +257,6 @@ class ToolResultMessage(Static):
         adapter = ToolUIDataAdapter(self._event.tool_class)
         display = adapter.get_result_display(self._event)
 
-        app_config = getattr(self.app, "config", None)
-        preview_lines = getattr(app_config, "tool_result_preview_lines", 3)
         widget = get_result_widget(
             self._event.tool_name,
             self._event.result,

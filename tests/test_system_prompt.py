@@ -25,6 +25,10 @@ def test_get_universal_system_prompt_includes_windows_prompt_on_windows(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
+    # No Git Bash found: the cmd.exe fallback rules must apply.
+    monkeypatch.setattr(
+        "privibe.core.system_prompt.resolve_windows_bash", lambda paths=None: None
+    )
 
     config = build_test_vibe_config(
         system_prompt_id="tests",
@@ -46,11 +50,46 @@ def test_get_universal_system_prompt_includes_windows_prompt_on_windows(
         "The operating system is Windows with shell `C:\\Windows\\System32\\cmd.exe`"
         in prompt
     )
-    assert "DO NOT use Unix commands like `ls`, `grep`, `cat`" in prompt
+    assert "executes commands via `cmd.exe`" in prompt
+    assert "DO NOT rely on Unix commands like `ls`, `grep`, `cat`" in prompt
     assert "Use: `dir` (Windows) for directory listings" in prompt
     assert "Use: backslashes (\\\\) for paths" in prompt
     assert "Check command availability with: `where command` (Windows)" in prompt
     assert "Script shebang: Not applicable on Windows" in prompt
+
+
+def test_get_universal_system_prompt_reports_git_bash_when_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bash_path = "C:\\Program Files\\Git\\bin\\bash.exe"
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
+    monkeypatch.setattr(
+        "privibe.core.system_prompt.resolve_windows_bash",
+        lambda paths=None: bash_path,
+    )
+
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+    )
+    tool_manager = ToolManager(lambda: config)
+    skill_manager = SkillManager(lambda: config)
+    agent_manager = AgentManager(lambda: config)
+
+    prompt = get_universal_system_prompt(
+        tool_manager, config, skill_manager, agent_manager
+    )
+
+    assert f"The operating system is Windows with shell `{bash_path}`" in prompt
+    assert "SHELL NOTES (Git Bash)" in prompt
+    assert "cmd //c <command>" in prompt
+    assert "powershell.exe -Command <command>" in prompt
+    # The cmd.exe fallback rules must NOT appear when Git Bash is active.
+    assert "COMMAND COMPATIBILITY RULES" not in prompt
 
 
 # --- stable_system_prefix --------------------------------------------------
