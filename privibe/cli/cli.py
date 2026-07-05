@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+from typing import Any
 
 from rich import print as rprint
 import tomli_w
@@ -63,15 +64,40 @@ def get_prompt_from_stdin() -> str | None:
     return None
 
 
-def load_config_or_exit() -> VibeConfig:
+def load_config_or_exit(**overrides: Any) -> VibeConfig:
     try:
-        return VibeConfig.load()
+        return VibeConfig.load(**overrides)
     except MissingPromptFileError as e:
         rprint(f"[yellow]Invalid system prompt id: {e}[/]")
         sys.exit(1)
     except ValueError as e:
         rprint(f"[yellow]{e}[/]")
         sys.exit(1)
+
+
+def validate_model_override(config: VibeConfig, alias: str) -> str | None:
+    """Check that a --model override was honored by config loading.
+
+    Returns an error message when the alias is unknown or was rejected
+    at load time because its provider API key is missing (VibeConfig
+    silently falls back to another model in that case). Returns None
+    when the override is in effect.
+    """
+    matched = next((m for m in config.models if m.alias == alias), None)
+    if matched is None:
+        available = ", ".join(m.alias for m in config.models)
+        return (
+            f"Error: Unknown model alias '{alias}'. "
+            f"Available models: {available}"
+        )
+    if config.active_model != alias:
+        status = config._is_environment_variable_set_for_model(matched)
+        return (
+            f"Error: Model '{alias}' is not usable: environment variable "
+            f"{status.env_var_name} for provider '{status.provider_name}' "
+            f"is not set."
+        )
+    return None
 
 
 def bootstrap_config_files() -> None:
@@ -217,7 +243,11 @@ def run_cli(args: argparse.Namespace) -> None:
 
     try:
         initial_agent_name = get_initial_agent_name(args)
-        config = load_config_or_exit()
+        config_overrides = {"active_model": args.model} if getattr(args, "model", None) else {}
+        config = load_config_or_exit(**config_overrides)
+        if args.model and (error := validate_model_override(config, args.model)):
+            print(error, file=sys.stderr)
+            sys.exit(1)
 
         if args.enabled_tools:
             config.enabled_tools = args.enabled_tools
