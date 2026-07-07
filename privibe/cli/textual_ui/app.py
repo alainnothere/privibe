@@ -94,7 +94,7 @@ from privibe.core.config import (
     cycle_preview_lines,
 )
 from privibe.core.config.harness_files._harness_manager import get_harness_files_manager
-from privibe.core.logger import logger
+from privibe.core.logger import logger, stderr_logging_suspended
 from privibe.core.paths import AGENTS_MD_FILENAME, HISTORY_FILE, VIBE_HOME
 from privibe.core.rewind import RewindError
 from privibe.core.session.resume_sessions import (
@@ -2260,5 +2260,6 @@ def run_textual_ui(
     agent_loop: AgentLoop, startup: StartupOptions | None = None
 ) -> None:
     app = VibeApp(agent_loop=agent_loop, startup=startup)
-    session_id = app.run()
+    with stderr_logging_suspended():
+        session_id = app.run()
     print_session_resume_message(session_id, agent_loop.stats)

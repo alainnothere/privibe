@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -8,7 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from privibe.core.logger import StructuredLogFormatter, apply_logging_config
+import privibe.core.logger as logmod
+from privibe.core.logger import (
+    StructuredLogFormatter,
+    apply_logging_config,
+    stderr_logging_suspended,
+)
 
 
 @pytest.fixture
@@ -280,3 +286,79 @@ class TestApplyLoggingConfig:
             h for h in test_logger.handlers if isinstance(h, RotatingFileHandler)
         )
         assert handler.maxBytes == 5242880
+
+
+class TestStderrLoggingSuspended:
+    """The context manager that hides the stderr handler while the TUI runs.
+
+    Guards the fix for the bug where a failed tool's traceback (logged via
+    logger.exception at ERROR level) was written straight to the terminal by the
+    stderr handler, painting over the Textual UI. run_textual_ui wraps app.run()
+    in stderr_logging_suspended() so no log line can overdraw the screen.
+    """
+
+    def test_detaches_and_restores_stderr_handler(self) -> None:
+        handler = logmod._stderr_handler
+        assert handler is not None
+        assert handler in logmod.logger.handlers
+
+        with stderr_logging_suspended():
+            assert handler not in logmod.logger.handlers
+
+        assert handler in logmod.logger.handlers
+
+    def test_restores_stderr_handler_on_exception(self) -> None:
+        handler = logmod._stderr_handler
+        assert handler is not None
+
+        with pytest.raises(RuntimeError):
+            with stderr_logging_suspended():
+                raise RuntimeError("boom")
+
+        assert handler in logmod.logger.handlers
+
+    def test_no_stderr_write_while_suspended_file_still_logs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stderr_handler = logmod._stderr_handler
+        assert stderr_handler is not None
+        file_handler = next(
+            h for h in logmod.logger.handlers if isinstance(h, RotatingFileHandler)
+        )
+        # Redirect both handlers to in-memory buffers so the assertions don't
+        # depend on (or pollute) the real terminal or log file.
+        stderr_buf = io.StringIO()
+        file_buf = io.StringIO()
+        monkeypatch.setattr(stderr_handler, "stream", stderr_buf)
+        monkeypatch.setattr(file_handler, "stream", file_buf)
+
+        logmod.logger.warning("before-suspend")
+        with stderr_logging_suspended():
+            logmod.logger.warning("during-suspend")
+        logmod.logger.warning("after-suspend")
+
+        stderr_out = stderr_buf.getvalue()
+        assert "before-suspend" in stderr_out
+        assert "during-suspend" not in stderr_out  # the leak this fix prevents
+        assert "after-suspend" in stderr_out
+
+        # The file handler is identified by reference, not type, so it keeps
+        # capturing everything even while stderr is suspended.
+        assert "during-suspend" in file_buf.getvalue()
+
+    def test_noop_when_handler_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(logmod, "_stderr_handler", None)
+        with stderr_logging_suspended():
+            pass  # must not raise
+
+    def test_noop_does_not_readd_detached_handler(self) -> None:
+        handler = logmod._stderr_handler
+        assert handler is not None
+        logmod.logger.removeHandler(handler)
+        try:
+            with stderr_logging_suspended():
+                assert handler not in logmod.logger.handlers
+            # Was already detached going in, so it must not be spuriously re-added.
+            assert handler not in logmod.logger.handlers
+        finally:
+            logmod.logger.addHandler(handler)
