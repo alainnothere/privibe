@@ -13,7 +13,6 @@ from privibe.core.config.harness_files import get_harness_files_manager
 from privibe.core.paths import VIBE_HOME
 from privibe.core.paths.dialect import dialect_hint
 from privibe.core.prompts import UtilityPrompt
-from privibe.core.types import LLMMessage, Role
 from privibe.core.utils import (
     CONTEXT_REFRESH_TAG,
     is_dangerous_directory,
@@ -192,9 +191,7 @@ def _get_default_shell(config: VibeConfig | None = None) -> str:
     return os.environ.get("SHELL", "sh")
 
 
-def _get_os_system_prompt(
-    include_datetime: bool = True, config: VibeConfig | None = None
-) -> str:
+def _get_os_system_prompt(config: VibeConfig | None = None) -> str:
     shell = _get_default_shell(config)
     platform_name = _get_platform_name()
     prompt = f"The operating system is {platform_name} with shell `{shell}`"
@@ -206,12 +203,11 @@ def _get_os_system_prompt(
     if (hint := dialect_hint()) is not None:
         prompt += "\n" + hint
 
-    # When stable_system_prefix is on, the (volatile) datetime is emitted in a
-    # separate injected message instead, so it doesn't invalidate the cached
-    # system prefix. See build_context_refresh_content / get_universal_system_prompt.
-    if include_datetime:
-        now = datetime.now().strftime("%B %d, %Y %I:%M %p")
-        prompt += f"\nThe current date and time is {now} (local time)"
+    # The datetime is rendered ONCE, at session creation, and becomes a fixed
+    # historical fact of the session: message 0 is never regenerated. Fresh
+    # datetimes reach the model via the context_refresh tail message on resume.
+    now = datetime.now().strftime("%B %d, %Y %I:%M %p")
+    prompt += f"\nThe current date and time is {now} (local time)"
 
     return prompt
 
@@ -301,11 +297,10 @@ def get_universal_system_prompt(
     skill_manager: SkillManager,
     agent_manager: AgentManager,
 ) -> str:
-    # When on, volatile context (datetime + project git/tree) is kept out of the
-    # system prompt and sent as a separate injected message, so the static prompt
-    # stays a stable, KV-cacheable prefix.
-    stable_prefix = config.stable_system_prefix
-
+    """Build the system prompt. Called exactly once per session, at AgentLoop
+    construction. The result is frozen for the life of the session: it is the
+    llama.cpp KV-cache prefix, and nothing may regenerate or edit it.
+    """
     sections = [config.system_prompt]
 
     if config.include_commit_signature:
@@ -315,9 +310,7 @@ def get_universal_system_prompt(
         sections.append(f"Your model name is: `{config.active_model}`")
 
     if config.include_prompt_detail:
-        sections.append(
-            _get_os_system_prompt(include_datetime=not stable_prefix, config=config)
-        )
+        sections.append(_get_os_system_prompt(config=config))
         tool_prompts = []
         for tool_class in tool_manager.available_tools.values():
             if prompt := tool_class.get_tool_prompt():
@@ -344,47 +337,55 @@ def get_universal_system_prompt(
                 reason=reason.lower(), abs_path=Path(".").resolve()
             )
             sections.append(context)
-        elif not stable_prefix:
-            # In stable-prefix mode the project context (git status + tree) is
-            # volatile and is emitted in the injected context message instead.
+        else:
             context = ProjectContextProvider(
                 config=config.project_context, root_path=Path.cwd()
             ).get_full_context()
             sections.append(context)
 
-        mgr = get_harness_files_manager()
-        user_doc = mgr.load_user_doc()
-        project_docs = mgr.load_project_docs()
-        extra_docs = mgr.load_extra_instruction_files(config.extra_instruction_files)
-
-        doc_sections: list[str] = []
-        if user_doc.strip():
-            doc_sections.append(
-                f"## User instructions\n\nContents of {VIBE_HOME.path}/AGENTS.md (user-level instructions):\n\n{user_doc.strip()}"
-            )
-        if project_docs or extra_docs:
-            doc_sections.append("## Project instructions (checked into the codebase)")
-        for doc_dir, doc_content in project_docs:
-            doc_sections.append(
-                f"Contents of {doc_dir}/AGENTS.md:\n\n{doc_content.strip()}"
-            )
-        for extra_path, extra_content in extra_docs:
-            doc_sections.append(
-                f"Contents of {extra_path}:\n\n{extra_content}"
-            )
-        if doc_sections:
-            template = UtilityPrompt.AGENTS_DOC.read()
-            sections.append(
-                Template(template).safe_substitute(sections="\n\n".join(doc_sections))
-            )
+        if docs_section := _get_agents_docs_section(config):
+            sections.append(docs_section)
 
     return "\n\n".join(sections)
 
 
+def _get_agents_docs_section(config: VibeConfig) -> str | None:
+    mgr = get_harness_files_manager()
+    user_doc = mgr.load_user_doc()
+    project_docs = mgr.load_project_docs()
+    extra_docs = mgr.load_extra_instruction_files(config.extra_instruction_files)
+
+    doc_sections: list[str] = []
+    if user_doc.strip():
+        doc_sections.append(
+            f"## User instructions\n\nContents of {VIBE_HOME.path}/AGENTS.md (user-level instructions):\n\n{user_doc.strip()}"
+        )
+    if project_docs or extra_docs:
+        doc_sections.append("## Project instructions (checked into the codebase)")
+    for doc_dir, doc_content in project_docs:
+        doc_sections.append(
+            f"Contents of {doc_dir}/AGENTS.md:\n\n{doc_content.strip()}"
+        )
+    for extra_path, extra_content in extra_docs:
+        doc_sections.append(
+            f"Contents of {extra_path}:\n\n{extra_content}"
+        )
+    if not doc_sections:
+        return None
+    template = UtilityPrompt.AGENTS_DOC.read()
+    return Template(template).safe_substitute(sections="\n\n".join(doc_sections))
+
+
 def build_context_refresh_content(config: VibeConfig, resumed: bool = True) -> str:
+    """Volatile facts delivered as a tail message on resume. This is the ONLY
+    place fresh datetime / model / project state reaches an existing
+    conversation; the prefix (message 0 and history) is never rewritten.
+    """
     now = datetime.now().strftime("%B %d, %Y %I:%M %p")
     lead = "Session resumed. " if resumed else ""
     lines = [f"{lead}The current date and time is {now} (local time)."]
+    if config.include_model_info:
+        lines.append(f"The active model is: `{config.active_model}`")
     if config.include_project_context:
         is_dangerous, _ = is_dangerous_directory()
         if not is_dangerous:
@@ -394,14 +395,3 @@ def build_context_refresh_content(config: VibeConfig, resumed: bool = True) -> s
             lines.append(context)
     content = "\n\n".join(lines)
     return f"<{CONTEXT_REFRESH_TAG}>{content}</{CONTEXT_REFRESH_TAG}>"
-
-
-def prepare_messages_for_resume(
-    non_system_messages: list[LLMMessage], config: VibeConfig
-) -> list[LLMMessage]:
-    result = list(non_system_messages)
-    if result and f"<{CONTEXT_REFRESH_TAG}>" in (result[-1].content or ""):
-        result.pop()
-    content = build_context_refresh_content(config)
-    result.append(LLMMessage(role=Role.user, content=content, injected=True))
-    return result

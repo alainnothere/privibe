@@ -85,6 +85,28 @@ class AgentProfile:
 
 CHAT_AGENT_TOOLS = ["grep", "read_file", "hashed_read", "find_symbol", "ask_user_question", "task"]
 
+# Tools that can change files or run arbitrary commands. Profiles restrict
+# these via per-tool permissions, never by shrinking the advertised tool set:
+# the tools array is part of the llama.cpp KV-cache prefix and must stay
+# byte-identical for the life of a session.
+MUTATING_TOOLS = [
+    "write_file",
+    "search_replace",
+    "hashed_replace_line",
+    "hashed_replace_block",
+    "hashed_delete_line",
+    "hashed_delete_block",
+    "restore_file",
+    "bash",
+]
+
+
+def _chat_overrides() -> dict[str, Any]:
+    return {
+        "auto_approve": True,
+        "tools": {name: {"permission": "never"} for name in MUTATING_TOOLS},
+    }
+
 
 def _plan_overrides() -> dict[str, Any]:
     plans_pattern = str(PLANS_DIR.path / "*")
@@ -106,7 +128,6 @@ DEFAULT = AgentProfile(
     "Default",
     "Requires approval for tool executions",
     AgentSafety.NEUTRAL,
-    overrides={"base_disabled": ["exit_plan_mode"]},
 )
 PLAN = AgentProfile(
     BuiltinAgentName.PLAN,
@@ -120,7 +141,7 @@ CHAT = AgentProfile(
     "Chat",
     "Read-only conversational mode for questions and discussions",
     AgentSafety.SAFE,
-    overrides={"auto_approve": True, "enabled_tools": CHAT_AGENT_TOOLS},
+    overrides=_chat_overrides(),
 )
 ACCEPT_EDITS = AgentProfile(
     BuiltinAgentName.ACCEPT_EDITS,
@@ -128,7 +149,6 @@ ACCEPT_EDITS = AgentProfile(
     "Auto-approves file edits only",
     AgentSafety.DESTRUCTIVE,
     overrides={
-        "base_disabled": ["exit_plan_mode"],
         "tools": {
             "write_file": {"permission": "always"},
             "search_replace": {"permission": "always"},
@@ -145,7 +165,7 @@ AUTO_APPROVE = AgentProfile(
     "Auto Approve",
     "Auto-approves all tool executions",
     AgentSafety.YOLO,
-    overrides={"auto_approve": True, "base_disabled": ["exit_plan_mode"]},
+    overrides={"auto_approve": True},
 )
 
 EXPLORE = AgentProfile(

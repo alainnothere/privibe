@@ -536,11 +536,12 @@ class VibeConfig(BaseSettings):
     include_model_info: bool = True
     include_project_context: bool = True
     include_prompt_detail: bool = True
-    # Experimental: keep the volatile datetime + project context (git/tree) OUT
-    # of the system prompt and send them as a separate first injected message, so
-    # the large static system prompt stays a stable prefix the server can keep
-    # KV-cached across sessions. Opt-in; default off preserves current behavior.
-    stable_system_prefix: bool = False
+    # `stable_system_prefix` was removed in 0.1.0: it moved the volatile
+    # datetime into an injected user message that request-time merging fused
+    # into the first user message, so it never left the llama.cpp cache-key
+    # span. The system prompt is now generated once per session and frozen;
+    # resume restores it byte-for-byte and delivers fresh context at the tail.
+    # Old configs with this key still load (extra="ignore" on the model).
     enable_notifications: bool = True
     api_timeout: float = 720.0
     auto_compact_threshold: int = 200_000

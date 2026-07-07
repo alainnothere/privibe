@@ -162,7 +162,7 @@ class TestLoadSession:
         session = acp_agent.sessions[session_id]
 
         non_system = [m for m in session.agent_loop.messages if m.role != Role.system]
-        # prepare_messages_for_resume appends one injected context_refresh user message
+        # restore() appends one injected context_refresh user message at the tail
         assert len(non_system) == 5
 
     @pytest.mark.asyncio

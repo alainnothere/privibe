@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 import getpass
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -29,6 +31,14 @@ if TYPE_CHECKING:
 
 TMP_CLEANUP_INTERVAL = timedelta(seconds=5)
 
+# Bounded retry for os.replace on Windows: antivirus / indexers briefly hold
+# freshly written files open, which turns the rename into a transient
+# PermissionError (WinError 5). Exhausting the retries still raises.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF_S = 0.1
+
+logger = logging.getLogger(__name__)
+
 
 class SessionLogger:
     def __init__(self, session_config: SessionLoggingConfig, session_id: str) -> None:
@@ -36,6 +46,11 @@ class SessionLogger:
         self.enabled = session_config.enabled
         self._last_tmp_cleanup_at: datetime | None = None
         self._tmp_cleanup_lock = Lock()
+        # Serializes save_interaction bodies. Two overlapping saves (e.g. an
+        # end-of-turn save racing a mode-switch save) would interleave their
+        # read-modify-replace cycles on meta.json; on Windows a reader holding
+        # the file open makes the other writer's os.replace fail (WinError 5).
+        self._save_lock = asyncio.Lock()
 
         if not self.enabled:
             self.save_dir: Path | None = None
@@ -155,6 +170,32 @@ class SessionLogger:
         return title
 
     @staticmethod
+    async def _replace_with_retry(src: Path, dest: str) -> None:
+        """os.replace with a bounded backoff retry on PermissionError.
+
+        On Windows, AV scanners and indexers briefly hold freshly written
+        files open, failing the rename with WinError 5. A short retry rides
+        that out; exhausting the attempts re-raises the last error.
+        """
+        for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+            try:
+                os.replace(src, dest)
+                return
+            except PermissionError:
+                if attempt == _REPLACE_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "os.replace(%s -> %s) hit PermissionError (attempt %d/%d); "
+                    "retrying in %.1fs",
+                    src,
+                    dest,
+                    attempt,
+                    _REPLACE_ATTEMPTS,
+                    _REPLACE_BACKOFF_S,
+                )
+                await asyncio.sleep(_REPLACE_BACKOFF_S)
+
+    @staticmethod
     async def persist_metadata(metadata: Any, session_dir: Path) -> None:
         temp_metadata_filepath = None
         metadata_filepath = session_dir / METADATA_FILENAME
@@ -171,7 +212,9 @@ class SessionLogger:
                 await f.flush()
                 os.fsync(f.wrapped.fileno())
 
-            os.replace(temp_metadata_filepath, str(metadata_filepath))
+            await SessionLogger._replace_with_retry(
+                temp_metadata_filepath, str(metadata_filepath)
+            )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to persist session metadata to {metadata_filepath}: {e}"
@@ -203,6 +246,24 @@ class SessionLogger:
                 f"Failed to persist session messages to {messages_filepath}: {e}"
             ) from e
 
+    def _count_persisted_messages(self) -> int:
+        """Number of messages already durably written to messages.jsonl.
+
+        The jsonl file is the source of truth for what is persisted. Trusting
+        meta.json's total_messages instead re-appends (duplicates) messages
+        after a crash that landed between the two writes: persist_messages
+        succeeds first, then persist_metadata fails, leaving meta.json one or
+        more messages behind the jsonl.
+        """
+        if not self.messages_filepath.exists():
+            return 0
+        count = 0
+        with self.messages_filepath.open("rb") as f:
+            for line in f:
+                if line.strip():
+                    count += 1
+        return count
+
     async def save_interaction(
         self,
         messages: Sequence[LLMMessage],
@@ -220,6 +281,19 @@ class SessionLogger:
         if not any(msg.role != Role.system for msg in messages):
             return
 
+        async with self._save_lock:
+            await self._save_interaction_locked(
+                messages, stats, base_config, tool_manager, agent_profile
+            )
+
+    async def _save_interaction_locked(
+        self,
+        messages: Sequence[LLMMessage],
+        stats: AgentStats,
+        base_config: VibeConfig,
+        tool_manager: ToolManager,
+        agent_profile: AgentProfile,
+    ) -> None:
         # If the session directory does not exist, create it
         try:
             self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -228,14 +302,35 @@ class SessionLogger:
                 f"Failed to create session directory at {self.session_dir}: {type(e).__name__}: {e}"
             ) from e
 
-        # Read old metadata and get total_messages
+        # The jsonl line count decides what still needs appending; meta.json's
+        # total_messages is only compared against it to surface divergence
+        # left behind by a crash between the two writes.
+        try:
+            old_total_messages = self._count_persisted_messages()
+        except OSError as e:
+            raise RuntimeError(
+                f"Failed to read session messages at {self.messages_filepath}: {e}"
+            ) from e
+
+        needs_meta_reconcile = False
         try:
             if self.metadata_filepath.exists():
                 raw = await read_safe_async(self.metadata_filepath)
                 old_metadata = json.loads(raw)
-                old_total_messages = old_metadata["total_messages"]
-            else:
-                old_total_messages = 0
+                meta_total = old_metadata.get("total_messages")
+                if meta_total is not None and meta_total != old_total_messages:
+                    needs_meta_reconcile = True
+                    logger.warning(
+                        "Session %s: meta.json says %s persisted messages but "
+                        "messages.jsonl holds %d (a previous save was likely "
+                        "interrupted). Using the jsonl count; meta.json will "
+                        "be reconciled by this save.",
+                        self.session_id,
+                        meta_total,
+                        old_total_messages,
+                    )
+        except RuntimeError:
+            raise
         except Exception as e:
             raise RuntimeError(
                 f"Failed to read session metadata at {self.metadata_filepath}: {e}"
@@ -246,7 +341,7 @@ class SessionLogger:
             # Append new messages
             new_messages = non_system_messages[old_total_messages:]
 
-            if len(new_messages) == 0:
+            if len(new_messages) == 0 and not needs_meta_reconcile:
                 return
 
             messages_data = [m.model_dump(exclude_none=True) for m in new_messages]

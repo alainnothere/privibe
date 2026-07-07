@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+import logging
 import os
 from pathlib import Path
 import sys
@@ -129,6 +130,8 @@ from privibe.core.utils import (
     ConversationLimitException,
     get_user_cancellation_message,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _resolved_user_message_id(client_message_id: str | None) -> str:
@@ -590,7 +593,11 @@ class VibeAcpAgentLoop(AcpAgent):
             disabled_tools=["ask_user_question"],
         )
 
-        await session.agent_loop.reload_with_initial_messages(base_config=new_config)
+        # Swap the backend/pricing only. The conversation (message 0 included)
+        # is frozen for the session; the model swap notice, if any, is logged.
+        notice = await session.agent_loop.apply_runtime_config(base_config=new_config)
+        if notice:
+            logger.info("Model change: %s", notice)
 
         return True
 

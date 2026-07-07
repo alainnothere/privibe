@@ -109,7 +109,9 @@ class AgentManager:
         for base in self._search_paths:
             if not base.is_dir():
                 continue
-            for agent_file in base.glob("*.toml"):
+            # Sorted so the "Available Subagents" system-prompt section is
+            # byte-identical across processes given the same files.
+            for agent_file in sorted(base.glob("*.toml")):
                 if not agent_file.is_file():
                     continue
                 if (agent := self._try_load_agent(agent_file)) is not None:

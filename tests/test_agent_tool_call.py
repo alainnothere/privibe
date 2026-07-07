@@ -252,7 +252,7 @@ async def test_tool_call_skipped_when_permission_is_never() -> None:
     assert events[3].error is None
     assert events[3].result is None
     assert events[3].skip_reason is not None
-    assert "permanently disabled" in events[3].skip_reason.lower()
+    assert "not allowed in this mode" in events[3].skip_reason.lower()
     tool_msgs = [
         m for m in agent_loop.messages if m.role == Role.tool and m.name == "todo"
     ]
@@ -808,7 +808,7 @@ async def test_parallel_all_permission_never() -> None:
     assert len(tool_results) == 2
     for tool_result in tool_results:
         assert tool_result.skipped is True
-        assert "permanently disabled" in (tool_result.skip_reason or "").lower()
+        assert "not allowed in this mode" in (tool_result.skip_reason or "").lower()
     assert agent_loop.stats.tool_calls_rejected == 2
 
 

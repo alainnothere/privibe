@@ -198,7 +198,7 @@ class TestACPSetModel:
         )
 
     @pytest.mark.asyncio
-    async def test_set_model_calls_reload_with_initial_messages(
+    async def test_set_model_calls_apply_runtime_config(
         self, acp_agent_loop: VibeAcpAgentLoop
     ) -> None:
         session_response = await acp_agent_loop.new_session(
@@ -211,7 +211,7 @@ class TestACPSetModel:
         assert acp_session is not None
 
         with patch.object(
-            acp_session.agent_loop, "reload_with_initial_messages"
+            acp_session.agent_loop, "apply_runtime_config"
         ) as mock_reload:
             response = await acp_agent_loop.set_session_model(
                 session_id=session_id, model_id="devstral-small"

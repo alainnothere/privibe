@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from abc import ABC
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable
 import copy
 from enum import StrEnum, auto
-from typing import TYPE_CHECKING, Annotated, Any, Literal, overload
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -208,7 +207,11 @@ class ApprovalResponse(StrEnum):
 
 
 class LLMMessage(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # frozen: once a message exists it is immutable. Stored conversation
+    # messages are the llama.cpp KV-cache prefix; in-place edits would
+    # silently rewrite already-processed tokens. Transformations must build
+    # new messages (model_copy(update=...) / __add__).
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     role: Role
     content: Content | None = None
@@ -487,77 +490,10 @@ type UserInputCallback = Callable[[BaseModel], Awaitable[BaseModel]]
 type SwitchAgentCallback = Callable[[str], Awaitable[None]]
 
 
-class MessageList(Sequence[LLMMessage]):
-    def __init__(
-        self,
-        initial: list[LLMMessage] | None = None,
-        observer: Callable[[LLMMessage], None] | None = None,
-    ) -> None:
-        self._data: list[LLMMessage] = list(initial) if initial else []
-        self._observer = observer
-        self._reset_hooks: list[Callable[[], None]] = []
-        self._silent = False
-        if self._observer:
-            for msg in self._data:
-                self._observer(msg)
-
-    def _notify(self, msg: LLMMessage) -> None:
-        if not self._silent and self._observer is not None:
-            self._observer(msg)
-
-    def append(self, msg: LLMMessage) -> None:
-        self._data.append(msg)
-        self._notify(msg)
-
-    def insert(self, i: int, msg: LLMMessage) -> None:
-        self._data.insert(i, msg)
-
-    def extend(self, msgs: list[LLMMessage]) -> None:
-        for msg in msgs:
-            self.append(msg)
-
-    def on_reset(self, hook: Callable[[], None]) -> None:
-        """Register a callback that fires whenever the list is reset."""
-        self._reset_hooks.append(hook)
-
-    def reset(self, new: list[LLMMessage]) -> None:
-        """Replace contents silently (never notifies)."""
-        self._data = list(new)
-        for hook in self._reset_hooks:
-            hook()
-
-    def update_system_prompt(self, new: str) -> None:
-        """Update the system prompt in place."""
-        self._data[0] = LLMMessage(role=Role.system, content=new)
-
-    @contextmanager
-    def silent(self) -> Iterator[None]:
-        """Context manager that suppresses notifications."""
-        prev = self._silent
-        self._silent = True
-        try:
-            yield
-        finally:
-            self._silent = prev
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    @overload
-    def __getitem__(self, index: int) -> LLMMessage: ...
-    @overload
-    def __getitem__(self, index: slice) -> list[LLMMessage]: ...
-    def __getitem__(self, index: int | slice) -> LLMMessage | list[LLMMessage]:
-        return self._data[index]
-
-    def __iter__(self) -> Iterator[LLMMessage]:
-        return iter(self._data)
-
-    def __contains__(self, item: object) -> bool:
-        return item in self._data
-
-    def __bool__(self) -> bool:
-        return bool(self._data)
+# The old MessageList class (insert / reset / update_system_prompt) was
+# deleted: those operations can rewrite already-stored messages, which are
+# the llama.cpp KV-cache prefix. The only conversation container is
+# privibe.core.conversation.ConversationList (append / tail-cut / restore).
 
 
 class RateLimitError(Exception):

@@ -16,7 +16,8 @@ from privibe.core.middleware import (
     ResetReason,
     make_plan_agent_reminder,
 )
-from privibe.core.types import AgentStats, MessageList
+from privibe.core.conversation import ConversationList
+from privibe.core.types import AgentStats
 
 REMINDER = "test reminder"
 EXIT_MSG = "test exit"
@@ -35,7 +36,7 @@ def _build_middleware(
 @pytest.fixture
 def ctx(vibe_config: VibeConfig) -> ConversationContext:
     return ConversationContext(
-        messages=MessageList(), stats=AgentStats(), config=vibe_config
+        messages=ConversationList(), stats=AgentStats(), config=vibe_config
     )
 
 

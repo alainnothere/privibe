@@ -115,7 +115,10 @@ class ToolManager:
                     for tool in tools:
                         yield tool
 
-            for path in base.rglob("*.py"):
+            # Sorted so the tool order (and with it the tools array sent to
+            # the model, part of the KV-cache prefix) is identical across
+            # processes and machines given the same files.
+            for path in sorted(base.rglob("*.py")):
                 if tools := ToolManager._load_tools_from_file(path):
                     for tool in tools:
                         yield tool
