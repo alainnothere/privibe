@@ -4,13 +4,6 @@ from collections.abc import Callable
 
 import pytest
 
-from tests.conftest import (
-    build_test_agent_loop,
-    build_test_vibe_config,
-    make_test_models,
-)
-from tests.mock.utils import mock_llm_chunk
-from tests.stubs.fake_backend import FakeBackend
 from privibe.core.agents.models import BuiltinAgentName
 from privibe.core.config import (
     ModelConfig,
@@ -30,6 +23,13 @@ from privibe.core.types import (
     ToolCall,
     UserMessageEvent,
 )
+from tests.conftest import (
+    build_test_agent_loop,
+    build_test_vibe_config,
+    make_test_models,
+)
+from tests.mock.utils import mock_llm_chunk
+from tests.stubs.fake_backend import FakeBackend
 
 
 def make_config(
@@ -176,7 +176,7 @@ class TestReloadPreservesStats:
         assert old_session_prompt > 0
         assert old_session_completion > 0
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
 
         assert agent.stats.session_prompt_tokens == old_session_prompt
         assert agent.stats.session_completion_tokens == old_session_completion
@@ -209,7 +209,7 @@ class TestReloadPreservesStats:
         assert agent.stats.tool_calls_succeeded == 1
         assert agent.stats.tool_calls_agreed == 1
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
 
         assert agent.stats.tool_calls_succeeded == 1
         assert agent.stats.tool_calls_agreed == 1
@@ -230,7 +230,7 @@ class TestReloadPreservesStats:
         old_steps = agent.stats.steps
         assert old_steps >= 2
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
 
         assert agent.stats.steps == old_steps
 
@@ -245,7 +245,7 @@ class TestReloadPreservesStats:
         initial_context_tokens = agent.stats.context_tokens
         assert len(agent.messages) > 1
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
 
         assert len(agent.messages) > 1
         assert agent.stats.context_tokens == initial_context_tokens
@@ -257,7 +257,7 @@ class TestReloadPreservesStats:
         assert len(agent.messages) == 1
         assert agent.stats.context_tokens == 0
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
 
         assert len(agent.messages) == 1
         assert agent.stats.context_tokens == 0
@@ -275,7 +275,7 @@ class TestReloadPreservesStats:
         assert original_context_tokens > 0
         assert len(agent.messages) > 1
 
-        await agent.reload_with_initial_messages(base_config=config2)
+        await agent.apply_runtime_config(base_config=config2)
 
         assert len(agent.messages) > 1
         assert agent.stats.context_tokens == original_context_tokens
@@ -295,7 +295,7 @@ class TestReloadPreservesStats:
         assert agent.stats.output_price_per_million == 2.0
 
         config_other = make_config(active_model="strawberry")
-        await agent.reload_with_initial_messages(base_config=config_other)
+        await agent.apply_runtime_config(base_config=config_other)
 
         assert agent.stats.input_price_per_million == 2.5
         assert agent.stats.output_price_per_million == 10.0
@@ -319,7 +319,7 @@ class TestReloadPreservesStats:
         )
 
         config2 = make_config(active_model="strawberry")
-        await agent.reload_with_initial_messages(base_config=config2)
+        await agent.apply_runtime_config(base_config=config2)
 
         async for _ in agent.act("Continue"):
             pass
@@ -343,7 +343,7 @@ class TestReloadPreservesMessages:
         old_user_content = agent.messages[1].content
         old_assistant_content = agent.messages[2].content
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
 
         assert len(agent.messages) == 3
         assert agent.messages[0].role == Role.system
@@ -353,7 +353,11 @@ class TestReloadPreservesMessages:
         assert agent.messages[2].content == old_assistant_content
 
     @pytest.mark.asyncio
-    async def test_reload_updates_system_prompt_preserves_rest(self) -> None:
+    async def test_reload_keeps_system_prompt_and_returns_notice(self) -> None:
+        """Message 0 is frozen for the session (KV-cache prefix). A config
+        reload that would change the prompt must leave it untouched and
+        return a user-facing notice instead.
+        """
         backend = FakeBackend(mock_llm_chunk(content="Response"))
         config1 = make_config(system_prompt_id="tests")
         agent = build_test_agent_loop(config=config1, backend=backend)
@@ -365,10 +369,12 @@ class TestReloadPreservesMessages:
         old_user = agent.messages[1].content
 
         config2 = make_config(system_prompt_id="cli")
-        await agent.reload_with_initial_messages(base_config=config2)
+        notice = await agent.apply_runtime_config(base_config=config2)
 
-        assert agent.messages[0].content != old_system
+        assert agent.messages[0].content == old_system
         assert agent.messages[1].content == old_user
+        assert notice is not None
+        assert "next session" in notice
 
     @pytest.mark.asyncio
     async def test_reload_with_no_messages_stays_empty(self) -> None:
@@ -377,7 +383,7 @@ class TestReloadPreservesMessages:
 
         assert len(agent.messages) == 1
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
 
         assert len(agent.messages) == 1
         assert agent.messages[0].role == Role.system
@@ -395,7 +401,7 @@ class TestReloadPreservesMessages:
 
         observed.clear()
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
 
         assert len(observed) == 0
 
@@ -676,7 +682,7 @@ class TestStatsEdgeCases:
         cost_before = agent.stats.session_cost
 
         config2 = make_config(active_model="strawberry")
-        await agent.reload_with_initial_messages(base_config=config2)
+        await agent.apply_runtime_config(base_config=config2)
 
         cost_after = agent.stats.session_cost
 
@@ -695,12 +701,12 @@ class TestStatsEdgeCases:
             pass
         tokens1 = agent.stats.session_total_llm_tokens
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
         async for _ in agent.act("Second"):
             pass
         tokens2 = agent.stats.session_total_llm_tokens
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
         async for _ in agent.act("Third"):
             pass
         tokens3 = agent.stats.session_total_llm_tokens
@@ -722,7 +728,7 @@ class TestStatsEdgeCases:
         await agent.compact()
         tokens_after_compact = agent.stats.session_prompt_tokens
 
-        await agent.reload_with_initial_messages()
+        await agent.apply_runtime_config()
 
         assert agent.stats.session_prompt_tokens == tokens_after_compact
 
@@ -737,7 +743,7 @@ class TestStatsEdgeCases:
         original_config = make_config(active_model="devstral-latest")
         agent = build_test_agent_loop(config=original_config, backend=backend)
 
-        await agent.reload_with_initial_messages(base_config=None)
+        await agent.apply_runtime_config(base_config=None)
 
         assert agent.config.active_model == "devstral-latest"
 
@@ -748,6 +754,6 @@ class TestStatsEdgeCases:
         agent = build_test_agent_loop(config=original_config, backend=backend)
 
         new_config = make_config(active_model="devstral-small")
-        await agent.reload_with_initial_messages(base_config=new_config)
+        await agent.apply_runtime_config(base_config=new_config)
 
         assert agent.config.active_model == "devstral-small"

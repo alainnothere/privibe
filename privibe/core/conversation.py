@@ -101,8 +101,22 @@ class ConversationList:
             self._observer(msg)
 
     def rewind(self, n: int) -> None:
+        """Remove the n top (most recent) messages.
+
+        A leading system message can never be removed: message 0 is generated
+        once per session and is the llama.cpp KV-cache prefix. The only way to
+        replace it is restore(), which is a session-boundary operation loading
+        persisted bytes. Raising here (rather than clamping) makes any future
+        rewind(len)-then-rebuild pattern fail loudly instead of silently
+        reintroducing prompt mutation.
+        """
         if n <= 0:
             return
+        if self._data and self._data[0].role == Role.system and n >= len(self._data):
+            raise ValueError(
+                "rewind() may not remove the system message: message 0 is "
+                "immutable for the life of the session (KV-cache prefix)."
+            )
         keep = max(0, len(self._data) - n)
         self._data = self._data[:keep]
         self._fire_reset_hooks()
@@ -163,8 +177,7 @@ class ConversationList:
         """Suppress reset hook notifications for this block.
 
         Use when you manage checkpoint state yourself (e.g. rewind_to_message
-        filters its own checkpoints before calling rewind()) or when an internal
-        rebuild should not discard rewind history (e.g. reload_with_initial_messages).
+        filters its own checkpoints before calling rewind()).
         """
         saved = list(self._reset_hooks)
         self._reset_hooks = []

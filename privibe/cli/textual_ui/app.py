@@ -1150,7 +1150,7 @@ class VibeApp(App):  # noqa: PLR0904
             await self._load_more.hide()
             base_config = VibeConfig.load()
 
-            await self.agent_loop.reload_with_initial_messages(base_config=base_config)
+            notice = await self.agent_loop.apply_runtime_config(base_config=base_config)
             self._narrator_manager.sync()
 
             if self._banner:
@@ -1162,6 +1162,10 @@ class VibeApp(App):  # noqa: PLR0904
                     active_model_label=self._active_model_label(),
                 )
             await self._mount_and_scroll(UserCommandMessage("Configuration reloaded."))
+            if notice:
+                await self._mount_and_scroll(
+                    WarningMessage(notice, show_border=False)
+                )
             await self._show_model_fallback_warning()
         except Exception as e:
             await self._mount_and_scroll(
@@ -1880,24 +1884,23 @@ class VibeApp(App):  # noqa: PLR0904
             self._switch_agent_generation += 1
             my_gen = self._switch_agent_generation
 
-            def switch_agent_sync() -> None:
+            async def do_switch() -> None:
+                # Harness-state-only: switch_agent never touches the message
+                # list or the advertised tools, so it is cheap and runs on the
+                # app's own event loop. No thread, no private asyncio.run() --
+                # that pattern let a switch-triggered session save race the
+                # main loop's saves on meta.json (WinError 5 on Windows).
                 try:
-                    asyncio.run(self.agent_loop.switch_agent(new_profile.name))
-                    self.agent_loop.set_approval_callback(self._approval_callback)
-                    self.agent_loop.set_user_input_callback(self._user_input_callback)
+                    await self.agent_loop.switch_agent(new_profile.name)
                 finally:
                     if (
                         self._chat_input_container
                         and self._switch_agent_generation == my_gen
                     ):
-                        self.call_from_thread(self._refresh_banner)
-                        self.call_from_thread(
-                            setattr, self._chat_input_container, "switching_mode", False
-                        )
+                        self._refresh_banner()
+                        self._chat_input_container.switching_mode = False
 
-            self.run_worker(
-                switch_agent_sync, group="switch_agent", exclusive=True, thread=True
-            )
+            self.run_worker(do_switch(), group="switch_agent", exclusive=True)
 
         self.call_after_refresh(schedule_switch)
 
@@ -2110,19 +2113,6 @@ class VibeApp(App):  # noqa: PLR0904
         state = "enabled" if new_value else "disabled"
         await self._mount_and_scroll(
             UserCommandMessage(f"LLM debug dump {state}. Files written to ./debug/ on each LLM call.")
-        )
-
-    async def _toggle_stable_system_prefix(self) -> None:
-        new_value = not self.config.stable_system_prefix
-        VibeConfig.save_updates({"stable_system_prefix": new_value})
-        self.agent_loop.refresh_config()
-        state = "enabled" if new_value else "disabled"
-        await self._mount_and_scroll(
-            UserCommandMessage(
-                f"Stable system prefix {state}. Keeps the datetime + project context "
-                "out of the system prompt for better KV-cache reuse. Applies to new "
-                "sessions; run /reload to apply it to the current one."
-            )
         )
 
     async def _show_active_tools(self) -> None:

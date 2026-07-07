@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.conftest import build_test_vibe_config
 from privibe.core.agents.models import AgentProfile, AgentSafety
 from privibe.core.config import SessionLoggingConfig, VibeConfig
 from privibe.core.session.session_logger import SessionLogger
 from privibe.core.tools.manager import ToolManager
 from privibe.core.types import AgentStats, LLMMessage, Role, SessionMetadata
+from tests.conftest import build_test_vibe_config
 
 
 @pytest.fixture
@@ -780,3 +780,129 @@ class TestSessionLoggerCleanupTmpFiles:
             logger.maybe_cleanup_tmp_files()
 
         assert cleanup_spy.call_count == 2
+
+
+class TestSaveCrashRecovery:
+    """The 2026-07-07 incident class: a save that wrote messages.jsonl but
+    failed before meta.json leaves the two files diverged. The next save must
+    reconcile from the jsonl (the durable source of truth), never re-append.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stale_meta_does_not_duplicate_messages(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+    ) -> None:
+        logger = SessionLogger(session_config, "crash-test-1")
+        messages = [
+            LLMMessage(role=Role.system, content="System prompt"),
+            LLMMessage(role=Role.user, content="Hello"),
+            LLMMessage(role=Role.assistant, content="Hi there!"),
+        ]
+        stats = AgentStats(steps=1)
+
+        await logger.save_interaction(
+            messages=messages,
+            stats=stats,
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+
+        # Simulate the crash aftermath: meta.json is one message behind.
+        meta_file = logger.session_dir / "meta.json"
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        meta["total_messages"] = 1
+        meta_file.write_text(json.dumps(meta), encoding="utf-8")
+
+        await logger.save_interaction(
+            messages=messages,
+            stats=stats,
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+
+        messages_file = logger.session_dir / "messages.jsonl"
+        lines = [
+            line
+            for line in messages_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 2, "the assistant message must not be re-appended"
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        assert meta["total_messages"] == 2
+
+    @pytest.mark.asyncio
+    async def test_concurrent_saves_are_serialized(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+    ) -> None:
+        import asyncio
+
+        logger = SessionLogger(session_config, "crash-test-2")
+        messages = [
+            LLMMessage(role=Role.system, content="System prompt"),
+            LLMMessage(role=Role.user, content="Hello"),
+            LLMMessage(role=Role.assistant, content="Hi there!"),
+        ]
+        stats = AgentStats(steps=1)
+
+        async def one_save() -> None:
+            await logger.save_interaction(
+                messages=messages,
+                stats=stats,
+                base_config=mock_vibe_config,
+                tool_manager=mock_tool_manager,
+                agent_profile=mock_agent_profile,
+            )
+
+        # The end-of-turn save racing the mode-switch save, ten times over.
+        await asyncio.gather(*(one_save() for _ in range(10)))
+
+        messages_file = logger.session_dir / "messages.jsonl"
+        lines = [
+            line
+            for line in messages_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 2, "overlapping saves must not duplicate messages"
+
+    @pytest.mark.asyncio
+    async def test_os_replace_retries_on_permission_error(
+        self, tmp_path: Path
+    ) -> None:
+        calls = {"n": 0}
+        real_replace = os.replace
+
+        def flaky_replace(src, dest):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError(13, "Access is denied")
+            return real_replace(src, dest)
+
+        with patch(
+            "privibe.core.session.session_logger.os.replace",
+            side_effect=flaky_replace,
+        ):
+            await SessionLogger.persist_metadata({"k": "v"}, tmp_path)
+
+        assert calls["n"] == 3
+        assert (tmp_path / "meta.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_os_replace_gives_up_after_bounded_retries(
+        self, tmp_path: Path
+    ) -> None:
+        with patch(
+            "privibe.core.session.session_logger.os.replace",
+            side_effect=PermissionError(13, "Access is denied"),
+        ):
+            with pytest.raises(RuntimeError, match="Failed to persist session metadata"):
+                await SessionLogger.persist_metadata({"k": "v"}, tmp_path)

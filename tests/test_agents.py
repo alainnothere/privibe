@@ -4,8 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import build_test_agent_loop, build_test_vibe_config
-from tests.stubs.fake_backend import FakeBackend
 from privibe.core.agents.manager import AgentManager
 from privibe.core.agents.models import (
     BUILTIN_AGENTS,
@@ -19,6 +17,8 @@ from privibe.core.config import VibeConfig
 from privibe.core.config.harness_files import HarnessFilesManager
 from privibe.core.tools.base import ToolPermission
 from privibe.core.types import LLMChunk, LLMMessage, LLMUsage, Role
+from tests.conftest import build_test_agent_loop, build_test_vibe_config
+from tests.stubs.fake_backend import FakeBackend
 
 
 class TestDeepMerge:
@@ -165,10 +165,17 @@ class TestAgentApplyToConfig:
             include_prompt_detail=False,
             disabled_tools=["ask_user_question"],
         )
+        profile = AgentProfile(
+            name="custom",
+            display_name="Custom",
+            description="",
+            safety=AgentSafety.NEUTRAL,
+            overrides={"base_disabled": ["some_tool"]},
+        )
 
-        result = BUILTIN_AGENTS[BuiltinAgentName.DEFAULT].apply_to_config(base)
+        result = profile.apply_to_config(base)
 
-        assert set(result.disabled_tools) == {"ask_user_question", "exit_plan_mode"}
+        assert set(result.disabled_tools) == {"ask_user_question", "some_tool"}
 
     def test_profile_disabled_tools_preserve_user_disabled_tools(self) -> None:
         base = VibeConfig(
@@ -176,13 +183,20 @@ class TestAgentApplyToConfig:
             include_prompt_detail=False,
             disabled_tools=["ask_user_question", "custom_tool"],
         )
+        profile = AgentProfile(
+            name="custom",
+            display_name="Custom",
+            description="",
+            safety=AgentSafety.NEUTRAL,
+            overrides={"base_disabled": ["some_tool"]},
+        )
 
-        result = BUILTIN_AGENTS[BuiltinAgentName.AUTO_APPROVE].apply_to_config(base)
+        result = profile.apply_to_config(base)
 
         assert set(result.disabled_tools) == {
             "ask_user_question",
             "custom_tool",
-            "exit_plan_mode",
+            "some_tool",
         }
 
     def test_custom_prompt_found_in_global_when_missing_from_project(
@@ -229,9 +243,25 @@ class TestAgentApplyToConfig:
 
 
 class TestAgentProfileOverrides:
-    def test_default_agent_disables_exit_plan_mode(self) -> None:
-        overrides = BUILTIN_AGENTS[BuiltinAgentName.DEFAULT].overrides
-        assert "exit_plan_mode" in overrides.get("base_disabled", [])
+    def test_builtin_agents_never_shrink_the_advertised_tool_set(self) -> None:
+        """The tools array is part of the llama.cpp KV-cache prefix: builtin
+        profiles must gate tools via per-tool permissions, never by removing
+        them from the advertised set.
+        """
+        for profile in BUILTIN_AGENTS.values():
+            if profile.agent_type != AgentType.AGENT:
+                continue
+            assert "base_disabled" not in profile.overrides, profile.name
+            assert "enabled_tools" not in profile.overrides, profile.name
+            assert "disabled_tools" not in profile.overrides, profile.name
+
+    def test_chat_agent_refuses_mutating_tools(self) -> None:
+        from privibe.core.agents.models import CHAT, MUTATING_TOOLS
+
+        overrides = CHAT.overrides
+        assert overrides.get("auto_approve") is True
+        for name in MUTATING_TOOLS:
+            assert overrides["tools"][name]["permission"] == "never", name
 
     def test_auto_approve_agent_sets_auto_approve(self) -> None:
         overrides = BUILTIN_AGENTS[BuiltinAgentName.AUTO_APPROVE].overrides
@@ -408,6 +438,72 @@ class TestAgentSwitchAgent:
 
         assert agent.config is original_config
         assert agent.agent_profile.name == BuiltinAgentName.DEFAULT
+
+    @pytest.mark.asyncio
+    async def test_switch_agent_never_touches_message_zero(
+        self, base_config: VibeConfig, backend: FakeBackend
+    ) -> None:
+        """The KV-cache prefix invariant: a mode switch must leave every
+        stored message untouched, message 0 (the system prompt) especially.
+        """
+        agent = build_test_agent_loop(
+            config=base_config, agent_name=BuiltinAgentName.DEFAULT, backend=backend
+        )
+        agent.messages.add(LLMMessage(role=Role.user, content="Hello"))
+        before = [(m.role, m.content) for m in agent.messages]
+        system_msg_identity = agent.messages[0]
+
+        for name in (
+            BuiltinAgentName.PLAN,
+            BuiltinAgentName.ACCEPT_EDITS,
+            BuiltinAgentName.AUTO_APPROVE,
+            BuiltinAgentName.DEFAULT,
+        ):
+            await agent.switch_agent(name)
+
+        after = [(m.role, m.content) for m in agent.messages]
+        assert after == before
+        # Not just equal content: the very same object, proving no rebuild.
+        assert agent.messages[0] is system_msg_identity
+
+    @pytest.mark.asyncio
+    async def test_switch_agent_never_changes_advertised_tools(
+        self, base_config: VibeConfig, backend: FakeBackend
+    ) -> None:
+        agent = build_test_agent_loop(
+            config=base_config, agent_name=BuiltinAgentName.DEFAULT, backend=backend
+        )
+        before = list(agent.tool_manager.available_tools.keys())
+
+        for name in (
+            BuiltinAgentName.PLAN,
+            BuiltinAgentName.AUTO_APPROVE,
+            BuiltinAgentName.DEFAULT,
+        ):
+            await agent.switch_agent(name)
+            assert list(agent.tool_manager.available_tools.keys()) == before
+
+    @pytest.mark.asyncio
+    async def test_never_permission_wins_over_auto_approve(
+        self, backend: FakeBackend
+    ) -> None:
+        config = build_test_vibe_config(
+            include_project_context=False,
+            include_prompt_detail=False,
+            auto_approve=True,
+            tools={"todo": {"permission": "never"}},
+        )
+        agent = build_test_agent_loop(
+            config=config, agent_name=BuiltinAgentName.DEFAULT, backend=backend
+        )
+        from pydantic import BaseModel
+
+        class _EmptyArgs(BaseModel):
+            pass
+
+        tool = agent.tool_manager.get("todo")
+        decision = await agent._should_execute_tool(tool, _EmptyArgs(), "call_1")
+        assert decision.verdict.value == "skip"
 
 
 class TestAcceptEditsAgent:
@@ -634,4 +730,43 @@ class TestAgentLoopInitialization:
         assert custom_prompt_content in system_message.content, (
             f"System message should contain custom prompt content. "
             f"Expected '{custom_prompt_content}' to be in system message."
+        )
+
+
+class TestSessionToolsFreeze:
+    def test_tools_array_frozen_after_first_request(self) -> None:
+        """The advertised tools array is part of the KV-cache prefix: it is
+        snapshotted at the first request and later live-set changes (config
+        edits, MCP flaps) must not alter it.
+        """
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        agent = build_test_agent_loop(
+            config=config, agent_name=BuiltinAgentName.DEFAULT
+        )
+
+        snapshot = agent._get_session_tools()
+        assert snapshot, "expected at least one advertised tool"
+        snapshot_names = [t.function.name for t in snapshot]
+
+        # Simulate a mid-session config edit that would shrink the live set.
+        agent.config.disabled_tools = list(agent.config.disabled_tools) + [
+            snapshot_names[0]
+        ]
+        live = agent.format_handler.get_available_tools(agent.tool_manager)
+        assert [t.function.name for t in live] != snapshot_names
+
+        again = agent._get_session_tools()
+        assert [t.function.name for t in again] == snapshot_names
+        assert again is snapshot
+
+    def test_tool_discovery_order_is_sorted(self) -> None:
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        a = build_test_agent_loop(config=config)
+        b = build_test_agent_loop(config=config)
+        assert list(a.tool_manager.available_tools.keys()) == list(
+            b.tool_manager.available_tools.keys()
         )

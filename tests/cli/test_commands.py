@@ -67,12 +67,11 @@ class TestCommandRegistry:
         assert cmd is not None
         assert cmd.handler == "_toggle_autocopy"
 
-    def test_stable_prefix_command_registration(self) -> None:
+    def test_stable_prefix_command_is_gone(self) -> None:
+        # stable_system_prefix was removed: the system prompt is frozen per
+        # session, so there is nothing left for the command to toggle.
         registry = CommandRegistry()
-        assert registry.get_command_name("/stable-prefix") == "stable_prefix"
-        cmd = registry.find_command("/stable-prefix")
-        assert cmd is not None
-        assert cmd.handler == "_toggle_stable_system_prefix"
+        assert registry.find_command("/stable-prefix") is None
 
     def test_every_command_handler_exists_on_the_app(self) -> None:
         # The app dispatches via getattr(self, command.handler); guard against a

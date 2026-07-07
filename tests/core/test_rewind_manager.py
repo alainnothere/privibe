@@ -186,9 +186,9 @@ class TestRewind:
 
         assert len(mgr.checkpoints) == 1
 
-        # A full rewind fires reset hooks, which clears checkpoints.
-        messages.rewind(len(messages))
-        messages.add(LLMMessage(role=Role.system, content="system"))
+        # Rewinding the whole tail (everything but message 0) fires reset
+        # hooks, which clears checkpoints. Message 0 itself is untouchable.
+        messages.rewind(len(messages) - 1)
 
         assert len(mgr.checkpoints) == 0
 
@@ -208,30 +208,20 @@ class TestRewind:
 
         assert len(mgr.checkpoints) == 1
 
-    def test_update_system_prompt_preserves_checkpoints(self) -> None:
-        """Switching agents (reload_with_initial_messages) must NOT clear rewind
-        checkpoints. It uses no_reset_hooks() during its internal rewind+rebuild.
+    def test_rewind_cannot_remove_the_system_message(self) -> None:
+        """Message 0 is the frozen KV-cache prefix: the old agent-switch
+        pattern (rewind everything, rebuild the system prompt) must now fail
+        loudly. Agent switches are harness-state-only and never touch the
+        message list.
         """
         messages = _make_messages("hello", "world")
         mgr, _, _ = _make_manager(messages)
+        original_system = messages[0]
 
-        mgr.create_checkpoint()
-        mgr._checkpoints[-1].message_index = 1
-        mgr.create_checkpoint()
-        mgr._checkpoints[-1].message_index = 3
-
-        assert len(mgr.checkpoints) == 2
-
-        # Simulate agent switch: rebuild system prompt without clearing checkpoints.
-        non_system = list(messages[1:])
-        with messages.no_reset_hooks():
+        with pytest.raises(ValueError, match="may not remove the system message"):
             messages.rewind(len(messages))
-            messages.add(LLMMessage(role=Role.system, content="new agent system prompt"))
-            for msg in non_system:
-                messages.add(msg)
 
-        assert len(mgr.checkpoints) == 2
-        assert messages[0].content == "new agent system prompt"
+        assert messages[0] is original_system
 
     def test_create_checkpoint_uses_current_message_count(self) -> None:
         messages = _make_messages("hello")
@@ -464,9 +454,9 @@ class TestRewindScenarios:
     async def test_agent_switch_between_turns_preserves_rewind(
         self, tmp_path: Path
     ) -> None:
-        """Pressing shift+tab between two messages switches agents, which calls
-        update_system_prompt.  Checkpoints must survive so a subsequent rewind
-        restores files correctly.
+        """Pressing shift+tab between two messages switches agents. A switch
+        is harness-state-only: it never touches the message list, so rewind
+        checkpoints survive trivially and file restore still works.
         """
         mgr, messages, turn = self._setup()
         f = tmp_path / "main.py"
@@ -476,18 +466,15 @@ class TestRewindScenarios:
         turn.tool_write(f, "v1")
         turn.end()
 
-        # User presses shift+tab → agent switch → system prompt rebuilt without
-        # clearing checkpoints (no_reset_hooks matches reload_with_initial_messages).
-        non_system = list(messages[1:])
-        with messages.no_reset_hooks():
-            messages.rewind(len(messages))
-            messages.add(LLMMessage(role=Role.system, content="switched agent prompt"))
-            for msg in non_system:
-                messages.add(msg)
+        # User presses shift+tab: the agent profile changes, the conversation
+        # does not. Nothing to simulate on the message list.
+        system_before = messages[0]
 
         turn.begin("turn2")
         turn.tool_write(f, "v2")
         turn.end()
+
+        assert messages[0] is system_before
 
         # Rewind to turn2 should restore "v1"
         turn2_idx = mgr.get_rewindable_messages()[1][0]

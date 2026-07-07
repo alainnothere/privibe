@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncGenerator, Callable, Generator
 import contextlib
@@ -54,10 +55,7 @@ from privibe.core.rewind.undo_stack import FileUndoStack
 from privibe.core.session.session_logger import SessionLogger
 from privibe.core.session.session_migration import migrate_sessions_entrypoint
 from privibe.core.skills.manager import SkillManager
-from privibe.core.system_prompt import (
-    build_context_refresh_content,
-    get_universal_system_prompt,
-)
+from privibe.core.system_prompt import get_universal_system_prompt
 from privibe.core.tools.base import (
     BaseTool,
     InvokeContext,
@@ -80,6 +78,7 @@ from privibe.core.types import (
     ApprovalCallback,
     ApprovalResponse,
     AssistantEvent,
+    AvailableTool,
     BaseEvent,
     CompactEndEvent,
     CompactStartEvent,
@@ -100,7 +99,6 @@ from privibe.core.types import (
 )
 from privibe.core.utils import (
     CANCELLATION_TAG,
-    CONTEXT_REFRESH_TAG,
     TOOL_ERROR_TAG,
     VIBE_STOP_EVENT_TAG,
     CancellationReason,
@@ -258,6 +256,17 @@ class AgentLoop:
         # If the loop exits (no more tool calls) with queued messages, they are
         # drained and delivered as a new user turn via _handle_user_message().
         self._steering_queue: list[str] = []
+        # The advertised tools array, frozen at the first LLM request of the
+        # session. Chat templates render tools before the first user message,
+        # so this is part of the llama.cpp KV-cache prefix and must stay
+        # byte-identical for the life of the session, like message 0.
+        self._session_tools: list[AvailableTool] | None = None
+        # Tripwire: SHA-256 of (system prompt, tools array) captured at the
+        # first LLM request. Any later request whose prefix bytes differ is a
+        # broken invariant and fails hard instead of silently reprocessing
+        # the whole context on the server. Cleared by conversation reset
+        # hooks (restore/clear/compact), which are the legitimate boundaries.
+        self._prefix_fingerprint: str | None = None
 
         self._session_rules: list[ApprovedRule] = []
 
@@ -273,16 +282,16 @@ class AgentLoop:
         # stack, which dies when that agent is torn down.
         self.undo_stack = FileUndoStack()
         self.messages.on_reset(self.undo_stack.clear)
+        self.messages.on_reset(self._reset_prefix_fingerprint)
         self.messages.set_save_fn(self._save_messages)
 
-        # Populate the initial system message
+        # Populate the initial system message. This is the ONLY place the
+        # system prompt is ever generated: message 0 is frozen for the life of
+        # the session (it is the llama.cpp KV-cache prefix).
         system_prompt = get_universal_system_prompt(
             self.tool_manager, self.config, self.skill_manager, self.agent_manager
         )
         self.messages.add(LLMMessage(role=Role.system, content=system_prompt))
-        initial_context = self._build_initial_context_message()
-        if initial_context is not None:
-            self.messages.add(initial_context)
 
         thread = Thread(
             target=migrate_sessions_entrypoint,
@@ -323,36 +332,6 @@ class AgentLoop:
     def refresh_config(self) -> None:
         self._base_config = VibeConfig.load()
         self.agent_manager.invalidate_config()
-
-    def _build_initial_context_message(self) -> LLMMessage | None:
-        """Volatile context (datetime + project git/tree) delivered as a separate
-        injected message when stable_system_prefix is on, so the system prompt
-        stays a stable, KV-cacheable prefix. None when the flag is off.
-        """
-        if not self.config.stable_system_prefix:
-            return None
-        return LLMMessage(
-            role=Role.user,
-            content=build_context_refresh_content(self.config, resumed=False),
-            injected=True,
-        )
-
-    @staticmethod
-    def _strip_leading_initial_context(
-        messages: list[LLMMessage],
-    ) -> list[LLMMessage]:
-        """Drop a leading stable-prefix context message so a rebuild can re-derive
-        it from the current config (keeps toggling stable_system_prefix consistent
-        and avoids duplicating it). The resume-time refresh lives at the tail, so
-        only a *leading* injected context_refresh is the bootstrap one.
-        """
-        if (
-            messages
-            and messages[0].injected
-            and f"<{CONTEXT_REFRESH_TAG}>" in (messages[0].content or "")
-        ):
-            return messages[1:]
-        return messages
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         self.approval_callback = callback
@@ -1343,13 +1322,81 @@ class AgentLoop:
             logger.warning("Failed to build file diff for %s", snapshot.path)
             return None
 
+    def _reset_prefix_fingerprint(self) -> None:
+        self._prefix_fingerprint = None
+
+    def _check_prefix_integrity(self, tools: list[AvailableTool]) -> None:
+        """Hard-fail any request whose cache prefix changed mid-session.
+
+        The fingerprint covers the two strictly frozen prefix components: the
+        system message content and the advertised tools array. It arms on the
+        first request and re-arms after legitimate conversation resets
+        (restore/clear/compact fire the reset hooks). A mismatch means some
+        code path mutated the prefix in violation of the immutability
+        invariant; surfacing it on the very next request beats a silent full
+        reprocess of the entire context on every turn.
+        """
+        system_content = ""
+        if self.messages and self.messages[0].role == Role.system:
+            system_content = self.messages[0].content or ""
+        tools_blob = json.dumps(
+            [t.model_dump(exclude_none=True) for t in tools],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        digest = hashlib.sha256(
+            f"{system_content}\x00{tools_blob}".encode()
+        ).hexdigest()
+
+        if self._prefix_fingerprint is None:
+            self._prefix_fingerprint = digest
+            return
+        if digest != self._prefix_fingerprint:
+            raise RuntimeError(
+                "Conversation prefix changed mid-session: the system message "
+                "or the advertised tools array no longer matches the state of "
+                "the first request. This violates the immutability invariant "
+                "(message 0 and the tools array are the llama.cpp KV-cache "
+                "prefix and are frozen per session). Please report this; the "
+                "session can be resumed with --resume."
+            )
+
+    def _get_session_tools(self) -> list[AvailableTool]:
+        """The tools array sent with every request, frozen at the first call.
+
+        Chat templates render the tools JSON before the first user message, so
+        this array is part of the llama.cpp KV-cache prefix: once the first
+        request has gone out it must never change for the life of the session.
+        Later config edits or MCP server flaps change the live set; when that
+        happens a warning names the divergence and the snapshot keeps winning.
+        """
+        current = self.format_handler.get_available_tools(self.tool_manager)
+        if self._session_tools is None:
+            self._session_tools = current
+            return self._session_tools
+
+        if current != self._session_tools:
+            snapshot_names = {t.function.name for t in self._session_tools}
+            current_names = {t.function.name for t in current}
+            added = sorted(current_names - snapshot_names)
+            removed = sorted(snapshot_names - current_names)
+            logger.warning(
+                "Advertised tools are frozen for this session; live tool set "
+                "diverged (added: %s, removed: %s, or schema changed). The "
+                "change applies to the next session.",
+                added or "none",
+                removed or "none",
+            )
+        return self._session_tools
+
     async def _chat(
         self, max_tokens: int | None = None, model_override: ModelConfig | None = None
     ) -> LLMChunk:
         active_model = model_override or self.config.get_active_model()
         provider = self.config.get_provider_for_model(active_model)
 
-        available_tools = self.format_handler.get_available_tools(self.tool_manager)
+        available_tools = self._get_session_tools()
+        self._check_prefix_integrity(available_tools)
         tool_choice = self.format_handler.get_tool_choice()
 
         # DEBUG LLM COMMUNICATIONS
@@ -1406,7 +1453,8 @@ class AgentLoop:
         active_model = self.config.get_active_model()
         provider = self.config.get_provider_for_model(active_model)
 
-        available_tools = self.format_handler.get_available_tools(self.tool_manager)
+        available_tools = self._get_session_tools()
+        self._check_prefix_integrity(available_tools)
         tool_choice = self.format_handler.get_tool_choice()
         # DEBUG LLM COMMUNICATIONS
         # Captures the full message list state before each LLM call.
@@ -1500,12 +1548,6 @@ class AgentLoop:
     async def _should_execute_tool(
         self, tool: BaseTool, args: BaseModel, tool_call_id: str
     ) -> ToolDecision:
-        if self.auto_approve:
-            return ToolDecision(
-                verdict=ToolExecutionResponse.EXECUTE,
-                approval_type=ToolPermission.ALWAYS,
-            )
-
         tool_name = tool.get_name()
         ctx = tool.resolve_permission(args)
 
@@ -1513,18 +1555,26 @@ class AgentLoop:
             config_perm = self.tool_manager.get_tool_config(tool_name).permission
             ctx = PermissionContext(permission=config_perm)
 
+        # An explicit `never` is absolute: it wins over auto_approve, so
+        # read-only profiles (e.g. chat) stay read-only while auto-approving
+        # everything they do allow.
         match ctx.permission:
-            case ToolPermission.ALWAYS:
-                return ToolDecision(
-                    verdict=ToolExecutionResponse.EXECUTE,
-                    approval_type=ToolPermission.ALWAYS,
-                )
             case ToolPermission.NEVER:
                 return ToolDecision(
                     verdict=ToolExecutionResponse.SKIP,
                     approval_type=ToolPermission.NEVER,
                     feedback=ctx.reason
-                    or f"Tool '{tool_name}' is permanently disabled",
+                    or f"Tool '{tool_name}' is not allowed in this mode",
+                )
+            case ToolPermission.ALWAYS:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.EXECUTE,
+                    approval_type=ToolPermission.ALWAYS,
+                )
+            case _ if self.auto_approve:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.EXECUTE,
+                    approval_type=ToolPermission.ALWAYS,
                 )
             case _:
                 uncovered = [
@@ -1633,7 +1683,7 @@ class AgentLoop:
             actual_context_tokens = await self.backend.count_tokens(
                 model=active_model,
                 messages=self.messages,
-                tools=self.format_handler.get_available_tools(self.tool_manager),
+                tools=self._get_session_tools(),
                 extra_headers={"user-agent": get_user_agent(provider.backend)},
                 metadata=self._build_metadata(),
             )
@@ -1663,25 +1713,88 @@ class AgentLoop:
             )
             raise
 
+    # Profile override keys that only take effect when a session is created
+    # (they shape the system prompt or the model/backend, which are frozen for
+    # the life of a session). A switch to a profile carrying one of these logs
+    # a warning instead of silently half-applying it.
+    _SESSION_SCOPED_OVERRIDE_KEYS = (
+        "system_prompt",
+        "system_prompt_id",
+        "active_model",
+        "enabled_tools",
+        "disabled_tools",
+        "base_disabled",
+    )
+
     async def switch_agent(self, agent_name: str) -> None:
+        """Switch the active agent profile as a harness-state-only change.
+
+        The conversation (message 0 included) and the advertised tools are
+        never touched: mode is approval policy, not prompt content. Anything
+        else would rewrite the llama.cpp KV-cache prefix mid-session.
+        """
         if agent_name == self.agent_profile.name:
             return
         self.agent_manager.switch_profile(agent_name)
-        await self.reload_with_initial_messages(reset_middleware=False)
 
-    async def reload_with_initial_messages(
+        session_scoped = [
+            k
+            for k in self._SESSION_SCOPED_OVERRIDE_KEYS
+            if k in self.agent_profile.overrides
+        ]
+        if session_scoped:
+            logger.warning(
+                "Agent profile '%s' overrides %s; these are session-scoped and "
+                "apply when a session starts with this profile, not on switch.",
+                agent_name,
+                session_scoped,
+            )
+
+        await self.session_logger.save_interaction(
+            self.messages,
+            self.stats,
+            self._base_config,
+            self.tool_manager,
+            self.agent_profile,
+        )
+
+    # Config fields that shape the system prompt or the advertised tool set.
+    # Message 0 and the tools array are frozen for the life of a session, so a
+    # runtime config change touching these cannot apply to the live session;
+    # apply_runtime_config returns a notice for the caller to surface instead.
+    _PROMPT_AFFECTING_FIELDS = (
+        "system_prompt",
+        "system_prompt_id",
+        "include_commit_signature",
+        "include_model_info",
+        "include_prompt_detail",
+        "include_project_context",
+        "enabled_tools",
+        "disabled_tools",
+        "extra_instruction_files",
+        "active_model",
+        "tool_paths",
+        "skill_paths",
+    )
+
+    async def apply_runtime_config(
         self,
         base_config: VibeConfig | None = None,
         max_turns: int | None = None,
         max_price: float | None = None,
-        reset_middleware: bool = True,
-    ) -> None:
-        self._cancel_preflight_warmup()
+    ) -> str | None:
+        """Apply a new runtime configuration WITHOUT touching the conversation.
 
-        # Force an immediate yield to allow the UI to update before heavy sync work.
-        # When there are no messages, save_interaction returns early without any await,
-        # so the coroutine would run synchronously through ToolManager, SkillManager,
-        # and system prompt generation without yielding control to the event loop.
+        Rebuilds the backend, tool/skill managers, pricing, and middleware.
+        The message list is never modified: the system prompt is generated
+        exactly once per session (AgentLoop.__init__) and is immutable after
+        that, because it is the llama.cpp KV-cache prefix. When the new config
+        would have produced a different prompt or tool set, a user-facing
+        notice string is returned so the caller can tell the user those
+        changes apply to the next session.
+        """
+        # Force an immediate yield to allow the UI to update before heavy sync
+        # work (ToolManager/SkillManager rediscovery).
         await asyncio.sleep(0)
 
         await self.session_logger.save_interaction(
@@ -1692,9 +1805,24 @@ class AgentLoop:
             self.agent_profile,
         )
 
+        notice: str | None = None
         if base_config is not None:
+            old_config = self._base_config
+            changed = [
+                name
+                for name in self._PROMPT_AFFECTING_FIELDS
+                if getattr(old_config, name, None) != getattr(base_config, name, None)
+            ]
             self._base_config = base_config
             self.agent_manager.invalidate_config()
+            if changed:
+                notice = (
+                    "Configuration changes to "
+                    + ", ".join(changed)
+                    + " affect the system prompt or the advertised tools, "
+                    "which are frozen for this session. They will apply to "
+                    "the next session."
+                )
 
         self.backend = self.backend_factory()
 
@@ -1708,25 +1836,6 @@ class AgentLoop:
         )
         self.skill_manager = SkillManager(lambda: self.config)
 
-        # Rebuild the system prompt and replay the conversation silently so the
-        # observer (UI) is not re-notified for already-displayed messages.
-        # Suppress reset hooks so that rewind checkpoints survive agent/model switches.
-        non_system = self._strip_leading_initial_context(list(self.messages[1:]))
-        if not non_system:
-            self.stats.reset_context_state()
-
-        with self.messages.silent(), self.messages.no_reset_hooks():
-            self.messages.rewind(len(self.messages))
-            system_prompt = get_universal_system_prompt(
-                self.tool_manager, self.config, self.skill_manager, self.agent_manager
-            )
-            self.messages.add(LLMMessage(role=Role.system, content=system_prompt))
-            initial_context = self._build_initial_context_message()
-            if initial_context is not None:
-                self.messages.add(initial_context)
-            for msg in non_system:
-                self.messages.add(msg)
-
         try:
             active_model = self.config.get_active_model()
             self.stats.update_pricing(
@@ -1735,7 +1844,5 @@ class AgentLoop:
         except ValueError:
             pass
 
-        if reset_middleware:
-            self._setup_middleware()
-
-        self.start_preflight_warmup_if_enabled()
+        self._setup_middleware()
+        return notice

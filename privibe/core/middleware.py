@@ -10,7 +10,8 @@ from privibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
     from privibe.core.config import VibeConfig
-    from privibe.core.types import AgentStats, MessageList
+    from privibe.core.conversation import ConversationList
+    from privibe.core.types import AgentStats
 
 
 class MiddlewareAction(StrEnum):
@@ -27,7 +28,7 @@ class ResetReason(StrEnum):
 
 @dataclass
 class ConversationContext:
-    messages: MessageList
+    messages: ConversationList
     stats: AgentStats
     config: VibeConfig
 
