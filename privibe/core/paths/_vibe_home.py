@@ -16,13 +16,35 @@ class GlobalPath:
         return self._resolver()
 
 
+# privibe is a fork of Mistral Vibe, which read VIBE_HOME (pointing at ~/.vibe).
+# We deliberately do NOT honor VIBE_HOME: a stale value left over from Vibe would
+# silently redirect privibe into ~/.vibe and load an incompatible upstream config
+# (mismatched transcribe/tts `client` enums, etc). PRIVIBE_HOME is the sole
+# supported override; legacy_home_env_notice() surfaces the deprecation.
+HOME_ENV_VAR = "PRIVIBE_HOME"
+LEGACY_HOME_ENV_VAR = "VIBE_HOME"
+
 _DEFAULT_VIBE_HOME = Path.home() / ".privibe"
 
 
 def _get_vibe_home() -> Path:
-    if vibe_home := os.getenv("VIBE_HOME"):
-        return Path(vibe_home).expanduser().resolve()
+    if home := os.getenv(HOME_ENV_VAR):
+        return Path(home).expanduser().resolve()
     return _DEFAULT_VIBE_HOME
+
+
+def legacy_home_env_notice() -> str | None:
+    """Return a one-line warning when the deprecated VIBE_HOME is set but
+    PRIVIBE_HOME is not. VIBE_HOME is a Mistral Vibe holdover that privibe
+    ignores, so a stale value can't quietly point us at ~/.vibe. Returns None
+    when there is nothing to warn about."""
+    if os.getenv(LEGACY_HOME_ENV_VAR) and not os.getenv(HOME_ENV_VAR):
+        return (
+            f"Ignoring deprecated {LEGACY_HOME_ENV_VAR} environment variable "
+            f"(a Mistral Vibe holdover). privibe is using {_get_vibe_home()}; "
+            f"set {HOME_ENV_VAR} to override its home directory."
+        )
+    return None
 
 
 VIBE_HOME = GlobalPath(_get_vibe_home)

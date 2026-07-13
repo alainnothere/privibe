@@ -57,6 +57,15 @@ def pop_pending_message() -> str | None:
     return msg
 
 
+def add_pending_message(message: str) -> None:
+    """Append a line to the one-shot startup message surfaced via
+    pop_pending_message. Lets other migration steps (e.g. VibeConfig._migrate
+    resetting stale providers) piggyback on the same banner rather than
+    printing separately."""
+    global _pending_message
+    _pending_message = f"{_pending_message}\n{message}" if _pending_message else message
+
+
 def _flatten(d: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     """Flatten nested dicts to dotted-key form: {'tools': {'bash': {'permission': 'ask'}}}
     becomes {'tools.bash.permission': 'ask'}. Lists are kept as-is."""

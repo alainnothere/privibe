@@ -74,7 +74,7 @@ class TestResolveConfigFile:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         assert VIBE_HOME.path != tmp_path
-        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        monkeypatch.setenv("PRIVIBE_HOME", str(tmp_path))
         assert VIBE_HOME.path == tmp_path
 
     def test_returns_none_when_no_sources(self) -> None:
@@ -90,7 +90,7 @@ class TestMigrateRemovesFindFromBashAllowlist:
     def test_removes_find_from_config_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        monkeypatch.setenv("PRIVIBE_HOME", str(tmp_path))
         config_file = tmp_path / "config.toml"
         data = {"tools": {"bash": {"allowlist": ["echo", "find", "ls"]}}}
         with config_file.open("wb") as f:
@@ -108,7 +108,7 @@ class TestMigrateRemovesFindFromBashAllowlist:
     def test_noop_when_find_not_present(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        monkeypatch.setenv("PRIVIBE_HOME", str(tmp_path))
         config_file = tmp_path / "config.toml"
         data = {"tools": {"bash": {"allowlist": ["echo", "ls"]}}}
         with config_file.open("wb") as f:
@@ -125,7 +125,7 @@ class TestMigrateRemovesFindFromBashAllowlist:
     def test_noop_when_no_bash_tools_section(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        monkeypatch.setenv("PRIVIBE_HOME", str(tmp_path))
         config_file = tmp_path / "config.toml"
         data = {"active_model": "test"}
         with config_file.open("wb") as f:
@@ -138,6 +138,106 @@ class TestMigrateRemovesFindFromBashAllowlist:
         with config_file.open("rb") as f:
             result = tomllib.load(f)
         assert "tools" not in result
+
+
+class TestMigrateResetsStaleProviders:
+    def _write_and_migrate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, data: dict
+    ) -> dict:
+        from privibe.core.config import migration
+
+        monkeypatch.setenv("PRIVIBE_HOME", str(tmp_path))
+        monkeypatch.setattr(migration, "_pending_message", None)
+        config_file = tmp_path / "config.toml"
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            return tomllib.load(f)
+
+    def test_resets_stale_transcribe_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data = {
+            "transcribe_providers": [
+                {"name": "whisperlive", "api_base": "ws://x", "client": "whisper"}
+            ]
+        }
+        result = self._write_and_migrate(tmp_path, monkeypatch, data)
+        assert result["transcribe_providers"][0]["client"] == "whisperlive"
+        # The whole modality is reset, so default models come along too.
+        assert result["transcribe_models"]
+
+    def test_resets_stale_tts_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data = {"tts_providers": [{"name": "tts", "client": "elevenlabs"}]}
+        result = self._write_and_migrate(tmp_path, monkeypatch, data)
+        assert result["tts_providers"][0]["client"] == "openai"
+        assert result["tts_models"]
+
+    def test_noop_when_client_valid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from privibe.core.config.migration import pop_pending_message
+
+        data = {
+            "transcribe_providers": [
+                {"name": "custom", "api_base": "ws://x", "client": "whisperlive"}
+            ]
+        }
+        result = self._write_and_migrate(tmp_path, monkeypatch, data)
+        # Untouched: custom name preserved, no models table injected.
+        assert result["transcribe_providers"][0]["name"] == "custom"
+        assert "transcribe_models" not in result
+        assert pop_pending_message() is None
+
+    def test_migrated_config_loads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from privibe.core.config.migration import pop_pending_message
+
+        data = {"tts_providers": [{"name": "tts", "client": "elevenlabs"}]}
+        self._write_and_migrate(tmp_path, monkeypatch, data)
+        # A second load must now validate cleanly and surface the reset notice.
+        config = VibeConfig.load()
+        assert config.tts_providers[0].client.value == "openai"
+        assert "text-to-speech" in (pop_pending_message() or "")
+
+
+class TestLegacyHomeEnvNotice:
+    def test_warns_when_only_vibe_home_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from privibe.core.paths import legacy_home_env_notice
+
+        monkeypatch.delenv("PRIVIBE_HOME", raising=False)
+        monkeypatch.setenv("VIBE_HOME", "/tmp/whatever")
+        notice = legacy_home_env_notice()
+        assert notice is not None
+        assert "VIBE_HOME" in notice and "PRIVIBE_HOME" in notice
+
+    def test_silent_when_privibe_home_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from privibe.core.paths import legacy_home_env_notice
+
+        monkeypatch.setenv("VIBE_HOME", "/tmp/whatever")
+        monkeypatch.setenv("PRIVIBE_HOME", "/tmp/other")
+        assert legacy_home_env_notice() is None
+
+    def test_silent_when_neither_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from privibe.core.paths import legacy_home_env_notice
+
+        monkeypatch.delenv("VIBE_HOME", raising=False)
+        monkeypatch.delenv("PRIVIBE_HOME", raising=False)
+        assert legacy_home_env_notice() is None
 
 
 class TestAutoCompactThresholdFallback:

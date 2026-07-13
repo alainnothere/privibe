@@ -101,29 +101,53 @@ def validate_model_override(config: VibeConfig, alias: str) -> str | None:
 
 
 def bootstrap_config_files() -> None:
+    from privibe.core.paths import legacy_home_env_notice
+
+    if notice := legacy_home_env_notice():
+        rprint(f"[yellow]{notice}[/]")
+
     mgr = get_harness_files_manager()
     config_file = mgr.user_config_file
     if not config_file.exists():
         try:
             config_file.parent.mkdir(parents=True, exist_ok=True)
             config_data = VibeConfig.create_default()
-            # The [paths] section ships from a static template so its inline
-            # comments and example aliases survive (tomli_w drops comments).
-            # PathConfig in privibe/core/config/_settings.py is the runtime
-            # source of truth; a roundtrip test pins the two together.
+            # The [paths] section normally ships from a static template so its
+            # inline comments and example aliases survive (tomli_w drops
+            # comments). PathConfig in privibe/core/config/_settings.py is the
+            # runtime source of truth; a roundtrip test pins the two together.
             #
-            # The template MUST be written AFTER tomli_w.dump because it ends
-            # with `[paths.aliases]` (an empty sub-table). In TOML, anything
-            # following an open table header belongs to that table until the
-            # next header — so writing the template first would silently nest
-            # every other top-level key under [paths.aliases]. Dump first,
-            # template last.
-            config_data.pop("paths", None)
-            paths_template = PATHS_TEMPLATE_FILE.read_text(encoding="utf-8")
+            # If the template can't be read — e.g. a packaging build that
+            # failed to bundle default_config.toml (see privibe.spec /
+            # privibe-acp.spec) — we must still write a valid config.toml, so
+            # fall back to dumping the runtime `paths` defaults inline. The
+            # only loss is the explanatory comments; config creation must never
+            # hinge on documentation.
+            try:
+                paths_template: str | None = PATHS_TEMPLATE_FILE.read_text(
+                    encoding="utf-8"
+                )
+            except OSError as e:
+                logger.warning(
+                    "Paths template %s could not be read (%s); writing "
+                    "config.toml with inline path defaults instead.",
+                    PATHS_TEMPLATE_FILE,
+                    e,
+                )
+                paths_template = None
+            # When the template is present, pop `paths` and append the template
+            # LAST: it ends with `[paths.aliases]` (an open sub-table), and in
+            # TOML anything after an open table header nests under it — so any
+            # top-level key written after it would be captured. When there's no
+            # template we keep `paths` in the dump (tomli_w orders tables
+            # safely).
+            if paths_template is not None:
+                config_data.pop("paths", None)
             with config_file.open("wb") as f:
                 tomli_w.dump(config_data, f)
-                f.write(b"\n")
-                f.write(paths_template.encode("utf-8"))
+                if paths_template is not None:
+                    f.write(b"\n")
+                    f.write(paths_template.encode("utf-8"))
         except Exception as e:
             rprint(f"[yellow]Could not create default config file: {e}[/]")
     else:

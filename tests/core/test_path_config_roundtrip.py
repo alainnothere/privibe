@@ -73,7 +73,7 @@ def test_bootstrap_writes_parseable_config_with_paths_section(
     )
     from privibe.core.paths import _vibe_home
 
-    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    monkeypatch.setenv("PRIVIBE_HOME", str(tmp_path))
     monkeypatch.setattr(_vibe_home, "_DEFAULT_VIBE_HOME", tmp_path)
     reset_harness_files_manager()
     init_harness_files_manager()
@@ -94,3 +94,42 @@ def test_bootstrap_writes_parseable_config_with_paths_section(
     # other top-level keys must NOT be nested under paths.aliases
     assert "active_model" in data
     assert "active_model" not in data["paths"]["aliases"]
+
+
+def test_bootstrap_writes_valid_config_when_paths_template_missing(
+    tmp_path, monkeypatch
+) -> None:
+    """A packaging build that fails to bundle default_config.toml must not
+    prevent config.toml creation. bootstrap falls back to inline path
+    defaults so first run still produces a valid, loadable config.
+    """
+    import tomllib
+    from pathlib import Path
+
+    from privibe.core.config.harness_files import (
+        init_harness_files_manager,
+        reset_harness_files_manager,
+    )
+    from privibe.core.paths import _vibe_home
+    import privibe.cli.cli as climod
+
+    monkeypatch.setenv("PRIVIBE_HOME", str(tmp_path))
+    monkeypatch.setattr(_vibe_home, "_DEFAULT_VIBE_HOME", tmp_path)
+    # Simulate the template not being bundled into the binary.
+    monkeypatch.setattr(
+        climod, "PATHS_TEMPLATE_FILE", Path(tmp_path / "does-not-exist.toml")
+    )
+    reset_harness_files_manager()
+    init_harness_files_manager()
+
+    try:
+        climod.bootstrap_config_files()
+    finally:
+        reset_harness_files_manager()
+
+    cfg = tmp_path / "config.toml"
+    assert cfg.exists()
+    data = tomllib.loads(cfg.read_text())
+    # paths still present via runtime PathConfig defaults, config still valid
+    assert data["paths"]["enable_translation"] is True
+    assert "active_model" in data

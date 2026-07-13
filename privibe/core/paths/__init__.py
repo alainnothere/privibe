@@ -17,6 +17,7 @@ from privibe.core.paths._vibe_home import (
     TRUSTED_FOLDERS_FILE,
     VIBE_HOME,
     GlobalPath,
+    legacy_home_env_notice,
 )
 from privibe.core.paths.conventions import AGENTS_MD_FILENAME
 from privibe.core.paths.dialect import (
@@ -43,6 +44,7 @@ __all__ = [
     "TRUSTED_FOLDERS_FILE",
     "VIBE_HOME",
     "WALK_MAX_DEPTH",
+    "legacy_home_env_notice",
     "GlobalPath",
     "PathDialect",
     "configure_path_translation",

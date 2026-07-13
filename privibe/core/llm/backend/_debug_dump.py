@@ -58,7 +58,7 @@ def _short_session(sid: str | None) -> str:
 
 
 def _dump_dir() -> Path:
-    """Resolve the debug dump directory lazily so VIBE_HOME overrides apply."""
+    """Resolve the debug dump directory lazily so PRIVIBE_HOME overrides apply."""
     # Lazy import — paths module pulls privibe package init, which is
     # fine at runtime but we don't want it eagerly at module import time.
     from privibe.core.paths import DEBUG_DIR  # noqa: PLC0415

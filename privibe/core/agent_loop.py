@@ -607,7 +607,7 @@ class AgentLoop:
         """Persist the message list to ~/.privibe/debug/ before each LLM call.
 
         Filename: {ts}_{seq}_{session8}_{kind}_msgs{N}.json — same scheme
-        as the payload dumper so a single `ls $VIBE_HOME/debug | sort`
+        as the payload dumper so a single `ls $PRIVIBE_HOME/debug | sort`
         groups by time and each (session, turn, kind) triple is
         unambiguous regardless of which cwd privibe was launched from.
         """

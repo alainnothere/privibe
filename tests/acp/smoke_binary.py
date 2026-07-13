@@ -97,7 +97,7 @@ async def test_acp_initialize(binary: Path) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         vibe_home = Path(tmp) / ".privibe"
         env = os.environ.copy()
-        env["VIBE_HOME"] = str(vibe_home)
+        env["PRIVIBE_HOME"] = str(vibe_home)
         env["MISTRAL_API_KEY"] = "smoke-test-mock-key"
 
         proc = await asyncio.create_subprocess_exec(

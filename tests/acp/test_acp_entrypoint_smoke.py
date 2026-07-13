@@ -99,7 +99,7 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
 def _build_env(vibe_home_dir: Path, *, include_api_key: bool) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
-    env["VIBE_HOME"] = str(vibe_home_dir)
+    env["PRIVIBE_HOME"] = str(vibe_home_dir)
 
     if include_api_key:
         env["MISTRAL_API_KEY"] = "mock"

@@ -37,7 +37,7 @@ def setup_e2e_env(
     vibe_home = tmp_path / "privibe-home"
     write_e2e_config(vibe_home, streaming_mock_server.api_base)
     monkeypatch.setenv("MISTRAL_API_KEY", "fake-key")
-    monkeypatch.setenv("VIBE_HOME", str(vibe_home))
+    monkeypatch.setenv("PRIVIBE_HOME", str(vibe_home))
     monkeypatch.setenv("TERM", "xterm-256color")
 
 
