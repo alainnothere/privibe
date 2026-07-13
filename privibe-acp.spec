@@ -24,6 +24,9 @@ a = Analysis(
     pathex=[],
     binaries=binaries,
     datas=[
+        # bootstrap_config_files reads this template to seed a new config.toml;
+        # without it, first run can't write config (see privibe/acp/entrypoint.py).
+        ('privibe/core/config/default_config.toml', 'privibe/core/config'),
         # By default, pyinstaller doesn't include the .md files
         ('privibe/core/prompts/*.md', 'privibe/core/prompts'),
         ('privibe/core/tools/builtins/prompts/*.md', 'privibe/core/tools/builtins/prompts'),

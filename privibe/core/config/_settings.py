@@ -1004,13 +1004,78 @@ class VibeConfig(BaseSettings):
         except (FileNotFoundError, tomllib.TOMLDecodeError, OSError):
             return
 
+        changed = False
+
+        # Older configs allowlisted "find"; that builtin no longer exists.
         bash_tools = data.get("tools", {}).get("bash", {})
         allowlist = bash_tools.get("allowlist")
-        if allowlist is None or "find" not in allowlist:
-            return
+        if allowlist is not None and "find" in allowlist:
+            allowlist.remove("find")
+            changed = True
 
-        allowlist.remove("find")
-        cls.dump_config(data)
+        # Reconcile transcribe/tts provider `client` values that predate the
+        # current single-member enums (e.g. a Mistral Vibe config). A stale
+        # value fails hard at validation, so reset the whole modality to its
+        # defaults rather than patch just the enum string — a legacy provider's
+        # api_base/api_key_env_var and the models that reference it by name all
+        # target a different service and must move together.
+        if cls._reset_stale_providers(data):
+            changed = True
+
+        if changed:
+            cls.dump_config(data)
+
+    @classmethod
+    def _reset_stale_providers(cls, data: dict[str, Any]) -> bool:
+        """Reset any transcribe/tts modality whose provider `client` no longer
+        matches the current enum back to shipped defaults. Returns True when a
+        reset happened and records a one-shot startup notice."""
+        modalities = (
+            (
+                "transcribe_providers",
+                "transcribe_models",
+                TranscribeClient,
+                DEFAULT_TRANSCRIBE_PROVIDERS,
+                DEFAULT_TRANSCRIBE_MODELS,
+            ),
+            (
+                "tts_providers",
+                "tts_models",
+                TTSClient,
+                DEFAULT_TTS_PROVIDERS,
+                DEFAULT_TTS_MODELS,
+            ),
+        )
+        reset: list[str] = []
+        for pkey, mkey, enum_cls, def_providers, def_models in modalities:
+            providers = data.get(pkey)
+            if not isinstance(providers, list):
+                continue
+            valid = {member.value for member in enum_cls}
+            stale = [
+                p["client"]
+                for p in providers
+                if isinstance(p, dict)
+                and p.get("client") is not None
+                and p["client"] not in valid
+            ]
+            if not stale:
+                continue
+            data[pkey] = [p.model_dump(mode="json") for p in def_providers]
+            data[mkey] = [m.model_dump(mode="json") for m in def_models]
+            reset.append(f"{pkey} (was client={', '.join(map(repr, stale))})")
+
+        if not reset:
+            return False
+
+        from privibe.core.config.migration import add_pending_message
+
+        add_pending_message(
+            "privibe reset your speech-to-text/text-to-speech providers to "
+            "defaults because the previous config used values from an older, "
+            "incompatible version: " + "; ".join(reset) + "."
+        )
+        return True
 
     @classmethod
     def load(cls, **overrides: Any) -> VibeConfig:

@@ -36,21 +36,41 @@ def parse_arguments() -> Arguments:
 
 
 def bootstrap_config_files() -> None:
+    from privibe.core.paths import legacy_home_env_notice
+
+    if notice := legacy_home_env_notice():
+        logger.warning(notice)
+
     mgr = get_harness_files_manager()
     config_file = mgr.user_config_file
     if not config_file.exists():
         try:
             config_file.parent.mkdir(parents=True, exist_ok=True)
             config_data = VibeConfig.create_default()
-            # See privibe/cli/cli.py:bootstrap_config_files for why the template
-            # must be written AFTER the dump (TOML scope leak via
-            # [paths.aliases]). Keep these two bootstrap paths in sync.
-            config_data.pop("paths", None)
-            paths_template = PATHS_TEMPLATE_FILE.read_text(encoding="utf-8")
+            # See privibe/cli/cli.py:bootstrap_config_files for the full
+            # rationale: the template is appended LAST (TOML scope leak via
+            # [paths.aliases]), and if it can't be read we still write a valid
+            # config.toml with inline path defaults. Keep these two bootstrap
+            # paths in sync.
+            try:
+                paths_template: str | None = PATHS_TEMPLATE_FILE.read_text(
+                    encoding="utf-8"
+                )
+            except OSError as e:
+                logger.warning(
+                    "Paths template %s could not be read (%s); writing "
+                    "config.toml with inline path defaults instead.",
+                    PATHS_TEMPLATE_FILE,
+                    e,
+                )
+                paths_template = None
+            if paths_template is not None:
+                config_data.pop("paths", None)
             with config_file.open("wb") as f:
                 tomli_w.dump(config_data, f)
-                f.write(b"\n")
-                f.write(paths_template.encode("utf-8"))
+                if paths_template is not None:
+                    f.write(b"\n")
+                    f.write(paths_template.encode("utf-8"))
         except Exception as e:
             logger.error(f"Could not create default config file: {e}")
             raise

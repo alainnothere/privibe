@@ -28,6 +28,7 @@ a = Analysis(
     pathex=[],
     binaries=binaries,
     datas=[
+        ('privibe/core/config/default_config.toml', 'privibe/core/config'),
         ('privibe/core/prompts/*.md', 'privibe/core/prompts'),
         ('privibe/core/tools/builtins/prompts/*.md', 'privibe/core/tools/builtins/prompts'),
         ('privibe/setup/*', 'privibe/setup'),
