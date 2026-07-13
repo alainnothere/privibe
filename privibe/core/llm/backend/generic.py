@@ -116,6 +116,22 @@ class OpenAIAdapter(APIAdapter):
             msg_dict["reasoning_content"] = msg_dict.pop(field_name)
         return msg_dict
 
+    def _ensure_assistant_content(self, msg_dict: dict[str, Any]) -> dict[str, Any]:
+        # llama.cpp rejects assistant messages that carry neither 'content'
+        # nor 'tool_calls' (400: "Assistant message must contain either
+        # 'content' or 'tool_calls'!"). A thinking-only turn produces exactly
+        # that: reasoning_content is set, content is None, and exclude_none
+        # drops the key from the outbound dict. Add the same empty content
+        # the session loader's setdefault produces on restore, so the wire
+        # payload stays valid without touching the stored conversation.
+        if (
+            msg_dict.get("role") == Role.assistant
+            and not msg_dict.get("content")
+            and not msg_dict.get("tool_calls")
+        ):
+            msg_dict["content"] = ""
+        return msg_dict
+
     def prepare_request(  # noqa: PLR0913
         self,
         *,
@@ -135,12 +151,14 @@ class OpenAIAdapter(APIAdapter):
         )
         field_name = provider.reasoning_field_name
         converted_messages = [
-            self._reasoning_to_api(
-                msg.model_dump(
-                    exclude_none=True,
-                    exclude={"message_id", "reasoning_message_id", "injected"},
-                ),
-                field_name,
+            self._ensure_assistant_content(
+                self._reasoning_to_api(
+                    msg.model_dump(
+                        exclude_none=True,
+                        exclude={"message_id", "reasoning_message_id", "injected"},
+                    ),
+                    field_name,
+                )
             )
             for msg in merged_messages
         ]
