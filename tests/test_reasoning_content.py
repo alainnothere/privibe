@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import httpx
@@ -19,7 +20,14 @@ from privibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from privibe.core.llm.backend.generic import GenericBackend, OpenAIAdapter
 from privibe.integrations.mistral.backend import MistralBackend, MistralMapper, ParsedContent
 from privibe.core.llm.format import APIToolFormatHandler
-from privibe.core.types import AssistantEvent, LLMMessage, ReasoningEvent, Role
+from privibe.core.types import (
+    AssistantEvent,
+    FunctionCall,
+    LLMMessage,
+    ReasoningEvent,
+    Role,
+    ToolCall,
+)
 
 
 def make_config() -> VibeConfig:
@@ -529,3 +537,106 @@ class TestMistralReasoningFieldNameValidation:
 
         backend = MistralBackend(provider=provider)
         assert backend is not None
+
+
+class TestEnsureAssistantContent:
+    """A thinking-only assistant turn (reasoning_content set, content None,
+    no tool_calls) is dropped to a content-less dict by exclude_none, and
+    llama.cpp rejects the whole request with 400 "Assistant message must
+    contain either 'content' or 'tool_calls'!". The adapter must add an
+    empty content to the outgoing dict, matching what the session loader
+    produces on restore.
+    """
+
+    def _prepare_payload(self, messages: list[LLMMessage]) -> dict:
+        adapter = OpenAIAdapter()
+        provider = ProviderConfig(name="test", api_base="https://api.example.com/v1")
+        req = adapter.prepare_request(
+            model_name="test-model",
+            messages=messages,
+            temperature=0.2,
+            tools=None,
+            max_tokens=None,
+            tool_choice=None,
+            enable_streaming=False,
+            provider=provider,
+        )
+        return json.loads(req.body)
+
+    def test_adds_empty_content_when_content_and_tool_calls_missing(self):
+        adapter = OpenAIAdapter()
+        msg_dict = {"role": "assistant", "reasoning_content": "Thinking..."}
+
+        result = adapter._ensure_assistant_content(msg_dict)
+
+        assert result["content"] == ""
+
+    def test_keeps_existing_content(self):
+        adapter = OpenAIAdapter()
+        msg_dict = {"role": "assistant", "content": "Answer"}
+
+        result = adapter._ensure_assistant_content(msg_dict)
+
+        assert result["content"] == "Answer"
+
+    def test_skips_assistant_message_with_tool_calls(self):
+        adapter = OpenAIAdapter()
+        msg_dict = {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "type": "function"}],
+        }
+
+        result = adapter._ensure_assistant_content(msg_dict)
+
+        assert "content" not in result
+
+    def test_skips_non_assistant_roles(self):
+        adapter = OpenAIAdapter()
+        msg_dict = {"role": "tool", "tool_call_id": "c1"}
+
+        result = adapter._ensure_assistant_content(msg_dict)
+
+        assert "content" not in result
+
+    def test_prepare_request_thinking_only_assistant_gets_empty_content(self):
+        payload = self._prepare_payload(
+            [
+                LLMMessage(role=Role.user, content="Question?"),
+                LLMMessage(
+                    role=Role.assistant,
+                    content=None,
+                    reasoning_content="Thinking...",
+                ),
+                LLMMessage(role=Role.user, content="Still there?"),
+            ]
+        )
+
+        assistant = payload["messages"][1]
+        assert assistant["role"] == "assistant"
+        assert assistant["content"] == ""
+        assert assistant["reasoning_content"] == "Thinking..."
+
+    def test_prepare_request_assistant_with_tool_calls_stays_content_less(self):
+        tool_call = ToolCall(
+            id="c1",
+            index=0,
+            function=FunctionCall(name="bash", arguments="{}"),
+        )
+        payload = self._prepare_payload(
+            [
+                LLMMessage(role=Role.user, content="Question?"),
+                LLMMessage(
+                    role=Role.assistant,
+                    content=None,
+                    reasoning_content="Thinking...",
+                    tool_calls=[tool_call],
+                ),
+                LLMMessage(
+                    role=Role.tool, tool_call_id="c1", name="bash", content="ok"
+                ),
+            ]
+        )
+
+        assistant = payload["messages"][1]
+        assert "content" not in assistant
+        assert assistant["tool_calls"]
