@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from privibe.core.utils import CANCELLATION_TAG, KNOWN_TAGS, TaggedText
+from privibe.core.utils import (
+    CANCELLATION_TAG,
+    CONTEXT_REFRESH_TAG,
+    KNOWN_TAGS,
+    TaggedText,
+    strip_known_tags,
+)
 
 
 def test_tagged_text_creation_without_tag() -> None:
@@ -105,3 +111,32 @@ def test_tagged_text_round_trip_no_tag() -> None:
     parsed = TaggedText.from_string(text)
     assert parsed.message == original.message
     assert parsed.tag == original.tag
+
+
+@pytest.mark.parametrize("tag", KNOWN_TAGS)
+def test_strip_known_tags_removes_span_and_inner_text(tag: str) -> None:
+    text = f"Before <{tag}>inner text</{tag}> after"
+    assert strip_known_tags(text) == "Before  after"
+
+
+def test_strip_known_tags_removes_multiple_spans() -> None:
+    text = (
+        f"<{CANCELLATION_TAG}>one</{CANCELLATION_TAG}>keep"
+        f"<{CONTEXT_REFRESH_TAG}>two</{CONTEXT_REFRESH_TAG}>"
+    )
+    assert strip_known_tags(text) == "keep"
+
+
+def test_strip_known_tags_spans_newlines() -> None:
+    text = f"<{CONTEXT_REFRESH_TAG}>line one\nline two</{CONTEXT_REFRESH_TAG}>"
+    assert strip_known_tags(text) == ""
+
+
+def test_strip_known_tags_leaves_unknown_tags_alone() -> None:
+    text = "<unknown_tag>Some content</unknown_tag>"
+    assert strip_known_tags(text) == text
+
+
+def test_strip_known_tags_returns_untagged_text_unchanged() -> None:
+    text = "Just plain text without any tags"
+    assert strip_known_tags(text) == text

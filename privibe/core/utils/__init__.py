@@ -32,6 +32,7 @@ from privibe.core.utils.tags import (
     TaggedText,
     get_user_cancellation_message,
     is_user_cancellation_event,
+    strip_known_tags,
 )
 from privibe.core.utils.time import utc_now
 
@@ -59,5 +60,6 @@ __all__ = [
     "name_matches",
     "resolve_windows_bash",
     "run_sync",
+    "strip_known_tags",
     "utc_now",
 ]

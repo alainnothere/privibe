@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 from privibe.core.types import LLMMessage, SessionMetadata
 from privibe.core.utils.io import read_safe
+from privibe.core.utils.tags import strip_known_tags
 
 if TYPE_CHECKING:
     from privibe.core.config import SessionLoggingConfig
@@ -183,8 +184,12 @@ class SessionLoader:
                 if not content:
                     continue
 
-                if search_parts is not None:
-                    search_parts.append(content)
+                if search_parts is not None and not message.get("injected"):
+                    # Harness-injected text (context refreshes, warnings) would
+                    # otherwise match every session.
+                    searchable = strip_known_tags(content).strip()
+                    if searchable:
+                        search_parts.append(searchable)
                 if preview is not None:
                     preview.append((str(role), SessionLoader._clean_text(content)))
                     del preview[:-preview_lines]
