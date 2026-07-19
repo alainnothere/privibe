@@ -180,18 +180,23 @@ class SessionLoader:
                 if role not in _SEARCHABLE_ROLES:
                     continue
 
+                # Harness-injected text (context refreshes, warnings) is not part
+                # of the conversation: it neither matches searches nor previews.
+                if message.get("injected"):
+                    continue
+
                 content = SessionLoader._raw_content_text(message.get("content"))
                 if not content:
                     continue
 
-                if search_parts is not None and not message.get("injected"):
-                    # Harness-injected text (context refreshes, warnings) would
-                    # otherwise match every session.
-                    searchable = strip_known_tags(content).strip()
-                    if searchable:
-                        search_parts.append(searchable)
+                visible = strip_known_tags(content).strip()
+                if not visible:
+                    continue
+
+                if search_parts is not None:
+                    search_parts.append(visible)
                 if preview is not None:
-                    preview.append((str(role), SessionLoader._clean_text(content)))
+                    preview.append((str(role), SessionLoader._clean_text(visible)))
                     del preview[:-preview_lines]
 
         if not has_messages:

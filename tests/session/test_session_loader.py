@@ -1189,7 +1189,7 @@ class TestSessionLoaderScanSessionsCollection:
 
         assert scan.search_text == "part one\npart two"
 
-    def test_search_text_excludes_injected_messages_but_preview_keeps_them(
+    def test_injected_messages_excluded_from_search_text_and_preview(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:
         session_dir = Path(session_config.save_dir)
@@ -1208,10 +1208,59 @@ class TestSessionLoaderScanSessionsCollection:
         scan = _only_scan(session_config, collect_text=True, preview_lines=2)
 
         assert scan.search_text == "real question"
-        assert scan.preview == [
-            ("user", "Real question"),
-            ("user", "Injected notice"),
+        assert scan.preview == [("user", "Real question")]
+
+    def test_preview_injected_message_consumes_no_slot(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        messages = [
+            LLMMessage(role=Role.user, content="First question"),
+            LLMMessage(role=Role.assistant, content="First answer"),
+            LLMMessage(role=Role.user, content="Injected notice", injected=True),
         ]
+        create_test_session(session_dir, "prevninj", messages=messages)
+
+        scan = _only_scan(session_config, preview_lines=2)
+
+        assert scan.preview == [
+            ("user", "First question"),
+            ("assistant", "First answer"),
+        ]
+
+    def test_preview_whole_tag_span_message_consumes_no_slot(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        refresh = f"<{CONTEXT_REFRESH_TAG}>Today is Monday</{CONTEXT_REFRESH_TAG}>"
+        messages = [
+            LLMMessage(role=Role.user, content="First question"),
+            LLMMessage(role=Role.assistant, content="First answer"),
+            LLMMessage(role=Role.user, content=refresh),
+        ]
+        create_test_session(session_dir, "prevntag", messages=messages)
+
+        scan = _only_scan(session_config, preview_lines=2)
+
+        assert scan.preview == [
+            ("user", "First question"),
+            ("assistant", "First answer"),
+        ]
+
+    def test_preview_keeps_text_around_embedded_tag_span(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        content = (
+            f"Before text <{CONTEXT_REFRESH_TAG}>hidden details"
+            f"</{CONTEXT_REFRESH_TAG}> after text"
+        )
+        messages = [LLMMessage(role=Role.user, content=content)]
+        create_test_session(session_dir, "prevemb0", messages=messages)
+
+        scan = _only_scan(session_config, preview_lines=2)
+
+        assert scan.preview == [("user", "Before text  after text")]
 
     def test_search_text_excludes_untagged_old_style_context_refresh(
         self, session_config: SessionLoggingConfig, create_test_session
