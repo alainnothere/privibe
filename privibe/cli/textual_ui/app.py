@@ -99,7 +99,7 @@ from privibe.core.paths import AGENTS_MD_FILENAME, HISTORY_FILE, VIBE_HOME
 from privibe.core.rewind import RewindError
 from privibe.core.session.resume_sessions import (
     ResumeSessionInfo,
-    list_local_resume_sessions,
+    build_local_resume_index,
     short_session_id,
 )
 from privibe.core.session.session_loader import SessionLoader
@@ -1044,32 +1044,34 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def _show_session_picker(self) -> None:
         cwd = str(Path.cwd())
-        sessions = (
-            list_local_resume_sessions(self.config)
-            if self.config.session_logging.enabled
-            else []
+        session_config = self.config.session_logging
+        index = (
+            await asyncio.to_thread(
+                build_local_resume_index,
+                self.config,
+                session_config.resume_preview_lines,
+            )
+            if session_config.enabled
+            else None
         )
 
-        if not sessions:
+        if index is None or not index.sessions:
             await self._mount_and_scroll(
                 UserCommandMessage("No sessions found.")
             )
             return
 
         sessions = sorted(
-            sessions,
+            index.sessions,
             key=lambda s: (s.cwd == cwd, s.end_time or ""),
             reverse=True,
         )
 
-        latest_messages: dict[str, list[tuple[str, str]]] = {
-            s.option_id: SessionLoader.get_last_messages(
-                s.session_id, self.config.session_logging, n=self.config.session_logging.resume_preview_lines
-            )
-            for s in sessions
-        }
-
-        picker = SessionPickerApp(sessions=sessions, latest_messages=latest_messages)
+        picker = SessionPickerApp(
+            sessions=sessions,
+            latest_messages=index.previews,
+            search_index=index.search_text,
+        )
         await self._switch_from_input(picker)
 
     async def on_session_picker_app_session_selected(
