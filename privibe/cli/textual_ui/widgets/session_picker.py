@@ -145,16 +145,25 @@ class SessionPickerApp(Container):
 
     def _matching_sessions(self, query: str) -> list[ResumeSessionInfo]:
         words = set(query.lower().split())
-        if not words:
+        # A lone "-" is a mid-typing state, not an exclusion; ignoring it keeps
+        # the list from flickering to empty as the user types.
+        excluded = {word[1:] for word in words if word.startswith("-") and len(word) > 1}
+        included = {word for word in words if not word.startswith("-")}
+        if not excluded and not included:
             return self._sessions
-        scored = []
+        kept = []
         for session in self._sessions:
             text = self._search_index.get(session.option_id, "")
-            score = sum(1 for word in words if word in text)
+            if any(word in text for word in excluded):
+                continue
+            if not included:
+                kept.append((0, session))
+                continue
+            score = sum(1 for word in included if word in text)
             if score:
-                scored.append((score, session))
+                kept.append((score, session))
         # sorted() is stable, so equal scores keep the incoming session order.
-        return [session for _, session in sorted(scored, key=lambda pair: -pair[0])]
+        return [session for _, session in sorted(kept, key=lambda pair: -pair[0])]
 
     def _build_options(self) -> list[Option]:
         if not self._filtered:
