@@ -172,18 +172,67 @@ class TestSessionPickerFiltering:
     def test_empty_query_matches_all(self, picker: SessionPickerApp) -> None:
         assert picker._matching_sessions("") == picker._sessions
 
+    def test_whitespace_only_query_matches_all(
+        self, picker: SessionPickerApp
+    ) -> None:
+        assert picker._matching_sessions("   \t ") == picker._sessions
+
     def test_substring_match_is_case_insensitive(
         self, picker: SessionPickerApp
     ) -> None:
         matched = picker._matching_sessions("AUTHENTICATION")
         assert [s.option_id for s in matched] == ["local:session-b"]
 
-    def test_query_matches_title_text(self, picker: SessionPickerApp) -> None:
-        matched = picker._matching_sessions("session c")
-        assert [s.option_id for s in matched] == ["remote:session-c"]
+    def test_words_match_out_of_order_and_far_apart(
+        self, picker: SessionPickerApp
+    ) -> None:
+        matched = picker._matching_sessions("bug help")
+        assert [s.option_id for s in matched] == ["local:session-a"]
+
+    def test_more_matched_words_rank_first(self, picker: SessionPickerApp) -> None:
+        matched = picker._matching_sessions("session api tests")
+        assert [s.option_id for s in matched] == [
+            "remote:session-c",
+            "local:session-a",
+            "local:session-b",
+        ]
+
+    def test_equal_scores_keep_incoming_order(
+        self, picker: SessionPickerApp
+    ) -> None:
+        matched = picker._matching_sessions("session")
+        assert [s.option_id for s in matched] == [
+            s.option_id for s in picker._sessions
+        ]
+
+    def test_partial_word_matches(self, picker: SessionPickerApp) -> None:
+        matched = picker._matching_sessions("sess")
+        assert [s.option_id for s in matched] == [
+            s.option_id for s in picker._sessions
+        ]
+
+    def test_duplicate_query_words_do_not_inflate_score(
+        self, picker: SessionPickerApp
+    ) -> None:
+        # "api" only hits session-c and "bug" only hits session-a, so both score
+        # 1 and stay in incoming order; counting "api" twice would flip them.
+        matched = picker._matching_sessions("api api bug")
+        assert [s.option_id for s in matched] == [
+            "local:session-a",
+            "remote:session-c",
+        ]
+
+    def test_session_without_any_query_word_is_excluded(
+        self, picker: SessionPickerApp
+    ) -> None:
+        matched = picker._matching_sessions("authentication api")
+        assert [s.option_id for s in matched] == [
+            "local:session-b",
+            "remote:session-c",
+        ]
 
     def test_no_match_returns_empty(self, picker: SessionPickerApp) -> None:
-        assert picker._matching_sessions("nothing here") == []
+        assert picker._matching_sessions("zzzqqq wwwvvv") == []
 
     def test_session_missing_from_index_never_matches(
         self, sample_sessions: list[ResumeSessionInfo]
