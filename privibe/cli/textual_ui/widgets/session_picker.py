@@ -144,14 +144,17 @@ class SessionPickerApp(Container):
         self._filtered = sessions
 
     def _matching_sessions(self, query: str) -> list[ResumeSessionInfo]:
-        needle = query.lower()
-        if not needle:
+        words = set(query.lower().split())
+        if not words:
             return self._sessions
-        return [
-            session
-            for session in self._sessions
-            if needle in self._search_index.get(session.option_id, "")
-        ]
+        scored = []
+        for session in self._sessions:
+            text = self._search_index.get(session.option_id, "")
+            score = sum(1 for word in words if word in text)
+            if score:
+                scored.append((score, session))
+        # sorted() is stable, so equal scores keep the incoming session order.
+        return [session for _, session in sorted(scored, key=lambda pair: -pair[0])]
 
     def _build_options(self) -> list[Option]:
         if not self._filtered:
