@@ -10,6 +10,7 @@ import pytest
 from privibe.core.config import SessionLoggingConfig
 from privibe.core.session.session_loader import SessionLoader, SessionScan
 from privibe.core.types import LLMMessage, Role, ToolCall
+from privibe.core.utils import CONTEXT_REFRESH_TAG, VIBE_WARNING_TAG
 
 
 @pytest.fixture
@@ -1147,6 +1148,118 @@ class TestSessionLoaderScanSessionsCollection:
         scan = _only_scan(session_config, collect_text=True)
 
         assert scan.search_text == "part one\npart two"
+
+    def test_search_text_excludes_injected_messages_but_preview_keeps_them(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        messages = [
+            LLMMessage(role=Role.user, content="Real question"),
+            LLMMessage(role=Role.user, content="Injected notice", injected=True),
+        ]
+        metadata = {
+            "session_id": "injected",
+            "environment": {"working_directory": "/test"},
+        }
+        create_test_session(
+            session_dir, "injected", messages=messages, metadata=metadata
+        )
+
+        scan = _only_scan(session_config, collect_text=True, preview_lines=2)
+
+        assert scan.search_text == "real question"
+        assert scan.preview == [
+            ("user", "Real question"),
+            ("user", "Injected notice"),
+        ]
+
+    def test_search_text_excludes_untagged_old_style_context_refresh(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        refresh = f"<{CONTEXT_REFRESH_TAG}>Today is Monday</{CONTEXT_REFRESH_TAG}>"
+        messages = [
+            LLMMessage(role=Role.user, content="Real question"),
+            LLMMessage(role=Role.user, content=refresh),
+        ]
+        metadata = {
+            "session_id": "oldstyle",
+            "environment": {"working_directory": "/test"},
+        }
+        create_test_session(
+            session_dir, "oldstyle", messages=messages, metadata=metadata
+        )
+
+        scan = _only_scan(session_config, collect_text=True)
+
+        assert scan.search_text == "real question"
+
+    def test_search_text_excludes_vibe_warning_messages(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        warning = f"<{VIBE_WARNING_TAG}>Plan mode is active</{VIBE_WARNING_TAG}>"
+        messages = [
+            LLMMessage(role=Role.user, content="Real question"),
+            LLMMessage(role=Role.user, content=warning),
+        ]
+        metadata = {
+            "session_id": "warnonly",
+            "environment": {"working_directory": "/test"},
+        }
+        create_test_session(
+            session_dir, "warnonly", messages=messages, metadata=metadata
+        )
+
+        scan = _only_scan(session_config, collect_text=True)
+
+        assert scan.search_text == "real question"
+
+    def test_search_text_keeps_text_around_embedded_tag_span(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        content = (
+            f"Before text <{CONTEXT_REFRESH_TAG}>hidden details"
+            f"</{CONTEXT_REFRESH_TAG}> after text"
+        )
+        messages = [LLMMessage(role=Role.user, content=content)]
+        metadata = {
+            "session_id": "embedded",
+            "environment": {"working_directory": "/test"},
+        }
+        create_test_session(
+            session_dir, "embedded", messages=messages, metadata=metadata
+        )
+
+        scan = _only_scan(session_config, collect_text=True)
+
+        assert scan.search_text is not None
+        assert "hidden details" not in scan.search_text
+        assert "before text" in scan.search_text
+        assert "after text" in scan.search_text
+
+    def test_search_text_has_no_blank_entry_for_stripped_message(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        refresh = f"  <{CONTEXT_REFRESH_TAG}>noise</{CONTEXT_REFRESH_TAG}>  "
+        messages = [
+            LLMMessage(role=Role.user, content="First real"),
+            LLMMessage(role=Role.user, content=refresh),
+            LLMMessage(role=Role.assistant, content="Second real"),
+        ]
+        metadata = {
+            "session_id": "noblank0",
+            "environment": {"working_directory": "/test"},
+        }
+        create_test_session(
+            session_dir, "noblank0", messages=messages, metadata=metadata
+        )
+
+        scan = _only_scan(session_config, collect_text=True)
+
+        assert scan.search_text == "first real\nsecond real"
 
 
 class TestSessionLoaderUTF8Encoding:

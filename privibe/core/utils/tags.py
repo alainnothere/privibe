@@ -13,13 +13,18 @@ VIBE_WARNING_TAG = "vibe_warning"
 
 KNOWN_TAGS = [CANCELLATION_TAG, CONTEXT_REFRESH_TAG, TOOL_ERROR_TAG, VIBE_STOP_EVENT_TAG, VIBE_WARNING_TAG]
 
+_TAG_PATTERN = re.compile(
+    rf"<({'|'.join(re.escape(tag) for tag in KNOWN_TAGS)})>(.*?)</\1>",
+    flags=re.DOTALL,
+)
+
+
+def strip_known_tags(text: str) -> str:
+    """Remove every known ``<tag>...</tag>`` span, inner text included."""
+    return _TAG_PATTERN.sub("", text)
+
 
 class TaggedText:
-    _TAG_PATTERN = re.compile(
-        rf"<({'|'.join(re.escape(tag) for tag in KNOWN_TAGS)})>(.*?)</\1>",
-        flags=re.DOTALL,
-    )
-
     def __init__(self, message: str, tag: str = "") -> None:
         self.message = message
         self.tag = tag
@@ -42,7 +47,7 @@ class TaggedText:
                 found_tag = tag_name
             return content
 
-        result = TaggedText._TAG_PATTERN.sub(replace_tag, text)
+        result = _TAG_PATTERN.sub(replace_tag, text)
 
         if found_tag:
             return TaggedText(result, found_tag)
