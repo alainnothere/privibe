@@ -231,6 +231,53 @@ class TestSessionPickerFiltering:
             "remote:session-c",
         ]
 
+    def test_exclusion_term_drops_matching_session(
+        self, picker: SessionPickerApp
+    ) -> None:
+        matched = picker._matching_sessions("-authentication")
+        assert [s.option_id for s in matched] == [
+            "local:session-a",
+            "remote:session-c",
+        ]
+
+    def test_exclusion_beats_inclusion_score(self, picker: SessionPickerApp) -> None:
+        # session-b matches "module" but is excluded; the rest rank as usual.
+        matched = picker._matching_sessions("session tests -module")
+        assert [s.option_id for s in matched] == [
+            "remote:session-c",
+            "local:session-a",
+        ]
+
+    def test_exclusion_only_query_keeps_incoming_order(
+        self, picker: SessionPickerApp
+    ) -> None:
+        matched = picker._matching_sessions("-bug -api")
+        assert [s.option_id for s in matched] == ["local:session-b"]
+
+    def test_bare_dash_matches_all(self, picker: SessionPickerApp) -> None:
+        assert picker._matching_sessions("-") == picker._sessions
+        assert picker._matching_sessions("  -  ") == picker._sessions
+
+    def test_word_both_included_and_excluded_drops_it(
+        self, picker: SessionPickerApp
+    ) -> None:
+        assert picker._matching_sessions("bug -bug") == []
+
+    def test_mid_word_hyphen_is_not_an_exclusion(
+        self, sample_sessions: list[ResumeSessionInfo]
+    ) -> None:
+        picker = SessionPickerApp(
+            sessions=sample_sessions,
+            latest_messages={},
+            search_index={
+                "local:session-a": "context-refresh notes",
+                "local:session-b": "unrelated notes",
+                "remote:session-c": "more notes",
+            },
+        )
+        matched = picker._matching_sessions("context-refresh")
+        assert [s.option_id for s in matched] == ["local:session-a"]
+
     def test_no_match_returns_empty(self, picker: SessionPickerApp) -> None:
         assert picker._matching_sessions("zzzqqq wwwvvv") == []
 
