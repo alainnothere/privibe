@@ -8,7 +8,7 @@ import time
 import pytest
 
 from privibe.core.config import SessionLoggingConfig
-from privibe.core.session.session_loader import SessionLoader
+from privibe.core.session.session_loader import SessionLoader, SessionScan
 from privibe.core.types import LLMMessage, Role, ToolCall
 
 
@@ -829,8 +829,187 @@ class TestSessionLoaderListSessions:
         assert result[0]["title"] is None
 
 
-class TestSessionLoaderGetLastMessages:
-    def test_returns_last_two_messages(
+def _only_scan(
+    config: SessionLoggingConfig, **kwargs
+) -> SessionScan:
+    scans = SessionLoader._scan_sessions(config, **kwargs)
+    assert len(scans) == 1
+    return scans[0]
+
+
+class TestSessionLoaderScanSessionsValidation:
+    def test_skips_session_missing_messages_file(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_nomsg000"
+        folder.mkdir()
+        (folder / "meta.json").write_text('{"session_id": "nomsg000"}')
+
+        assert SessionLoader._scan_sessions(session_config) == []
+
+    def test_skips_session_missing_metadata_file(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_nometa00"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_text(
+            '{"role": "user", "content": "Hello"}\n'
+        )
+
+        assert SessionLoader._scan_sessions(session_config) == []
+
+    def test_skips_non_dict_metadata(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_listmeta"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_text(
+            '{"role": "user", "content": "Hello"}\n'
+        )
+        (folder / "meta.json").write_text('["not", "a", "dict"]')
+
+        assert SessionLoader._scan_sessions(session_config) == []
+
+    def test_skips_invalid_json_message_line(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_badline0"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_text(
+            '{"role": "user", "content": "Hello"}\n{invalid json}\n'
+        )
+        (folder / "meta.json").write_text('{"session_id": "badline0"}')
+
+        assert SessionLoader._scan_sessions(session_config) == []
+
+    def test_skips_non_dict_message_line(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_listline"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_text('["not", "a", "dict"]\n')
+        (folder / "meta.json").write_text('{"session_id": "listline"}')
+
+        assert SessionLoader._scan_sessions(session_config) == []
+
+    def test_skips_empty_messages_file(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_emptymsg"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_text("")
+        (folder / "meta.json").write_text('{"session_id": "emptymsg"}')
+
+        assert SessionLoader._scan_sessions(session_config) == []
+
+    def test_skips_metadata_without_session_id(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_noid0000"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_text(
+            '{"role": "user", "content": "Hello"}\n'
+        )
+        (folder / "meta.json").write_text(
+            '{"environment": {"working_directory": "/test"}}'
+        )
+
+        assert SessionLoader._scan_sessions(session_config) == []
+
+    def test_skips_undecodable_metadata(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_badmeta0"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_text(
+            '{"role": "user", "content": "Hello"}\n'
+        )
+        (folder / "meta.json").write_bytes(b'{"session_id": "\xff\xfe"}')
+
+        assert SessionLoader._scan_sessions(session_config) == []
+
+    def test_skips_undecodable_messages(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_badmsgs0"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_bytes(
+            b'{"role": "user", "content": "\xff\xfe"}\n'
+        )
+        (folder / "meta.json").write_text('{"session_id": "badmsgs0"}')
+
+        assert SessionLoader._scan_sessions(session_config) == []
+
+    def test_handles_empty_dict_message_line(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = session_dir / "test_20240101_120000_emptydic"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_text(
+            '{}\n{"role": "user", "content": "Hello"}\n'
+        )
+        (folder / "meta.json").write_text('{"session_id": "emptydic"}')
+
+        scan = _only_scan(session_config, collect_text=True, preview_lines=2)
+
+        assert scan.info["session_id"] == "emptydic"
+        assert scan.preview == [("user", "Hello")]
+        assert scan.search_text == "hello"
+
+    def test_does_not_scan_nested_agent_dirs(
+        self, session_config: SessionLoggingConfig, create_test_session_with_cwd
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        folder = create_test_session_with_cwd(
+            session_dir, "parent00", "/home/user/project"
+        )
+
+        agent_dir = folder / "agents" / "test_20240101_120000_child000"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "messages.jsonl").write_text(
+            '{"role": "user", "content": "Hello"}\n'
+        )
+        (agent_dir / "meta.json").write_text('{"session_id": "child000"}')
+
+        scans = SessionLoader._scan_sessions(session_config)
+
+        assert [scan.info["session_id"] for scan in scans] == ["parent00"]
+
+    def test_filters_by_cwd(
+        self, session_config: SessionLoggingConfig, create_test_session_with_cwd
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        create_test_session_with_cwd(session_dir, "inproj00", "/home/user/project1")
+        create_test_session_with_cwd(session_dir, "outproj0", "/home/user/project2")
+
+        scans = SessionLoader._scan_sessions(session_config, cwd="/home/user/project1")
+
+        assert [scan.info["session_id"] for scan in scans] == ["inproj00"]
+
+
+class TestSessionLoaderScanSessionsCollection:
+    def test_collects_nothing_by_default(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        create_test_session(session_dir, "nocollec")
+
+        scan = _only_scan(session_config)
+
+        assert scan.preview is None
+        assert scan.search_text is None
+
+    def test_preview_honors_preview_lines(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:
         session_dir = Path(session_config.save_dir)
@@ -841,21 +1020,16 @@ class TestSessionLoaderGetLastMessages:
             LLMMessage(role=Role.user, content="Second question"),
             LLMMessage(role=Role.assistant, content="Second answer"),
         ]
-        create_test_session(session_dir, "lastmsg0", messages=messages)
+        create_test_session(session_dir, "preview0", messages=messages)
 
-        result = SessionLoader.get_last_messages("lastmsg0", session_config, n=2)
+        scan = _only_scan(session_config, preview_lines=2)
 
-        assert len(result) == 2
-        assert result[0] == ("user", "Second question")
-        assert result[1] == ("assistant", "Second answer")
+        assert scan.preview == [
+            ("user", "Second question"),
+            ("assistant", "Second answer"),
+        ]
 
-    def test_returns_empty_for_missing_session(
-        self, session_config: SessionLoggingConfig
-    ) -> None:
-        result = SessionLoader.get_last_messages("nonexistent", session_config)
-        assert result == []
-
-    def test_skips_system_and_tool_messages(
+    def test_preview_skips_system_and_tool_messages(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:
         session_dir = Path(session_config.save_dir)
@@ -865,15 +1039,16 @@ class TestSessionLoaderGetLastMessages:
             LLMMessage(role=Role.tool, content="Tool result", tool_call_id="tc1"),
             LLMMessage(role=Role.assistant, content="Assistant reply"),
         ]
-        create_test_session(session_dir, "skiptool", messages=messages)
+        create_test_session(session_dir, "prevskip", messages=messages)
 
-        result = SessionLoader.get_last_messages("skiptool", session_config, n=2)
+        scan = _only_scan(session_config, preview_lines=2)
 
-        assert len(result) == 2
-        assert result[0] == ("user", "User message")
-        assert result[1] == ("assistant", "Assistant reply")
+        assert scan.preview == [
+            ("user", "User message"),
+            ("assistant", "Assistant reply"),
+        ]
 
-    def test_returns_fewer_when_not_enough_messages(
+    def test_preview_returns_fewer_when_not_enough_messages(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:
         session_dir = Path(session_config.save_dir)
@@ -881,40 +1056,97 @@ class TestSessionLoaderGetLastMessages:
             LLMMessage(role=Role.system, content="System prompt"),
             LLMMessage(role=Role.user, content="Only question"),
         ]
-        create_test_session(session_dir, "onemsg00", messages=messages)
+        create_test_session(session_dir, "prevone0", messages=messages)
 
-        result = SessionLoader.get_last_messages("onemsg00", session_config, n=2)
+        scan = _only_scan(session_config, preview_lines=2)
 
-        assert len(result) == 1
-        assert result[0] == ("user", "Only question")
+        assert scan.preview == [("user", "Only question")]
 
-    def test_newlines_replaced_with_spaces(
+    def test_preview_replaces_newlines_with_spaces(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:
         session_dir = Path(session_config.save_dir)
         messages = [
             LLMMessage(role=Role.system, content="System prompt"),
             LLMMessage(role=Role.user, content="Line one\nLine two"),
-            LLMMessage(role=Role.assistant, content="Response"),
         ]
-        create_test_session(session_dir, "newlinem", messages=messages)
+        create_test_session(session_dir, "prevnewl", messages=messages)
 
-        result = SessionLoader.get_last_messages("newlinem", session_config, n=2)
+        scan = _only_scan(session_config, preview_lines=2)
 
-        assert "\n" not in result[0][1]
-        assert result[0][1] == "Line one Line two"
+        assert scan.preview == [("user", "Line one Line two")]
 
-    def test_returns_empty_for_corrupted_session(
+    def test_search_text_includes_user_assistant_and_title(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        messages = [
+            LLMMessage(role=Role.system, content="System prompt"),
+            LLMMessage(role=Role.user, content="Fix the parser"),
+            LLMMessage(role=Role.assistant, content="Looking at it"),
+        ]
+        metadata = {
+            "session_id": "searchid",
+            "title": "Parser Work",
+            "environment": {"working_directory": "/test"},
+        }
+        create_test_session(
+            session_dir, "searchid", messages=messages, metadata=metadata
+        )
+
+        scan = _only_scan(session_config, collect_text=True)
+
+        assert scan.search_text == "fix the parser\nlooking at it\nparser work"
+
+    def test_search_text_excludes_reasoning_tool_calls_and_tool_role(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        messages = [
+            LLMMessage(role=Role.user, content="Visible question"),
+            LLMMessage(
+                role=Role.assistant,
+                content="Visible answer",
+                reasoning_content="Secret reasoning",
+                tool_calls=[
+                    ToolCall(
+                        id="tc1",
+                        function={"name": "bash", "arguments": "secret argument"},
+                    )
+                ],
+            ),
+            LLMMessage(role=Role.tool, content="Secret tool output", tool_call_id="tc1"),
+        ]
+        metadata = {
+            "session_id": "excluded",
+            "environment": {"working_directory": "/test"},
+        }
+        create_test_session(
+            session_dir, "excluded", messages=messages, metadata=metadata
+        )
+
+        scan = _only_scan(session_config, collect_text=True)
+
+        assert scan.search_text == "visible question\nvisible answer"
+
+    def test_search_text_flattens_content_part_lists(
         self, session_config: SessionLoggingConfig
     ) -> None:
         session_dir = Path(session_config.save_dir)
-        session_folder = session_dir / "test_20230101_120000_corrupt1"
-        session_folder.mkdir()
-        (session_folder / "messages.jsonl").write_text("{invalid json}")
-        (session_folder / "meta.json").write_text('{"session_id": "corrupt1"}')
+        folder = session_dir / "test_20240101_120000_partlist"
+        folder.mkdir()
+        (folder / "messages.jsonl").write_text(
+            json.dumps({
+                "role": "user",
+                "content": [{"type": "text", "text": "Part One"}, {"text": "Part Two"}],
+            })
+            + "\n"
+        )
+        (folder / "meta.json").write_text('{"session_id": "partlist"}')
 
-        result = SessionLoader.get_last_messages("corrupt1", session_config)
-        assert result == []
+        scan = _only_scan(session_config, collect_text=True)
+
+        assert scan.search_text == "part one\npart two"
 
 
 class TestSessionLoaderUTF8Encoding:

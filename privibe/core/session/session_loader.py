@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
 METADATA_FILENAME = "meta.json"
 MESSAGES_FILENAME = "messages.jsonl"
 
+_SEARCHABLE_ROLES = frozenset({"user", "assistant"})
+
 
 class SessionInfo(TypedDict):
     session_id: str
@@ -22,6 +25,15 @@ class SessionInfo(TypedDict):
     title: str | None
     end_time: str | None
     session_path: str
+
+
+@dataclass(frozen=True)
+class SessionScan:
+    """One session read in a single pass over its metadata and messages."""
+
+    info: SessionInfo
+    preview: list[tuple[str, str]] | None
+    search_text: str | None
 
 
 class SessionLoader:
@@ -128,54 +140,150 @@ class SessionLoader:
         return utc_dt.isoformat()
 
     @staticmethod
-    def list_sessions(
-        config: SessionLoggingConfig, cwd: str | None = None
-    ) -> list[SessionInfo]:
+    def _raw_content_text(value: Any) -> str | None:
+        """Flatten a raw stored ``content`` value the way LLMMessage would."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts: list[str] = []
+            for part in value:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+                else:
+                    parts.append(str(part))
+            return "\n".join(parts)
+        return str(value)
+
+    @staticmethod
+    def _scan_messages(
+        messages_path: Path, collect_text: bool, preview_lines: int
+    ) -> tuple[list[tuple[str, str]] | None, list[str] | None] | None:
+        """Read messages.jsonl once, returning None if it is not a valid session."""
+        preview: list[tuple[str, str]] | None = [] if preview_lines > 0 else None
+        search_parts: list[str] | None = [] if collect_text else None
+        has_messages = False
+
+        with messages_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                has_messages = True
+                message = json.loads(line)
+                if not isinstance(message, dict):
+                    return None
+
+                if preview is None and search_parts is None:
+                    continue
+
+                role = message.get("role")
+                if role not in _SEARCHABLE_ROLES:
+                    continue
+
+                content = SessionLoader._raw_content_text(message.get("content"))
+                if not content:
+                    continue
+
+                if search_parts is not None:
+                    search_parts.append(content)
+                if preview is not None:
+                    preview.append((str(role), SessionLoader._clean_text(content)))
+                    del preview[:-preview_lines]
+
+        if not has_messages:
+            return None
+
+        return preview, search_parts
+
+    @staticmethod
+    def _scan_session_dir(
+        session_dir: Path,
+        cwd: str | None,
+        collect_text: bool,
+        preview_lines: int,
+    ) -> SessionScan | None:
+        """Read one session's metadata and messages once, or None if unusable."""
+        metadata_path = session_dir / METADATA_FILENAME
+        messages_path = session_dir / MESSAGES_FILENAME
+
+        if not metadata_path.is_file() or not messages_path.is_file():
+            return None
+
+        try:
+            with metadata_path.open("r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            if not isinstance(metadata, dict):
+                return None
+
+            session_id = metadata.get("session_id")
+            if not session_id:
+                return None
+
+            session_cwd = metadata.get("environment", {}).get("working_directory", "")
+            if cwd is not None and session_cwd != cwd:
+                return None
+
+            scanned = SessionLoader._scan_messages(
+                messages_path, collect_text, preview_lines
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+
+        if scanned is None:
+            return None
+        preview, search_parts = scanned
+
+        end_time = metadata.get("end_time")
+        if end_time:
+            try:
+                end_time = SessionLoader._convert_to_utc_iso(end_time)
+            except (ValueError, OSError):
+                end_time = None
+
+        title = metadata.get("title")
+        search_text: str | None = None
+        if search_parts is not None:
+            if title:
+                search_parts.append(str(title))
+            search_text = "\n".join(search_parts).lower()
+
+        info: SessionInfo = {
+            "session_id": session_id,
+            "cwd": session_cwd,
+            "title": title,
+            "end_time": end_time,
+            "session_path": str(messages_path),
+        }
+        return SessionScan(info=info, preview=preview, search_text=search_text)
+
+    @staticmethod
+    def _scan_sessions(
+        config: SessionLoggingConfig,
+        cwd: str | None = None,
+        collect_text: bool = False,
+        preview_lines: int = 0,
+    ) -> list[SessionScan]:
         save_dir = Path(config.save_dir)
         if not save_dir.exists():
             return []
 
+        # Non-recursive: nested agents/ subdirs have their own messages.jsonl.
         pattern = f"{config.session_prefix}_*"
-        session_dirs = list(save_dir.glob(pattern))
 
-        sessions: list[SessionInfo] = []
-        for session_dir in session_dirs:
-            if not SessionLoader._is_valid_session(session_dir):
-                continue
+        scans: list[SessionScan] = []
+        for session_dir in save_dir.glob(pattern):
+            scan = SessionLoader._scan_session_dir(
+                session_dir, cwd, collect_text, preview_lines
+            )
+            if scan is not None:
+                scans.append(scan)
 
-            metadata_path = session_dir / METADATA_FILENAME
-            try:
-                with metadata_path.open("r", encoding="utf-8") as f:
-                    metadata = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                continue
+        return scans
 
-            session_id = metadata.get("session_id")
-            if not session_id:
-                continue
-
-            environment = metadata.get("environment", {})
-            session_cwd = environment.get("working_directory", "")
-
-            if cwd is not None and session_cwd != cwd:
-                continue
-
-            end_time = metadata.get("end_time")
-            if end_time:
-                try:
-                    end_time = SessionLoader._convert_to_utc_iso(end_time)
-                except (ValueError, OSError):
-                    end_time = None
-
-            sessions.append({
-                "session_id": session_id,
-                "cwd": session_cwd,
-                "title": metadata.get("title"),
-                "end_time": end_time,
-                "session_path": str(session_dir / MESSAGES_FILENAME),
-            })
-
-        return sessions
+    @staticmethod
+    def list_sessions(
+        config: SessionLoggingConfig, cwd: str | None = None
+    ) -> list[SessionInfo]:
+        return [scan.info for scan in SessionLoader._scan_sessions(config, cwd)]
 
     @staticmethod
     def load_metadata(session_dir: Path) -> SessionMetadata:
@@ -250,30 +358,3 @@ class SessionLoader:
     def _clean_text(text: str) -> str:
         text = text.strip().replace("\n", " ")
         return text or "(empty message)"
-
-    @staticmethod
-    def _extract_text_from_content(content: str | None) -> str | None:
-        if not content:
-            return None
-        return SessionLoader._clean_text(content)
-
-    @staticmethod
-    def get_last_messages(
-        session_id: str, config: SessionLoggingConfig, n: int = 2
-    ) -> list[tuple[str, str]]:
-        """Return last n (role, text) pairs for user/assistant messages."""
-        session_path = SessionLoader.find_session_by_id(session_id, config)
-        if not session_path:
-            return []
-        try:
-            messages, _ = SessionLoader.load_session(session_path)
-            result = []
-            for msg in messages:
-                if msg.role not in ("user", "assistant"):
-                    continue
-                text = SessionLoader._extract_text_from_content(msg.content)
-                if text:
-                    result.append((str(msg.role), text))
-            return result[-n:]
-        except (ValueError, OSError):
-            return []

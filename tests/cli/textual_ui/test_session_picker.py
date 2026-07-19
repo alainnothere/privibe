@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from textual.app import App, ComposeResult
+from textual.widgets import Input, OptionList
 
 from privibe.cli.textual_ui.widgets.session_picker import (
     SessionPickerApp,
@@ -142,6 +144,70 @@ class TestSessionPickerAppInit:
     def test_can_focus_children_is_true(self) -> None:
         assert SessionPickerApp.can_focus_children is True
 
+    def test_can_focus_is_true(self) -> None:
+        assert SessionPickerApp.can_focus is True
+
+    def test_search_index_defaults_to_empty(self) -> None:
+        picker = SessionPickerApp(sessions=[], latest_messages={})
+        assert picker._search_index == {}
+
+
+class TestSessionPickerFiltering:
+    @pytest.fixture
+    def picker(
+        self,
+        sample_sessions: list[ResumeSessionInfo],
+        sample_latest_messages: dict[str, list[tuple[str, str]]],
+    ) -> SessionPickerApp:
+        return SessionPickerApp(
+            sessions=sample_sessions,
+            latest_messages=sample_latest_messages,
+            search_index={
+                "local:session-a": "help me fix this bug\nsession a",
+                "local:session-b": "refactor the authentication module\nsession b",
+                "remote:session-c": "add unit tests for the api\nsession c",
+            },
+        )
+
+    def test_empty_query_matches_all(self, picker: SessionPickerApp) -> None:
+        assert picker._matching_sessions("") == picker._sessions
+
+    def test_substring_match_is_case_insensitive(
+        self, picker: SessionPickerApp
+    ) -> None:
+        matched = picker._matching_sessions("AUTHENTICATION")
+        assert [s.option_id for s in matched] == ["local:session-b"]
+
+    def test_query_matches_title_text(self, picker: SessionPickerApp) -> None:
+        matched = picker._matching_sessions("session c")
+        assert [s.option_id for s in matched] == ["remote:session-c"]
+
+    def test_no_match_returns_empty(self, picker: SessionPickerApp) -> None:
+        assert picker._matching_sessions("nothing here") == []
+
+    def test_session_missing_from_index_never_matches(
+        self, sample_sessions: list[ResumeSessionInfo]
+    ) -> None:
+        picker = SessionPickerApp(
+            sessions=sample_sessions, latest_messages={}, search_index={}
+        )
+        assert picker._matching_sessions("bug") == []
+
+    def test_options_show_placeholder_when_no_matches(
+        self, picker: SessionPickerApp
+    ) -> None:
+        picker._filtered = []
+        options = picker._build_options()
+        assert len(options) == 1
+        assert options[0].disabled is True
+        assert options[0].id is None
+
+    def test_options_carry_option_ids(self, picker: SessionPickerApp) -> None:
+        options = picker._build_options()
+        assert [option.id for option in options] == [
+            s.option_id for s in picker._sessions
+        ]
+
 
 class TestSessionPickerMessages:
     def test_session_selected_stores_option_id(self) -> None:
@@ -177,3 +243,142 @@ class TestSessionPickerAppBindings:
 
     def test_has_escape_binding(self) -> None:
         assert "escape" in self._get_binding_keys()
+
+    def test_has_arrow_bindings(self) -> None:
+        keys = self._get_binding_keys()
+        assert "up" in keys
+        assert "down" in keys
+
+
+class PickerHost(App):
+    """Minimal host app so the picker can be driven by a Pilot."""
+
+    def __init__(self, picker: SessionPickerApp) -> None:
+        super().__init__()
+        self._picker = picker
+        self.selected_session_id: str | None = None
+
+    def compose(self) -> ComposeResult:
+        yield self._picker
+
+    def on_session_picker_app_session_selected(
+        self, event: SessionPickerApp.SessionSelected
+    ) -> None:
+        self.selected_session_id = event.session_id
+
+
+@pytest.fixture
+def picker_host(
+    sample_sessions: list[ResumeSessionInfo],
+    sample_latest_messages: dict[str, list[tuple[str, str]]],
+) -> PickerHost:
+    picker = SessionPickerApp(
+        sessions=sample_sessions,
+        latest_messages=sample_latest_messages,
+        search_index={
+            "local:session-a": "help me fix this bug\nsession a",
+            "local:session-b": "refactor the authentication module\nsession b",
+            "remote:session-c": "add unit tests for the api\nsession c",
+        },
+    )
+    return PickerHost(picker)
+
+
+class TestSessionPickerInteraction:
+    @pytest.mark.asyncio
+    async def test_search_input_has_focus_on_mount(
+        self, picker_host: PickerHost
+    ) -> None:
+        async with picker_host.run_test():
+            assert picker_host.query_one(Input).has_focus
+
+    @pytest.mark.asyncio
+    async def test_typing_filters_and_resets_highlight(
+        self, picker_host: PickerHost
+    ) -> None:
+        async with picker_host.run_test() as pilot:
+            option_list = picker_host.query_one(OptionList)
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert option_list.highlighted == 1
+
+            await pilot.press("a", "u", "t", "h")
+            await pilot.pause()
+
+            assert option_list.option_count == 1
+            assert option_list.get_option_at_index(0).id == "local:session-b"
+            assert option_list.highlighted == 0
+
+    @pytest.mark.asyncio
+    async def test_clearing_query_restores_all_sessions(
+        self, picker_host: PickerHost
+    ) -> None:
+        async with picker_host.run_test() as pilot:
+            option_list = picker_host.query_one(OptionList)
+
+            await pilot.press("a", "u", "t", "h")
+            await pilot.pause()
+            assert option_list.option_count == 1
+
+            for _ in range(4):
+                await pilot.press("backspace")
+            await pilot.pause()
+
+            assert option_list.option_count == 3
+
+    @pytest.mark.asyncio
+    async def test_space_reaches_the_search_input(
+        self, picker_host: PickerHost
+    ) -> None:
+        async with picker_host.run_test() as pilot:
+            await pilot.press("f", "i", "x", "space", "t", "h", "i", "s")
+            await pilot.pause()
+
+            assert picker_host.query_one(Input).value == "fix this"
+            assert picker_host.query_one(OptionList).option_count == 1
+
+    @pytest.mark.asyncio
+    async def test_arrows_move_highlight_without_losing_input_focus(
+        self, picker_host: PickerHost
+    ) -> None:
+        async with picker_host.run_test() as pilot:
+            option_list = picker_host.query_one(OptionList)
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert option_list.highlighted == 1
+            assert picker_host.query_one(Input).has_focus
+
+            await pilot.press("up")
+            await pilot.pause()
+            assert option_list.highlighted == 0
+
+    @pytest.mark.asyncio
+    async def test_enter_on_empty_result_does_not_select(
+        self, picker_host: PickerHost
+    ) -> None:
+        async with picker_host.run_test() as pilot:
+            await pilot.press("z", "z", "z", "z")
+            await pilot.pause()
+
+            option_list = picker_host.query_one(OptionList)
+            assert option_list.option_count == 1
+            assert option_list.get_option_at_index(0).disabled is True
+            assert option_list.highlighted is None
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert picker_host.selected_session_id is None
+
+    @pytest.mark.asyncio
+    async def test_enter_selects_highlighted_session(
+        self, picker_host: PickerHost
+    ) -> None:
+        async with picker_host.run_test() as pilot:
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert picker_host.selected_session_id == "session-b"
