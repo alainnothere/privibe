@@ -31,6 +31,7 @@ from privibe.core.utils.tags import (
     CancellationReason,
     TaggedText,
     get_user_cancellation_message,
+    has_known_tag_opener,
     is_user_cancellation_event,
     strip_known_tags,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "get_server_url_from_api_base",
     "get_user_agent",
     "get_user_cancellation_message",
+    "has_known_tag_opener",
     "is_dangerous_directory",
     "is_user_cancellation_event",
     "is_windows",

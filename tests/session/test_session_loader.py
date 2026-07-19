@@ -1099,6 +1099,46 @@ class TestSessionLoaderScanSessionsCollection:
 
         assert scan.search_text == "fix the parser\nlooking at it\nparser work"
 
+    def test_search_text_excludes_tagged_title(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        messages = [LLMMessage(role=Role.user, content="Fix the parser")]
+        title = "<context_refresh>The current date is June 1</context_refresh>"
+        metadata = {
+            "session_id": "tagtitle",
+            "title": title,
+            "environment": {"working_directory": "/test"},
+        }
+        create_test_session(
+            session_dir, "tagtitle", messages=messages, metadata=metadata
+        )
+
+        scan = _only_scan(session_config, collect_text=True)
+
+        assert scan.search_text == "fix the parser"
+        assert scan.info["title"] == title
+
+    def test_search_text_excludes_truncated_tagged_title(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        session_dir = Path(session_config.save_dir)
+        messages = [LLMMessage(role=Role.user, content="Fix the parser")]
+        title = "<context_refresh>The current date..."
+        metadata = {
+            "session_id": "cuttitle",
+            "title": title,
+            "environment": {"working_directory": "/test"},
+        }
+        create_test_session(
+            session_dir, "cuttitle", messages=messages, metadata=metadata
+        )
+
+        scan = _only_scan(session_config, collect_text=True)
+
+        assert scan.search_text == "fix the parser"
+        assert scan.info["title"] == title
+
     def test_search_text_excludes_reasoning_tool_calls_and_tool_role(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:
