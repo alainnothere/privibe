@@ -222,7 +222,9 @@ class SessionLoader:
             ) from e
 
         messages = [
-            LLMMessage.model_validate(msg) for msg in data if msg["role"] != "system"
+            LLMMessage.model_validate(msg)
+            for msg in data
+            if msg.get("role") != "system"
         ]
 
         # Load session metadata from METADATA_FILENAME
@@ -254,29 +256,6 @@ class SessionLoader:
         if not content:
             return None
         return SessionLoader._clean_text(content)
-
-    @staticmethod
-    def get_first_user_message(session_id: str, config: SessionLoggingConfig) -> str:
-        """Get the first user message from a session for preview."""
-        session_path = SessionLoader.find_session_by_id(session_id, config)
-        if not session_path:
-            return "(session not found)"
-
-        try:
-            messages, _ = SessionLoader.load_session(session_path)
-
-            for msg in messages:
-                if msg.role != "user":
-                    continue
-                text = SessionLoader._extract_text_from_content(msg.content)
-                if text:
-                    return text
-
-            return "(no user messages)"
-        except ValueError:
-            return "(corrupted session)"
-        except OSError:
-            return "(error reading session)"
 
     @staticmethod
     def get_last_messages(
