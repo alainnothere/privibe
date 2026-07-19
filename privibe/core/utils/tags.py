@@ -18,10 +18,19 @@ _TAG_PATTERN = re.compile(
     flags=re.DOTALL,
 )
 
+_TAG_OPENER_PATTERN = re.compile(
+    rf"<({'|'.join(re.escape(tag) for tag in KNOWN_TAGS)})>"
+)
+
 
 def strip_known_tags(text: str) -> str:
     """Remove every known ``<tag>...</tag>`` span, inner text included."""
     return _TAG_PATTERN.sub("", text)
+
+
+def has_known_tag_opener(text: str) -> bool:
+    """True when a known ``<tag>`` opener is present, closed or not."""
+    return _TAG_OPENER_PATTERN.search(text) is not None
 
 
 class TaggedText:

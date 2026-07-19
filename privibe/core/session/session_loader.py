@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 from privibe.core.types import LLMMessage, SessionMetadata
 from privibe.core.utils.io import read_safe
-from privibe.core.utils.tags import strip_known_tags
+from privibe.core.utils.tags import has_known_tag_opener, strip_known_tags
 
 if TYPE_CHECKING:
     from privibe.core.config import SessionLoggingConfig
@@ -248,7 +248,11 @@ class SessionLoader:
         search_text: str | None = None
         if search_parts is not None:
             if title:
-                search_parts.append(str(title))
+                # Auto-generated titles can quote harness-injected text, either
+                # whole or truncated mid-tag; neither belongs in the index.
+                searchable = strip_known_tags(str(title)).strip()
+                if searchable and not has_known_tag_opener(searchable):
+                    search_parts.append(searchable)
             search_text = "\n".join(search_parts).lower()
 
         info: SessionInfo = {

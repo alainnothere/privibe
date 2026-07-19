@@ -7,6 +7,7 @@ from privibe.core.utils import (
     CONTEXT_REFRESH_TAG,
     KNOWN_TAGS,
     TaggedText,
+    has_known_tag_opener,
     strip_known_tags,
 )
 
@@ -140,3 +141,13 @@ def test_strip_known_tags_leaves_unknown_tags_alone() -> None:
 def test_strip_known_tags_returns_untagged_text_unchanged() -> None:
     text = "Just plain text without any tags"
     assert strip_known_tags(text) == text
+
+
+@pytest.mark.parametrize("tag", KNOWN_TAGS)
+def test_has_known_tag_opener_finds_unclosed_opener(tag: str) -> None:
+    assert has_known_tag_opener(f"<{tag}>truncated content...")
+
+
+def test_has_known_tag_opener_ignores_unknown_and_plain_text() -> None:
+    assert not has_known_tag_opener("<unknown_tag>Some content</unknown_tag>")
+    assert not has_known_tag_opener("Just plain text without any tags")
