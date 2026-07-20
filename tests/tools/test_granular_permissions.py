@@ -5,6 +5,7 @@ import os
 import pytest
 
 from privibe.core.tools.base import BaseToolConfig, BaseToolState, ToolPermission
+from privibe.core.tools.builtins._hashed_replace import HashedReplace, HashedReplaceArgs
 from privibe.core.tools.builtins.bash import (
     Bash,
     BashArgs,
@@ -783,6 +784,7 @@ _DEL_LINE_ITEM = {"line": 1, "hash": "0000"}
 _DEL_BLOCK_ITEM = {"line": 1, "hash": "0000", "end_line": 1, "end_hash": "0000"}
 
 _HASHED_TOOL_CASES = [
+    (HashedReplace, HashedReplaceArgs, "replacements", _LINE_ITEM),
     (HashedReplaceLine, HashedReplaceLineArgs, "replacements", _LINE_ITEM),
     (HashedReplaceBlock, HashedReplaceBlockArgs, "replacements", _BLOCK_ITEM),
     (HashedDeleteLine, HashedDeleteLineArgs, "deletions", _DEL_LINE_ITEM),
