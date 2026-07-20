@@ -931,6 +931,35 @@ class TestToolFailureClassification:
             "permission/approval" in record.getMessage() for record in caplog.records
         )
 
+    def test_permission_phase_fault_names_target_path(self, caplog):
+        # Regression: the message used to omit the file being edited, so the
+        # user could not tell which file the failed permission check was for.
+        class _PathArgs(BaseModel):
+            path: str = "C:\\Users\\someone\\contextFiles\\research.md"
+
+        loop, tool, _ = self._setup()
+        call = ResolvedToolCall(
+            tool_name="stub_tool",
+            tool_class=FakeTool,
+            validated_args=_PathArgs(),
+            call_id="c1",
+        )
+
+        try:
+            raise TypeError("boom")
+        except TypeError as exc:
+            with caplog.at_level(logging.ERROR, logger="privibe"):
+                msg = loop._classify_tool_failure(call, tool, exc, decision=None)
+
+        assert "internal error during permission check" in msg
+        assert "C:\\Users\\someone\\contextFiles\\research.md" in msg
+        # Args without a path (the other test) must still work; here the path
+        # must also reach the log record for "see logs" to be useful.
+        assert any(
+            "C:\\Users\\someone\\contextFiles\\research.md" in record.getMessage()
+            for record in caplog.records
+        )
+
     def test_execution_failure_is_reported_to_model_and_logged(self, caplog):
         loop, tool, call = self._setup()
         failed_before = loop.stats.tool_calls_failed
