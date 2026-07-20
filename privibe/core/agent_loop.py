@@ -1155,6 +1155,18 @@ class AgentLoop:
         async for event in self._process_one_tool_call(tc):
             await queue.put(event)
 
+    def _bash_single_call_keywords(self) -> list[tuple[str, str]]:
+        """Return (original, lowercased) pairs of configured bash keywords.
+
+        The list is empty when the bash tool is not registered or has no
+        configured single_call_keywords. Empty keyword strings are dropped.
+        """
+        if "bash" not in self.tool_manager.available_tools:
+            return []
+        bash_config = self.tool_manager.get_tool_config("bash")
+        keywords = getattr(bash_config, "single_call_keywords", [])
+        return [(kw, kw.lower()) for kw in keywords if kw]
+
     async def _run_tools_concurrently(
         self, tool_calls: list[ResolvedToolCall]
     ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent | ToolStreamEvent]:
@@ -1171,7 +1183,19 @@ class AgentLoop:
         executed, and each later duplicate gets a tool response saying it was a
         duplicate of the executed call. Identical calls in separate assistant
         messages are unaffected.
+
+        On top of that, bash calls are collapsed by keyword: if several bash
+        commands in one batch share a configured single_call_keyword (a
+        case-insensitive substring), only the first executes and the rest get a
+        skip message pointing at it. Bash calls sharing no keyword are unaffected.
         """
+        # Fetch the configured bash keywords once for this batch, paired with
+        # their lowercased forms. Empty when the bash tool is not registered.
+        keyword_pairs = self._bash_single_call_keywords()
+        # Maps a lowercased keyword to the id of the first executing bash call
+        # whose command contained it.
+        keyword_first_call: dict[str, str] = {}
+
         deduped: list[ResolvedToolCall] = []
         seen: dict[tuple[str, str], str] = {}
         for tc in tool_calls:
@@ -1179,6 +1203,42 @@ class AgentLoop:
             first_id = seen.get(key)
             if first_id is None:
                 seen[key] = tc.call_id
+                if tc.tool_name == "bash" and keyword_pairs:
+                    command = str(tc.args_dict.get("command", "")).lower()
+                    matched = [
+                        (orig, low) for (orig, low) in keyword_pairs if low in command
+                    ]
+                    prior = next(
+                        (
+                            (orig, keyword_first_call[low])
+                            for (orig, low) in matched
+                            if low in keyword_first_call
+                        ),
+                        None,
+                    )
+                    if prior is not None:
+                        matched_keyword, first_call_id = prior
+                        self.stats.tool_calls_rejected += 1
+                        skip_reason = (
+                            f"Not executed: this bash command contains "
+                            f"'{matched_keyword}', which also appears in the command "
+                            f"of call id '{first_call_id}' in this same message. Only "
+                            "that call was executed; see its result. If you genuinely "
+                            "need a second run, issue it in your next message after "
+                            "reviewing the first result."
+                        )
+                        yield ToolResultEvent(
+                            tool_name=tc.tool_name,
+                            tool_class=tc.tool_class,
+                            skipped=True,
+                            skip_reason=skip_reason,
+                            tool_call_id=tc.call_id,
+                        )
+                        self._handle_tool_response(tc, skip_reason, "skipped")
+                        continue
+                    # A surviving bash call registers every keyword it contains.
+                    for _orig, low in matched:
+                        keyword_first_call.setdefault(low, tc.call_id)
                 deduped.append(tc)
                 continue
             self.stats.tool_calls_rejected += 1
