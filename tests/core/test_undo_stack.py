@@ -15,6 +15,24 @@ def _snap(path: str, content: bytes | None) -> FileSnapshot:
     return FileSnapshot(path=canonical_key(path), content=content)
 
 
+def test_next_restore_deletes_reflects_top_snapshot(tmp_path):
+    f = tmp_path / "f.txt"
+    stack = FileUndoStack()
+
+    # No versions recorded: nothing to delete.
+    assert stack.next_restore_deletes(str(f)) is False
+
+    # Top snapshot is "did not exist": the next restore would delete.
+    stack.capture(_snap(str(f), None))
+    f.write_text("created")
+    assert stack.next_restore_deletes(str(f)) is True
+
+    # A newer content snapshot on top: the next restore rewrites, not deletes.
+    stack.capture(_snap(str(f), b"created"))
+    f.write_text("edited")
+    assert stack.next_restore_deletes(str(f)) is False
+
+
 def test_capture_then_restore_round_trips_content(tmp_path):
     f = tmp_path / "hello.txt"
     f.write_text("v2 (current)")

@@ -89,6 +89,13 @@ class FileUndoStack:
     def has_versions(self, path_str: str) -> bool:
         return bool(self._stacks.get(canonical_key(path_str)))
 
+    def next_restore_deletes(self, path_str: str) -> bool:
+        """True when the next restore would delete the file: the most recent
+        recorded pre-edit state for this path is "did not exist".
+        """
+        stack = self._stacks.get(canonical_key(path_str))
+        return bool(stack) and stack[-1].content is None
+
     def restore(self, path_str: str) -> RestoreOutcome:
         """Revert the file to its state before the most recent recorded edit.
 
