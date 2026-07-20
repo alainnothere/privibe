@@ -274,6 +274,20 @@ class BashToolConfig(BaseToolConfig):
         default=["sudo"],
         description="Command prefixes that always ASK regardless of arity approval.",
     )
+    single_call_keywords: list[str] = Field(
+        default_factory=lambda: [
+            "expensive_call_to_copilot_that_should_be_done_once.sh"
+        ],
+        description=(
+            "Bash commands containing the same keyword run at most once per "
+            "assistant message: if several bash calls in one batch share a "
+            "keyword, only the first executes and the rest return a skip message "
+            "to the model. Use for expensive commands, such as sub-agent or "
+            "copilot invocations, that the model tends to issue twice. Matching "
+            "is a case-insensitive substring check. The default entry is an "
+            "inert self-documenting example that matches nothing real."
+        ),
+    )
     bash_search_paths: list[str] = Field(
         default_factory=lambda: list(DEFAULT_BASH_SEARCH_PATHS),
         description=(
