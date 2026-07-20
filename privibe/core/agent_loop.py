@@ -1108,14 +1108,17 @@ class AgentLoop:
         """
         name = tool_instance.get_name()
         if decision is None:
+            target = getattr(tool_call.validated_args, "path", None)
+            target_note = f" for '{target}'" if target else ""
             logger.exception(
-                "Internal error during permission/approval for tool '%s'",
+                "Internal error during permission/approval for tool '%s' (path=%s)",
                 tool_call.tool_name,
+                target,
             )
             self.stats.tool_calls_failed += 1
             return (
                 f"<{TOOL_ERROR_TAG}>{name}: internal error during permission "
-                f"check (see logs): {exc}</{TOOL_ERROR_TAG}>"
+                f"check{target_note} (see logs): {exc}</{TOOL_ERROR_TAG}>"
             )
         if isinstance(exc, ToolPermissionError):
             self.stats.tool_calls_agreed -= 1
