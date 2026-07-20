@@ -27,6 +27,12 @@ from privibe.core.types import ToolResultEvent, ToolStreamEvent
 
 class RestoreFileArgs(BaseModel):
     path: str = Field(description="Path of the file to revert to its previous state.")
+    confirm_delete: bool = Field(
+        default=False,
+        description="Must be true when the restore would delete the file because "
+        "the edit being undone is the one that created it; without it such a "
+        "restore is refused and no restore point is consumed.",
+    )
 
 
 class RestoreFileResult(BaseModel):
@@ -59,8 +65,9 @@ class RestoreFile(
     description: ClassVar[str] = (
         "Undo the most recent edit a file tool made to a file, reverting it to the "
         "content it had just before that edit (or deleting it if the edit had created "
-        "it). Call again to walk further back, one edit at a time. Prefer this over "
-        "rewriting a file from scratch when an edit went wrong."
+        "it; deletion must be confirmed with confirm_delete=true). Call again to walk "
+        "further back, one edit at a time. Prefer this over rewriting a file from "
+        "scratch when an edit went wrong."
     )
 
     # Reverting writes to disk, so it must run serially with other writes.
@@ -87,6 +94,15 @@ class RestoreFile(
             raise ToolError("Path cannot be empty")
         if ctx is None or ctx.undo_stack is None:
             raise ToolError("Restore is not available in this context.")
+
+        if not args.confirm_delete and ctx.undo_stack.next_restore_deletes(args.path):
+            raise ToolError(
+                f"Not restored: the most recent restore point for '{args.path}' "
+                "records the file as not existing, so restoring would delete the "
+                "file entirely (the edit being undone is the one that created it). "
+                "No restore point was consumed. If deleting the file is what you "
+                "intend, call restore_file again with confirm_delete=true."
+            )
 
         try:
             outcome = ctx.undo_stack.restore(args.path)

@@ -50,7 +50,9 @@ async def test_restore_reverts_content(tmp_path, monkeypatch, restore_tool):
 
 
 @pytest.mark.asyncio
-async def test_restore_deletes_created_file(tmp_path, monkeypatch, restore_tool):
+async def test_restore_deletes_created_file_when_confirmed(
+    tmp_path, monkeypatch, restore_tool
+):
     monkeypatch.chdir(tmp_path)
     f = tmp_path / "created.txt"
     stack = FileUndoStack()
@@ -59,11 +61,69 @@ async def test_restore_deletes_created_file(tmp_path, monkeypatch, restore_tool)
     f.write_text("whoops")
 
     result = await collect_result(
-        restore_tool.run(RestoreFileArgs(path="created.txt"), _ctx_with_stack(stack))
+        restore_tool.run(
+            RestoreFileArgs(path="created.txt", confirm_delete=True),
+            _ctx_with_stack(stack),
+        )
     )
 
     assert result.action == "deleted"
     assert not f.exists()
+
+
+@pytest.mark.asyncio
+async def test_restore_refuses_unconfirmed_delete(tmp_path, monkeypatch, restore_tool):
+    # Regression: after a FAILED edit (which records no restore point), the
+    # model reaching for restore_file would pop the earlier "did not exist"
+    # snapshot and silently delete a file it only meant to revert one step.
+    # A delete-restore must now be explicitly confirmed and, when refused,
+    # must consume nothing.
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "created.txt"
+    stack = FileUndoStack()
+    stack.capture(_snap(str(f), None))
+    f.write_text("valuable content")
+
+    with pytest.raises(ToolError, match="confirm_delete"):
+        await collect_result(
+            restore_tool.run(
+                RestoreFileArgs(path="created.txt"), _ctx_with_stack(stack)
+            )
+        )
+
+    # File untouched and the restore point still available.
+    assert f.read_text() == "valuable content"
+    assert stack.has_versions(str(f))
+
+    # Confirming afterwards still performs the delete.
+    result = await collect_result(
+        restore_tool.run(
+            RestoreFileArgs(path="created.txt", confirm_delete=True),
+            _ctx_with_stack(stack),
+        )
+    )
+    assert result.action == "deleted"
+    assert not f.exists()
+
+
+@pytest.mark.asyncio
+async def test_restore_content_revert_needs_no_confirmation(
+    tmp_path, monkeypatch, restore_tool
+):
+    # confirm_delete gates only the delete branch; an ordinary content revert
+    # must keep working without the flag.
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "f.txt"
+    f.write_text("broken edit")
+    stack = FileUndoStack()
+    stack.capture(_snap(str(f), b"good original"))
+
+    result = await collect_result(
+        restore_tool.run(RestoreFileArgs(path="f.txt"), _ctx_with_stack(stack))
+    )
+
+    assert result.action == "restored"
+    assert f.read_text() == "good original"
 
 
 @pytest.mark.asyncio
