@@ -376,8 +376,6 @@ class VibeApp(App):  # noqa: PLR0904
 
         def update_context_progress(stats: AgentStats) -> None:
             detected = self.agent_loop.detected_model_display_name()
-            if detected and detected.lower().endswith(".gguf"):
-                detected = detected[:-5]
             context_progress.tokens = TokenState(
                 max_tokens=self.config.get_active_model().auto_compact_threshold,
                 current_tokens=stats.context_tokens,
@@ -1846,12 +1844,10 @@ class VibeApp(App):  # noqa: PLR0904
         name when auto-detection found one that differs (e.g. "Max (local) -
         Qwen3.6-..."). Purely cosmetic — never changes config or matching."""
         label = str(self.config.active_model)
+        # Already reduced to a bare model name (no path, no .gguf extension).
         detected = self.agent_loop.detected_model_display_name()
         if not detected:
             return label
-        # Strip a trailing .gguf for display; keep the rest as the server reports it.
-        if detected.lower().endswith(".gguf"):
-            detected = detected[:-5]
         active = self.config.get_active_model()
         # Skip the suffix when it would just repeat the alias or configured name.
         if detected and detected not in (label, active.alias, active.name):
