@@ -2,96 +2,85 @@
 
 Plain text interface for privibe, alternative to the Textual TUI.
 
-## Status: WORK IN PROGRESS
+## Status: IMPLEMENTED
+
+Run with:
+
+```bash
+privibe --console
+privibe --console "initial prompt"
+privibe --console --resume        # console session picker at startup
+```
 
 ### What Works
 
-- Basic console mode entry point (`privibe/cli/console_ui/app.py`)
-- `--console` flag added to CLI
-- Event streaming from AgentLoop to stdout
-- Basic slash commands: `/help`, `/exit`, `/model`, `/compact`
+- Interactive REPL on the same AgentLoop event seam the TUI uses
+- prompt_toolkit line input (history, line editing, first-class Windows
+  support; prompt() only, never full-screen mode)
+- Streaming output: assistant tokens print as they arrive; reasoning is
+  prefixed with [thinking] once per block
+- Tool activity: call summaries via each tool's ToolUIData display,
+  result lines (done / ERROR / skipped / cancelled), tool stream lines,
+  compaction progress, agent profile switches
+- Approval prompts: y (once) / a (always: registers the same session
+  rules or tool permission as the TUI's Allow Always) / n (deny with
+  optional feedback to the agent); auto_approve config respected
+- ask_user_question: numbered choices, multi-select, Other free text,
+  cancel; same Answer/Result models as the TUI
+- Tool result bodies, TUI-parity collapsed previews: bash stdout and
+  grep matches truncated to the shared tool_result_preview_lines config
+  value (with "... (N more lines)"), red/green file diffs for
+  file-mutating tools from the core-computed FileDiff rows (hunk budget
+  = same config value), search_replace SEARCH/REPLACE blocks rendered
+  as unified diff lines, todo lists with [ ]/[>]/[x]/[-] markers,
+  result warnings prefixed with "!"
+- Transcript replay on resume: after picking a session (or starting
+  with --resume <id> / --continue) the last 20 conversation entries
+  print, using the same filters core applies to resume-picker previews
+  (user/assistant only, injected messages dropped, known tags
+  stripped); tool calls become one-line [tool] name markers, tool
+  outputs and reasoning are not replayed; /replay reprints the whole
+  conversation on demand
+- Commands: /help, /model (list and switch, same reload sequence as the
+  TUI), /compact, /clear, /resume (console session picker), /replay,
+  /log, /preview-lines (cycles 3/5/10 and persists, same config flag
+  and helper the TUI uses), /exit, /quit
+- Skills: /name [args] reads the skill file and sends it as the prompt,
+  mirroring the TUI
+- Ctrl+C interrupts a running turn and returns to the prompt; Ctrl+D or
+  /exit quits
 
-### What Needs to Be Built
+### Known Gaps / Later Polish
 
-#### 1. Input Handling (~50 lines)
-Replace simple `input()` with prompt_toolkit for:
-- Command history (up/down arrows)
-- Better Ctrl+C handling
-- Windows compatibility
+- Windows behavior not yet verified on a real Windows machine
+- The pre-args streamed ToolCallEvent and the resolved one both print,
+  so each tool call shows two [tool] lines (the TUI merges them by
+  tool_call_id)
+- No expand/collapse: the console always prints the TUI's collapsed
+  preview; /preview-lines controls how much that shows
+- No /config command; edit config.toml directly and use /model or
+  restart
+- No steering queue: input is read between turns, not while the agent
+  is responding (TUI queues mid-turn messages)
+- No ! shell passthrough
 
-#### 2. Approval Callbacks (~100 lines)
-When tools need permission, implement console prompts:
-```
-[approval needed] bash: rm -rf /tmp/cache
-Type 'y' to allow, 'n' to deny, 'a' to allow all: _
-```
-
-#### 3. Question Handler (~100 lines)
-Full implementation of `ask_user_question` tool:
-- Display multiple questions
-- Numbered choice selection
-- Multi-select support
-- "Other" free text option
-
-#### 4. Command Implementations (~200 lines)
-Actually implement the slash commands:
-- `/model` - Show model list, let user pick, switch agent_loop
-- `/compact` - Trigger conversation compaction
-- `/resume` - Show session picker, load selected session
-- `/config` - Edit config (maybe delegate to external editor)
-- `/clear` - Clear conversation history
-- Others as needed
-
-#### 5. Tool Output Formatting (~100 lines)
-Better formatting for tool results:
-- File diffs (unified diff format)
-- Truncated output with "..." indicator
-- Markdown rendering (optional, can use rich or plain text)
-
-#### 6. Session/Model Pickers (~100 lines)
-Console menus for selecting:
-- Sessions to resume
-- Models to switch to
-
-### Files Created
+### Files
 
 ```
 privibe/cli/console_ui/
   __init__.py
-  app.py              # Main console loop (WORK IN PROGRESS)
+  app.py              # ConsoleUI: REPL, callbacks, commands
   README.md           # This file
+privibe/cli/cli.py    # --console routing (asyncio.run, lazy imports)
+privibe/cli/entrypoint.py  # --console argument
+tests/cli/test_console_ui.py  # unit tests (events, dispatch, approvals, questions)
 ```
-
-### Files Modified
-
-```
-privibe/cli/cli.py           # Added --console flag routing
-privibe/cli/entrypoint.py    # Added --console argument
-```
-
-### How to Test (Current State)
-
-```bash
-privibe --console "hello"
-```
-
-This will:
-1. Send "hello" to the agent
-2. Stream the response to stdout
-3. Enter input loop (basic, no history yet)
-4. Handle `/help` and `/exit` commands
 
 ### Design Notes
 
-- **No TUI dependencies**: Console mode doesn't import textual or rich
-- **Event-driven**: Uses same AgentLoop event stream as TUI
-- **Streaming**: Shows assistant content as it arrives (not waiting for completion)
-- **Simple first**: Start with minimal working version, add polish later
-
-### Next Steps
-
-1. Add prompt_toolkit for better input handling
-2. Implement approval callback
-3. Implement question callback  
-4. Make `/model` command actually work
-5. Test on Windows
+- No textual import anywhere in the console path; cli.py imports the
+  TUI lazily so --console never loads it
+- Append-only output: every event prints once, nothing repaints, so the
+  TUI's Windows render-loop cost does not exist here
+- Callbacks (approval, ask_user_question) are console prompts on a
+  separate prompt_toolkit session so they stay out of the input history
