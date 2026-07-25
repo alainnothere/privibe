@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from pathlib import Path
 import sys
 from typing import Any
@@ -9,13 +10,11 @@ from rich import print as rprint
 import tomli_w
 
 from privibe import __version__
-from privibe.cli.textual_ui.app import StartupOptions, run_textual_ui
-from privibe.cli.console_ui.app import ConsoleUI
 from privibe.core.agent_loop import AgentLoop
 from privibe.core.agents.models import BuiltinAgentName
 from privibe.core.config import (
-    MissingPromptFileError,
     PATHS_TEMPLATE_FILE,
+    MissingPromptFileError,
     VibeConfig,
     load_dotenv_values,
 )
@@ -30,8 +29,8 @@ from privibe.core.utils import ConversationLimitException
 
 
 def _print_available_tools() -> None:
-    from privibe.core.tools.manager import ToolManager
     from privibe.core.paths import DEFAULT_TOOL_DIR
+    from privibe.core.tools.manager import ToolManager
 
     tools = sorted(ToolManager._iter_tool_classes([DEFAULT_TOOL_DIR.path]), key=lambda t: t.get_name())
     max_name = max((len(t.get_name()) for t in tools), default=0)
@@ -327,12 +326,20 @@ def run_cli(args: argparse.Namespace) -> None:
             if loaded_session:
                 _resume_previous_session(agent_loop, *loaded_session)
 
-            # Route to console mode or TUI based on --console flag
-            if getattr(args, 'console', False):
-                await ConsoleUI(agent_loop).run(
-                    initial_prompt=args.initial_prompt or stdin_prompt
+            # Route to console mode or TUI based on --console flag. Imports
+            # are local so console mode never loads textual.
+            if getattr(args, "console", False):
+                from privibe.cli.console_ui.app import ConsoleUI
+
+                asyncio.run(
+                    ConsoleUI(agent_loop).run(
+                        initial_prompt=args.initial_prompt or stdin_prompt,
+                        show_resume_picker=args.resume is True,
+                    )
                 )
             else:
+                from privibe.cli.textual_ui.app import StartupOptions, run_textual_ui
+
                 run_textual_ui(
                     agent_loop=agent_loop,
                     startup=StartupOptions(
