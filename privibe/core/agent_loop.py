@@ -394,11 +394,20 @@ class AgentLoop:
     def detected_model_display_name(self) -> str | None:
         """Server-reported name for the *current* active model, detected from the
         endpoint, or None when nothing was detected for it. Cosmetic/display-only;
-        never affects config or matching."""
+        never affects config or matching.
+
+        llama.cpp reports the full filesystem path of the loaded .gguf file, so
+        reduce the raw value to just the file name without the extension."""
         active = self.config.get_active_model()
-        if self._detected_model_alias == active.alias:
-            return self._detected_model_name
-        return None
+        if self._detected_model_alias != active.alias:
+            return None
+        name = self._detected_model_name
+        if not name:
+            return None
+        name = name.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if name.lower().endswith(".gguf"):
+            name = name[:-5]
+        return name or None
 
     async def resolve_context_size(self) -> str | None:
         """For generic (OpenAI-compatible) backends, query the model's actual context
