@@ -10,6 +10,7 @@ import tomli_w
 
 from privibe import __version__
 from privibe.cli.textual_ui.app import StartupOptions, run_textual_ui
+from privibe.cli.console_ui.app import ConsoleUI
 from privibe.core.agent_loop import AgentLoop
 from privibe.core.agents.models import BuiltinAgentName
 from privibe.core.config import (
@@ -326,13 +327,19 @@ def run_cli(args: argparse.Namespace) -> None:
             if loaded_session:
                 _resume_previous_session(agent_loop, *loaded_session)
 
-            run_textual_ui(
-                agent_loop=agent_loop,
-                startup=StartupOptions(
-                    initial_prompt=args.initial_prompt or stdin_prompt,
-                    show_resume_picker=args.resume is True,
-                ),
-            )
+            # Route to console mode or TUI based on --console flag
+            if getattr(args, 'console', False):
+                await ConsoleUI(agent_loop).run(
+                    initial_prompt=args.initial_prompt or stdin_prompt
+                )
+            else:
+                run_textual_ui(
+                    agent_loop=agent_loop,
+                    startup=StartupOptions(
+                        initial_prompt=args.initial_prompt or stdin_prompt,
+                        show_resume_picker=args.resume is True,
+                    ),
+                )
 
     except (KeyboardInterrupt, EOFError):
         rprint("\n[dim]Bye![/]")
