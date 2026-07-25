@@ -90,6 +90,11 @@ def parse_arguments() -> argparse.Namespace:
         help="List all available tools with their descriptions and exit.",
     )
     parser.add_argument(
+        "--console",
+        action="store_true",
+        help="Use plain console mode instead of the TUI (no colors, no formatting).",
+    )
+    parser.add_argument(
         "--workdir",
         type=Path,
         metavar="DIR",
