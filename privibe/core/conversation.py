@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, overload
 
 from privibe.core.session.session_loader import SessionLoader
-from privibe.core.types import LLMMessage, Role
+from privibe.core.types import AvailableTool, LLMMessage, Role
 from privibe.core.utils.tags import CONTEXT_REFRESH_TAG
 
 if TYPE_CHECKING:
@@ -67,26 +67,37 @@ def _apply_context_refresh(
 
 
 class ConversationList:
-    """Conversation message list with a strict append-only / top-removal interface.
+    """The full LLM-visible context with a strict append-only / top-removal
+    interface: messages AND the advertised tools array. Everything the model
+    sees on the wire is owned here; the payload is this object, verbatim.
 
-    The only ways to mutate the list:
+    The only ways to mutate the state:
       add(msg)        — append one message to the top (end)
       rewind(n)       — remove the n top messages
+      freeze_tools(t) — set the advertised tools, exactly once per session
       save()          — persist to disk via the registered save function
       restore(path)   — full rebuild from a saved session on disk
 
-    Nothing outside this class may modify the stored messages. There is no
-    insert, no reset, no update_system_prompt.
+    Nothing outside this class may modify the stored messages or the frozen
+    tools. There is no insert, no reset, no update_system_prompt, no
+    tools setter after the freeze.
     """
 
     def __init__(
         self,
         observer: Callable[[LLMMessage], None] | None = None,
         config_getter: Callable[[], VibeConfig] | None = None,
+        tools_provider: Callable[[], list[AvailableTool]] | None = None,
     ) -> None:
         self._data: list[LLMMessage] = []
         self._observer = observer
         self._config_getter = config_getter
+        self._tools_provider = tools_provider
+        # The advertised tools array. Part of the llama.cpp KV-cache prefix
+        # (chat templates render it before the first user message), so it is
+        # session state exactly like message 0: frozen at first use, stored
+        # with the session, restored verbatim. None = not frozen yet.
+        self._tools: list[AvailableTool] | None = None
         self._save_fn: Callable[[], Awaitable[None]] | None = None
         self._reset_hooks: list[Callable[[], None]] = []
         self._silent: bool = False
@@ -125,20 +136,86 @@ class ConversationList:
         if self._save_fn is not None:
             await self._save_fn()
 
+    def freeze_tools(self, tools: list[AvailableTool]) -> None:
+        """Set the advertised tools array, exactly once per session.
+
+        After this call the tools are immutable for the life of the session;
+        a second call is a broken invariant and fails loudly.
+        """
+        if self._tools is not None:
+            raise ValueError(
+                "tools are already frozen for this session: the advertised "
+                "tools array is part of the KV-cache prefix and may never "
+                "change after first use."
+            )
+        self._tools = list(tools)
+
+    @property
+    def frozen_tools(self) -> list[AvailableTool] | None:
+        """The frozen tools array, or None if not frozen yet."""
+        return list(self._tools) if self._tools is not None else None
+
+    def tools_for_request(self) -> list[AvailableTool]:
+        """The tools array to advertise on an LLM request.
+
+        Freezes on first use: MCP servers connect asynchronously after
+        startup, so the live set is only complete by the time the first
+        request goes out. From then on the frozen array is returned no
+        matter what the live tool set does.
+        """
+        if self._tools is None:
+            if self._tools_provider is None:
+                raise RuntimeError(
+                    "tools_for_request() called with no frozen tools and no "
+                    "tools provider wired."
+                )
+            self._tools = list(self._tools_provider())
+        return list(self._tools)
+
     def restore(self, session_path: Path) -> None:
         """Rebuild the full conversation from a saved session on disk.
 
-        Loads non-system messages from messages.jsonl and the system prompt
-        from meta.json, cleans up any dangling tool calls at the tail, and
-        appends a fresh context_refresh message.
+        Loads exactly what was stored: messages from messages.jsonl, and the
+        frozen base (system prompt + tools) from base.json. Then applies the
+        only two legal operations: pops shim-closing any dangling tool calls
+        at the tail, and pushes a fresh context_refresh message.
         """
         non_system_messages, metadata = SessionLoader.load_session(session_path)
 
-        system_prompt_data = metadata.get("system_prompt")
-        if system_prompt_data:
-            system_msg = LLMMessage.model_validate(system_prompt_data)
+        base = SessionLoader.load_base(session_path)
+        if base is not None:
+            system_msg = LLMMessage.model_validate(base["system_prompt"])
+            self._tools = [
+                AvailableTool.model_validate(t) for t in base.get("tools", [])
+            ]
         else:
-            system_msg = LLMMessage(role=Role.system, content="")
+            # MIGRATION KLUDGE - READ BEFORE TOUCHING, DO NOT COPY THIS PATTERN.
+            #
+            # The rule everywhere else: a session's stored base is written once
+            # at creation and NEVER modified after; resume reads and sends it
+            # verbatim (push/pop only). This branch is the single sanctioned
+            # exception, for sessions created before base.json existed.
+            #
+            # Why: those sessions never stored their tools, and the original
+            # bytes are unrecoverable (the binary that generated them is
+            # gone). Setting _tools = None here means the next request adopts
+            # the current live tools (tools_for_request), and the next save
+            # writes them into base.json exactly once - after which this
+            # branch never runs for that session again. The system prompt
+            # falls back to the legacy meta.json copy.
+            #
+            # Why this must not be copied: any other code path that derives
+            # part of the sent payload from anything but the stored session
+            # silently changes what the model sees, breaks the llama.cpp
+            # cache prefix, and reintroduces the exact bug family this design
+            # exists to kill. If you think you need this pattern, you don't -
+            # push a message instead.
+            self._tools = None
+            system_prompt_data = metadata.get("system_prompt")
+            if system_prompt_data:
+                system_msg = LLMMessage.model_validate(system_prompt_data)
+            else:
+                system_msg = LLMMessage(role=Role.system, content="")
 
         messages: list[LLMMessage] = [system_msg, *non_system_messages]
         messages = _fix_dangling_tool_calls(messages)

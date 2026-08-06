@@ -16,6 +16,10 @@ if TYPE_CHECKING:
 
 METADATA_FILENAME = "meta.json"
 MESSAGES_FILENAME = "messages.jsonl"
+# The frozen session base: system prompt + advertised tools. Written exactly
+# once per session and never modified after (see SessionLogger.persist_base);
+# meta.json holds the mutable per-turn bookkeeping instead.
+BASE_FILENAME = "base.json"
 
 _SEARCHABLE_ROLES = frozenset({"user", "assistant"})
 
@@ -313,6 +317,22 @@ class SessionLoader:
         except Exception as e:
             raise ValueError(
                 f"Failed to load session metadata at {session_dir}: {e}"
+            ) from e
+
+    @staticmethod
+    def load_base(session_dir: Path) -> dict[str, Any] | None:
+        """The frozen session base (system prompt + tools), or None when the
+        session predates base.json. Corruption raises: silently falling back
+        to regenerated content would send the model a different prefix than
+        the one this session was built on."""
+        base_filepath = session_dir / BASE_FILENAME
+        if not base_filepath.exists():
+            return None
+        try:
+            return json.loads(read_safe(base_filepath))
+        except Exception as e:
+            raise ValueError(
+                f"Error reading session base at {base_filepath}: {e}"
             ) from e
 
     @staticmethod

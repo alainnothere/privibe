@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from anyio import NamedTemporaryFile, Path as AsyncPath
 
 from privibe.core.session.session_loader import (
+    BASE_FILENAME,
     MESSAGES_FILENAME,
     METADATA_FILENAME,
     SessionLoader,
@@ -228,6 +229,45 @@ class SessionLogger:
                 temp_metadata_filepath.unlink()
 
     @staticmethod
+    async def persist_base(base: dict[str, Any], session_dir: Path) -> None:
+        """Write the frozen session base (system prompt + tools), exactly once.
+
+        WRITE-ONCE BY CONSTRUCTION: if base.json already exists this returns
+        without touching it, unconditionally. The base is part of the
+        llama.cpp KV-cache prefix; a session's base may never change after it
+        is first written. Do not add an overwrite path, a force flag, or an
+        update mode here - if new information must reach the model, push a
+        message instead.
+        """
+        base_filepath = session_dir / BASE_FILENAME
+        if base_filepath.exists():
+            return
+        temp_filepath = None
+        try:
+            async with NamedTemporaryFile(
+                mode="w",
+                suffix=".json.tmp",
+                dir=str(session_dir),
+                delete=False,
+                encoding="utf-8",
+            ) as f:
+                temp_filepath = Path(str(f.name))
+                await f.write(json.dumps(base, indent=2, ensure_ascii=False))
+                await f.flush()
+                os.fsync(f.wrapped.fileno())
+
+            await SessionLogger._replace_with_retry(
+                temp_filepath, str(base_filepath)
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to persist session base to {base_filepath}: {e}"
+            ) from e
+        finally:
+            if temp_filepath and temp_filepath.exists() and temp_filepath.is_file():
+                temp_filepath.unlink()
+
+    @staticmethod
     async def persist_messages(messages: list[dict], session_dir: Path) -> None:
         messages_filepath = session_dir / "messages.jsonl"
         try:
@@ -347,18 +387,31 @@ class SessionLogger:
             messages_data = [m.model_dump(exclude_none=True) for m in new_messages]
             await SessionLogger.persist_messages(messages_data, self.session_dir)
 
-            # If message update succeeded, write metadata
-            tools_available = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool_class.get_name(),
-                        "description": tool_class.description,
-                        "parameters": tool_class.get_parameters(),
-                    },
-                }
-                for tool_class in tool_manager.available_tools.values()
-            ]
+            # The session's frozen tools, when messages is the ConversationList
+            # (the owner of the sent payload). None when unfrozen (no request
+            # went out yet) or when a plain list was passed.
+            frozen_tools = getattr(messages, "frozen_tools", None)
+
+            # If message update succeeded, write metadata. tools_available is
+            # informational bookkeeping: the frozen array when there is one,
+            # else the live set. What gets SENT never comes from here - it
+            # comes from base.json via ConversationList.
+            if frozen_tools is not None:
+                tools_available = [
+                    t.model_dump(exclude_none=True) for t in frozen_tools
+                ]
+            else:
+                tools_available = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool_class.get_name(),
+                            "description": tool_class.description,
+                            "parameters": tool_class.get_parameters(),
+                        },
+                    }
+                    for tool_class in tool_manager.available_tools.values()
+                ]
 
             title = self._get_title(messages)
             system_prompt = (
@@ -384,6 +437,15 @@ class SessionLogger:
             }
 
             await SessionLogger.persist_metadata(metadata_dump, self.session_dir)
+
+            # Persist the frozen base once per session (persist_base is a
+            # no-op when base.json exists). Requires both halves: a system
+            # message and a frozen tools array.
+            if frozen_tools is not None and system_prompt is not None:
+                await SessionLogger.persist_base(
+                    {"system_prompt": system_prompt, "tools": tools_available},
+                    self.session_dir,
+                )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to save session to {self.session_dir}: {e}"
