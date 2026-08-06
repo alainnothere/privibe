@@ -746,7 +746,7 @@ class TestSessionToolsFreeze:
             config=config, agent_name=BuiltinAgentName.DEFAULT
         )
 
-        snapshot = agent._get_session_tools()
+        snapshot = agent.messages.tools_for_request()
         assert snapshot, "expected at least one advertised tool"
         snapshot_names = [t.function.name for t in snapshot]
 
@@ -757,9 +757,9 @@ class TestSessionToolsFreeze:
         live = agent.format_handler.get_available_tools(agent.tool_manager)
         assert [t.function.name for t in live] != snapshot_names
 
-        again = agent._get_session_tools()
+        again = agent.messages.tools_for_request()
         assert [t.function.name for t in again] == snapshot_names
-        assert again is snapshot
+        assert again == snapshot
 
     def test_tool_discovery_order_is_sorted(self) -> None:
         config = build_test_vibe_config(

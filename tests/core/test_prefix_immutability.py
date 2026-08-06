@@ -72,7 +72,7 @@ class TestPrefixTripwire:
                 include_project_context=False, include_prompt_detail=False
             )
         )
-        tools = agent._get_session_tools()
+        tools = agent.messages.tools_for_request()
         agent._check_prefix_integrity(tools)
         agent._check_prefix_integrity(tools)
 
@@ -82,7 +82,7 @@ class TestPrefixTripwire:
                 include_project_context=False, include_prompt_detail=False
             )
         )
-        tools = agent._get_session_tools()
+        tools = agent.messages.tools_for_request()
         agent._check_prefix_integrity(tools)
         with pytest.raises(RuntimeError, match="prefix changed mid-session"):
             agent._check_prefix_integrity(tools[:-1])
@@ -93,7 +93,7 @@ class TestPrefixTripwire:
                 include_project_context=False, include_prompt_detail=False
             )
         )
-        tools = agent._get_session_tools()
+        tools = agent.messages.tools_for_request()
         agent._check_prefix_integrity(tools)
         # /clear-style tail cut fires the reset hooks.
         agent.messages.add(LLMMessage(role=Role.user, content="hello"))

@@ -221,6 +221,13 @@ class AgentLoop:
         self.messages = ConversationList(
             observer=message_observer,
             config_getter=lambda: self.config,
+            # Used exactly once per session, when the tools freeze at the
+            # first LLM request (or on migration of a pre-base.json session).
+            # After that the frozen array is stored session state and this
+            # provider is never consulted again.
+            tools_provider=lambda: self.format_handler.get_available_tools(
+                self.tool_manager
+            ),
         )
 
         self.stats = AgentStats()
@@ -256,11 +263,6 @@ class AgentLoop:
         # If the loop exits (no more tool calls) with queued messages, they are
         # drained and delivered as a new user turn via _handle_user_message().
         self._steering_queue: list[str] = []
-        # The advertised tools array, frozen at the first LLM request of the
-        # session. Chat templates render tools before the first user message,
-        # so this is part of the llama.cpp KV-cache prefix and must stay
-        # byte-identical for the life of the session, like message 0.
-        self._session_tools: list[AvailableTool] | None = None
         # Tripwire: SHA-256 of (system prompt, tools array) captured at the
         # first LLM request. Any later request whose prefix bytes differ is a
         # broken invariant and fails hard instead of silently reprocessing
@@ -1433,41 +1435,13 @@ class AgentLoop:
                 "session can be resumed with --resume."
             )
 
-    def _get_session_tools(self) -> list[AvailableTool]:
-        """The tools array sent with every request, frozen at the first call.
-
-        Chat templates render the tools JSON before the first user message, so
-        this array is part of the llama.cpp KV-cache prefix: once the first
-        request has gone out it must never change for the life of the session.
-        Later config edits or MCP server flaps change the live set; when that
-        happens a warning names the divergence and the snapshot keeps winning.
-        """
-        current = self.format_handler.get_available_tools(self.tool_manager)
-        if self._session_tools is None:
-            self._session_tools = current
-            return self._session_tools
-
-        if current != self._session_tools:
-            snapshot_names = {t.function.name for t in self._session_tools}
-            current_names = {t.function.name for t in current}
-            added = sorted(current_names - snapshot_names)
-            removed = sorted(snapshot_names - current_names)
-            logger.warning(
-                "Advertised tools are frozen for this session; live tool set "
-                "diverged (added: %s, removed: %s, or schema changed). The "
-                "change applies to the next session.",
-                added or "none",
-                removed or "none",
-            )
-        return self._session_tools
-
     async def _chat(
         self, max_tokens: int | None = None, model_override: ModelConfig | None = None
     ) -> LLMChunk:
         active_model = model_override or self.config.get_active_model()
         provider = self.config.get_provider_for_model(active_model)
 
-        available_tools = self._get_session_tools()
+        available_tools = self.messages.tools_for_request()
         self._check_prefix_integrity(available_tools)
         tool_choice = self.format_handler.get_tool_choice()
 
@@ -1525,7 +1499,7 @@ class AgentLoop:
         active_model = self.config.get_active_model()
         provider = self.config.get_provider_for_model(active_model)
 
-        available_tools = self._get_session_tools()
+        available_tools = self.messages.tools_for_request()
         self._check_prefix_integrity(available_tools)
         tool_choice = self.format_handler.get_tool_choice()
         # DEBUG LLM COMMUNICATIONS
@@ -1755,7 +1729,7 @@ class AgentLoop:
             actual_context_tokens = await self.backend.count_tokens(
                 model=active_model,
                 messages=self.messages,
-                tools=self._get_session_tools(),
+                tools=self.messages.tools_for_request(),
                 extra_headers={"user-agent": get_user_agent(provider.backend)},
                 metadata=self._build_metadata(),
             )
