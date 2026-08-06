@@ -82,6 +82,13 @@ def test_strip_requires_four_hex_and_two_spaces():
 def test_strip_does_not_match_uppercase_hash():
     # _line_hash emits lowercase hex; uppercase is not our prefix.
     assert strip_leaked_prefix("   12 AB12  x") == ("   12 AB12  x", 0)
+    assert strip_leaked_prefix("12|AB12|x") == ("12|AB12|x", 0)
+
+
+def test_strip_removes_legacy_space_padded_prefix():
+    # Resumed sessions carry the pre-pipe format in their read history; a
+    # prefix pasted back from there must still strip.
+    assert strip_leaked_prefix("   12 ab12  x") == ("x", 1)
 
 
 # ---------------------------------------------------------------------------

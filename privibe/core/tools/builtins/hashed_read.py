@@ -39,7 +39,7 @@ def format_hashed_lines(lines: list[str], start_num: int) -> str:
     for i, line in enumerate(lines):
         content = line.rstrip("\r\n")
         h = _line_hash(content)
-        parts.append(f"{start_num + i:5d} {h}  {content}")
+        parts.append(f"{start_num + i}|{h}|{content}")
     return "\n".join(parts)
 
 

@@ -69,21 +69,21 @@ def test_format_hashed_lines_structure():
     out = format_hashed_lines(lines, 1)
     parts = out.splitlines()
     assert len(parts) == 2
-    assert parts[0].startswith("    1 ")
-    assert parts[0].endswith("  hello")
-    assert parts[1].startswith("    2 ")
+    assert parts[0].startswith("1|")
+    assert parts[0].endswith("|hello")
+    assert parts[1].startswith("2|")
 
 
 def test_format_hashed_lines_start_num():
     lines = ["x\n"]
     out = format_hashed_lines(lines, 10)
-    assert out.startswith("   10 ")
+    assert out.startswith("10|")
 
 
 def test_format_hashed_lines_strips_newline():
     lines = ["hello   \n"]
     out = format_hashed_lines(lines, 1)
-    assert out.endswith("  hello   ")
+    assert out.endswith("|hello   ")
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ async def test_hashed_read_basic(tmp_path, monkeypatch, hashed_read_tool):
 
     lines = result.content.splitlines()
     assert len(lines) == 3
-    assert "    1 " in lines[0]
+    assert lines[0].startswith("1|")
     assert "line one" in lines[0]
     assert result.lines_read == 3
     assert result.start_line == 1
@@ -125,7 +125,7 @@ async def test_hashed_read_offset_and_limit(tmp_path, monkeypatch, hashed_read_t
 
     lines = result.content.splitlines()
     assert len(lines) == 2
-    assert "    2 " in lines[0]
+    assert lines[0].startswith("2|")
     assert "b" in lines[0]
     assert "c" in lines[1]
 
@@ -878,11 +878,13 @@ async def test_replace_line_context_is_windowed_not_full_file(tmp_path, monkeypa
         )
     )
 
-    assert "    1 " not in result.context
-    assert "   30 " not in result.context
+    context_lines = result.context.splitlines()
+    line_nums = [line.split("|", 1)[0] for line in context_lines]
+    assert "1" not in line_nums
+    assert "30" not in line_nums
     assert "CHANGED" in result.context
-    assert "   14 " in result.context
-    assert "   16 " in result.context
+    assert "14" in line_nums
+    assert "16" in line_nums
 
 
 @pytest.mark.asyncio
@@ -941,8 +943,8 @@ async def test_replace_line_context_has_valid_hashes(tmp_path, monkeypatch, repl
 
     assert "REPLACED" in result.context
     for line in result.context.splitlines():
-        parts = line.split()
-        assert len(parts) >= 2
+        parts = line.split("|", 2)
+        assert len(parts) == 3
         h_part = parts[1]
         assert len(h_part) == 4
         assert all(c in "0123456789abcdef" for c in h_part)

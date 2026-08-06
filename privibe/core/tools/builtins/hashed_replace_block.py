@@ -52,7 +52,7 @@ class HashedReplaceBlockArgs(BaseModel):
     allow_literal: bool = Field(
         default=False,
         description=(
-            "By default a leaked hashed_read prefix (e.g. '   11 b1c4  ') is stripped "
+            "By default a leaked hashed_read prefix (e.g. '11|b1c4|') is stripped "
             "from your new_content. Set true to write new_content exactly as given."
         ),
     )
