@@ -60,6 +60,17 @@ class HashedReplaceLineArgs(BaseModel):
             "just outside the edited region is dropped. Set true to keep the duplicate."
         ),
     )
+    keep_indent: bool = Field(
+        default=False,
+        description=(
+            "By default obvious indentation slips in new_content are corrected: a uniform "
+            "comment block aligns to the adjacent comment's indent, a method-chain "
+            "continuation ('.') that fell below its statement snaps level with its "
+            "siblings, and a base indent that sits off the file's indent grid is shifted "
+            "onto it (relative indentation between your lines is otherwise preserved). "
+            "Set true to write your indentation exactly as given."
+        ),
+    )
 
 
 class HashedReplaceLineResult(BaseModel):
@@ -75,8 +86,9 @@ class HashedReplaceLineResult(BaseModel):
         default=None,
         description=(
             "Set when the tool corrected your new_content (stripped a leaked "
-            "hashed_read prefix or removed a boundary-duplicate line). Names the "
-            "affected lines and the flag to override."
+            "hashed_read prefix, adjusted indentation, or removed a "
+            "boundary-duplicate line). Names the affected lines and the flag "
+            "to override."
         ),
     )
 
@@ -119,6 +131,7 @@ class HashedReplaceLine(
             replacements,
             allow_literal=args.allow_literal,
             keep_duplicate=args.keep_duplicate,
+            keep_indent=args.keep_indent,
         )
         yield HashedReplaceLineResult(
             path=result.path,

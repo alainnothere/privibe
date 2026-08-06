@@ -16,9 +16,10 @@ the content hasn't changed. You pass these to `hashed_replace_line`, `hashed_rep
 
 **Use `offset` (0-indexed) and `limit` to read only the section you need**.
 
-**`new_content` is the line content only — never include the `11|b1c4|` address prefix.** When you replace a line, send just the code, not what `hashed_read` printed. The replace tools defend against two common slips and tell you when they act:
+**`new_content` is the line content only — never include the `11|b1c4|` address prefix.** When you replace a line, send just the code, not what `hashed_read` printed. The replace tools defend against three common slips and tell you when they act:
 
 - If a leaked `(line_number, hash)` prefix appears in your `new_content`, it is stripped automatically. Pass `allow_literal=true` if the prefixed text is genuinely what the file should contain.
+- Obvious indentation slips are corrected: a uniform comment block (every line starting with the same `///`, `//`, `#`, or `*` marker) aligns to the adjacent comment's indent; a method-chain continuation line (leading `.`) that fell to or below its statement's indent snaps back level with its `.` siblings; and a base indent sitting off the file's indent grid (e.g. 7 spaces in a 4-space file) is shifted onto it. The relative indentation between your lines is otherwise preserved exactly as you wrote it. A base that differs by full indent steps is kept and noted, assumed intentional. Pass `keep_indent=true` to write your indentation verbatim.
 - If your first or last new line exactly duplicates the untouched line just outside the edited region, that duplicate is dropped. Pass `keep_duplicate=true` if you really intend the repeated line.
 
-Either correction is reported back in the result's `content_note`, naming the affected line and the flag to override.
+Every correction is reported back in the result's `content_note`, naming the affected line and the flag to override.
