@@ -41,6 +41,259 @@ def strip_leaked_prefix(new_content: str) -> tuple[str, int]:
     return "\n".join(out), stripped
 
 
+_INDENT_UNIT_FALLBACK = 4
+_INDENT_CONTEXT_LINES = 5
+# Ordered: "///" must win over "//". "*" is handled separately because bare
+# "*word" is usually code (pointers, unpacking), not a comment continuation.
+_COMMENT_MARKERS = ("///", "//", "#")
+
+
+def _indent_of(content: str) -> str:
+    return content[: len(content) - len(content.lstrip(" \t"))]
+
+
+def _comment_marker(content: str) -> str | None:
+    body = content.lstrip(" \t")
+    for marker in _COMMENT_MARKERS:
+        if body.startswith(marker):
+            return marker
+    if body == "*" or body.startswith("* ") or body.startswith("*/"):
+        return "*"
+    return None
+
+
+_CHAIN_WALK_LIMIT = 30
+
+
+def _is_dot_continuation(content: str) -> bool:
+    """True for a method-chain continuation line: leading "." then an
+    identifier (.HasComment, .Where). Excludes ranges (..) and decimals (.5)."""
+    body = content.lstrip(" \t")
+    return (
+        len(body) > 1
+        and body[0] == "."
+        and (body[1].isalpha() or body[1] == "_")
+    )
+
+
+def _chain_context(
+    contents: list[str],
+    idx: int,
+    file_lines: list[str],
+    start_idx: int,
+    covered: set[int],
+) -> tuple[str | None, str | None]:
+    """(sibling indent, head indent) for the chain containing contents[idx].
+
+    Sibling: the nearest preceding "." line in the same run. Head: the
+    non-"." statement line that opens the chain. Searches the replacement
+    lines first, then continues into the untouched file lines above the
+    region (bounded walk; stops at lines edited by another replacement).
+    Returns None for whichever was not found.
+    """
+    sibling: str | None = None
+    for j in range(idx - 1, -1, -1):
+        c = contents[j]
+        if not c.strip():
+            continue
+        if _is_dot_continuation(c):
+            if sibling is None:
+                sibling = _indent_of(c)
+        else:
+            return sibling, _indent_of(c)
+    for i in range(start_idx - 1, max(-1, start_idx - 1 - _CHAIN_WALK_LIMIT), -1):
+        if i in covered:
+            return sibling, None
+        c = file_lines[i].rstrip("\r\n")
+        if not c.strip():
+            continue
+        if _is_dot_continuation(c):
+            if sibling is None:
+                sibling = _indent_of(c)
+        else:
+            return sibling, _indent_of(c)
+    return sibling, None
+
+
+def _infer_indent_unit(file_lines: list[str], start_idx: int, end_idx: int) -> int:
+    """Most common indent step among the nearby lines, defaulting to 4.
+
+    Only used to decide whether a base-indent delta is on the file's grid;
+    a wrong guess degrades to not correcting, never to a bad correction of
+    interior structure.
+    """
+
+    def nearby_widths(indices: range) -> list[int]:
+        widths: list[int] = []
+        for i in indices:
+            content = file_lines[i].rstrip("\r\n")
+            if not content.strip():
+                continue
+            indent = _indent_of(content)
+            if "\t" in indent:
+                continue
+            widths.append(len(indent))
+            if len(widths) == _INDENT_CONTEXT_LINES:
+                break
+        return widths
+
+    before = nearby_widths(range(start_idx - 1, -1, -1))
+    before.reverse()
+    after = nearby_widths(range(end_idx + 1, len(file_lines)))
+
+    diffs: dict[int, int] = {}
+    prev: int | None = None
+    for width in before + after:
+        if prev is not None and width != prev:
+            step = abs(width - prev)
+            if 1 <= step <= 8:
+                diffs[step] = diffs.get(step, 0) + 1
+        prev = width
+    if not diffs:
+        return _INDENT_UNIT_FALLBACK
+    return min(diffs, key=lambda d: (-diffs[d], d))
+
+
+def correct_indentation(
+    lines: list[str],
+    file_lines: list[str],
+    start_idx: int,
+    end_idx: int,
+    covered: set[int],
+    line_no: int,
+) -> tuple[list[str], list[str]]:
+    """Best-effort indent correction of replacement lines.
+
+    Two obvious-mistake corrections, nothing cleverer: a uniform comment
+    block snaps to the adjacent comment's indent, and a base indent sitting
+    off the file's indent grid is shifted onto it. Relative indentation
+    between the new lines is always preserved as written; nesting is never
+    inferred from braces. Tab-indented context is left untouched.
+    """
+    notes: list[str] = []
+    contents = [line.rstrip("\r\n") for line in lines]
+    non_blank = [c for c in contents if c.strip()]
+    if not non_blank:
+        return lines, notes
+
+    anchor = file_lines[start_idx].rstrip("\r\n")
+    anchor_indent = _indent_of(anchor)
+    if "\t" in anchor_indent or any("\t" in _indent_of(c) for c in non_blank):
+        notes.append(
+            f"line {line_no}: indent correction skipped (tab-indented context or content)"
+        )
+        return lines, notes
+
+    # A block of same-marker comment lines aligns to the adjacent comment it
+    # extends: comment lines at differing indents within one block are
+    # essentially never intentional. Preference order: the untouched line
+    # above (extending an existing block), the line being replaced, the
+    # untouched line below.
+    markers = {_comment_marker(c) for c in non_blank}
+    if len(markers) == 1 and (marker := next(iter(markers))) is not None:
+        target: str | None = None
+        candidates = []
+        if start_idx - 1 >= 0 and start_idx - 1 not in covered:
+            candidates.append(file_lines[start_idx - 1].rstrip("\r\n"))
+        candidates.append(anchor)
+        if end_idx + 1 < len(file_lines) and end_idx + 1 not in covered:
+            candidates.append(file_lines[end_idx + 1].rstrip("\r\n"))
+        for candidate in candidates:
+            if _comment_marker(candidate) == marker and "\t" not in _indent_of(candidate):
+                target = _indent_of(candidate)
+                break
+        if target is not None:
+            aligned = 0
+            out = []
+            for c in contents:
+                if c.strip() and _indent_of(c) != target:
+                    out.append(target + c.lstrip(" "))
+                    aligned += 1
+                else:
+                    out.append(c)
+            if aligned:
+                notes.append(
+                    f"line {line_no}: aligned {aligned} '{marker}' comment "
+                    f"line{'s' if aligned != 1 else ''} to the adjacent comment's "
+                    "indent (pass keep_indent=true to keep as written)"
+                )
+                return [c + "\n" for c in out], notes
+            return lines, notes
+
+    # A method-chain continuation line (leading ".") that has fallen to or
+    # below its statement head's indent is a broken line, not a style: real
+    # chains keep continuations deeper than their head and level with their
+    # "." siblings. Snap such a line to the sibling's literal indent. Both
+    # conditions are required; sibling-only would corrupt the legitimate
+    # dedent of an outer chain resuming after a nested one.
+    snapped = 0
+    for i, c in enumerate(contents):
+        if not c.strip() or not _is_dot_continuation(c):
+            continue
+        sibling, head = _chain_context(contents, i, file_lines, start_idx, covered)
+        if sibling is None or head is None or "\t" in sibling or "\t" in head:
+            continue
+        indent = _indent_of(c)
+        if len(indent) < len(sibling) and len(indent) <= len(head):
+            contents[i] = sibling + c.lstrip(" ")
+            snapped += 1
+    if snapped:
+        notes.append(
+            f"line {line_no}: aligned {snapped} method-chain continuation "
+            f"line{'s' if snapped != 1 else ''} ('.') to the chain's indent "
+            "(pass keep_indent=true to keep as written)"
+        )
+
+    corrected = [c + "\n" for c in contents] if snapped else lines
+    non_blank = [c for c in contents if c.strip()]
+    base = min(len(_indent_of(c)) for c in non_blank)
+    delta = len(anchor_indent) - base
+    if delta == 0:
+        return corrected, notes
+
+    unit = _infer_indent_unit(file_lines, start_idx, end_idx)
+    if delta % unit == 0:
+        notes.append(
+            f"line {line_no}: new content's base indent differs from the replaced "
+            f"line's by {delta:+d} spaces; kept as written (a full indent step, "
+            "assumed intentional)"
+        )
+        return corrected, notes
+
+    # Off-grid delta: near-certain miscount. Round it to the nearest on-grid
+    # delta (ties toward zero) and shift the whole block uniformly.
+    lower = delta - (delta % unit)
+    upper = lower + unit
+    if delta - lower < upper - delta:
+        rounded = lower
+    elif upper - delta < delta - lower:
+        rounded = upper
+    else:
+        rounded = lower if abs(lower) <= abs(upper) else upper
+    adjustment = delta - rounded
+
+    if adjustment < 0 and any(len(_indent_of(c)) < -adjustment for c in non_blank):
+        notes.append(
+            f"line {line_no}: indent correction skipped (a line would shift past column 0)"
+        )
+        return corrected, notes
+
+    out = []
+    for c in contents:
+        if not c.strip():
+            out.append(c)
+        elif adjustment > 0:
+            out.append(" " * adjustment + c)
+        else:
+            out.append(c[-adjustment:])
+    notes.append(
+        f"line {line_no}: shifted new content's indent by {adjustment:+d} "
+        f"space{'s' if abs(adjustment) != 1 else ''} onto the {unit}-space indent "
+        "grid relative to the replaced line (pass keep_indent=true to keep as written)"
+    )
+    return [c + "\n" for c in out], notes
+
+
 class LineReplacement(BaseModel):
     line: int = Field(description="1-based line number from hashed_read.")
     hash: str = Field(description="4-char hash from hashed_read for that line.")
@@ -179,12 +432,17 @@ def prepare_replacements(
     *,
     allow_literal: bool,
     keep_duplicate: bool,
+    keep_indent: bool = False,
 ) -> tuple[list[tuple[int, int, LineReplacement, list[str]]], list[str]]:
     """Turn each replacement's new_content into the lines to splice, applying
-    the two hallucination corrections and recording what was done.
+    the hallucination corrections and recording what was done.
 
     - Leaked hashed_read prefixes are stripped from new_content (unless
       ``allow_literal``).
+    - Indentation is best-effort corrected (unless ``keep_indent``): uniform
+      comment blocks align to the adjacent comment, and an off-grid base
+      indent is shifted onto the file's indent grid. Runs before duplicate
+      detection so a corrected line can still be recognized as a duplicate.
     - A first/last new line that exactly duplicates the untouched original line
       immediately outside the region is dropped (unless ``keep_duplicate``).
       Only edit-induced boundary duplicates are touched: neighbours that are
@@ -211,6 +469,12 @@ def prepare_replacements(
                 )
 
         lines = build_replacement_lines(content)
+
+        if not keep_indent and lines:
+            lines, indent_notes = correct_indentation(
+                lines, file_lines, start_idx, end_idx, covered, r.line
+            )
+            notes.extend(indent_notes)
 
         if not keep_duplicate and lines:
             before = start_idx - 1
@@ -282,6 +546,7 @@ async def apply_replacements_to_file(
     *,
     allow_literal: bool = False,
     keep_duplicate: bool = False,
+    keep_indent: bool = False,
 ) -> ApplyResult:
     file_path = resolve_file_path(path_str)
     file_lines = await read_file_lines(file_path)
@@ -294,6 +559,7 @@ async def apply_replacements_to_file(
         file_lines,
         allow_literal=allow_literal,
         keep_duplicate=keep_duplicate,
+        keep_indent=keep_indent,
     )
 
     prepared_asc = sorted(prepared, key=lambda p: p[0])
