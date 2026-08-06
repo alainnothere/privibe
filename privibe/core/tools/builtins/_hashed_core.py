@@ -16,10 +16,12 @@ _ERROR_CONTEXT_LINES = 2
 _SUCCESS_CONTEXT_LINES = 5
 
 # Matches a leaked hashed_read line prefix at the start of a replacement line,
-# e.g. "   11 b1c4  ": optional left-pad, the line number, one space, the 4-char
-# hex hash, then exactly two spaces. Kept strict so it only fires on the literal
-# read format, not on incidentally-similar content.
-_LEAKED_PREFIX_RE = re.compile(r"^ *\d+ [0-9a-f]{4}  ")
+# e.g. "11|b1c4|": the line number, a pipe, the 4-char hex hash, a pipe. Kept
+# strict so it only fires on the literal read format, not on incidentally-
+# similar content. The second alternative is the pre-pipe space-padded format
+# ("   11 b1c4  "); resumed sessions carry it in their read history and the
+# model may paste it back, so it stays strippable.
+_LEAKED_PREFIX_RE = re.compile(r"^(?:\d+\|[0-9a-f]{4}\|| *\d+ [0-9a-f]{4}  )")
 
 
 def strip_leaked_prefix(new_content: str) -> tuple[str, int]:
