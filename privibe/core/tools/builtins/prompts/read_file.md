@@ -5,6 +5,7 @@ Use `read_file` to read the content of a file. It's designed to handle large fil
 - By default, it reads from the beginning of the file.
 - Use `offset` (line number) and `limit` (number of lines) to read specific parts or chunks of a file. This is efficient for exploring large files.
 - The result includes `was_truncated: true` if the file content was cut short due to size limits.
+- A whole-file read (no `offset`/`limit`) of a file over the configured size threshold returns only a small head preview plus an `advisory` field. When you see the advisory, do not page through the file: search with `grep` or `find_symbol`, then read the relevant ranges. Do NOT fall back to `bash` `cat` on that file either — the advisory means the file is too big to dump into context by any route.
 - This is more efficient than using `bash` with `cat` or `wc`.
 
 **Strategy for large files:**

@@ -170,3 +170,30 @@ def resolve_file_tool_permission(
         )
 
     return None
+
+
+def large_file_advisory(
+    size_bytes: int,
+    preview_bytes: int,
+    preview_lines: int,
+    threshold_kb: int,
+) -> str:
+    """Message returned with the head preview of an over-threshold naive read.
+
+    Delivered in the tool result (not the prompt) because that is the moment
+    the model is about to page through a huge file, and result-level notes
+    are what actually change its next step.
+    """
+    size_kb = size_bytes / 1024
+    estimate = ""
+    if preview_lines > 0 and preview_bytes > 0:
+        est_total = int(size_bytes / (preview_bytes / preview_lines))
+        estimate = f", roughly {est_total:,} lines"
+    return (
+        f"LARGE FILE: this file is {size_kb:,.0f} KB{estimate} - only the "
+        f"first {preview_lines} lines are shown (the file exceeds the "
+        f"{threshold_kb} KB large-file threshold). Do NOT page through the "
+        "rest sequentially; that floods the context. Instead: locate what "
+        "you need with grep or find_symbol, then read only the relevant "
+        "ranges by passing offset and limit."
+    )

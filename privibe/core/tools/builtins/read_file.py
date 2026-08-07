@@ -20,6 +20,7 @@ from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import (
     display_path,
+    large_file_advisory,
     normalization_note,
     normalize_tool_path,
     resolve_file_tool_permission,
@@ -60,6 +61,14 @@ class ReadFileResult(BaseModel):
         description="Set when the input path was rewritten across path dialects "
         "(e.g. /c/foo → C:\\foo). Lets the model learn the canonical form.",
     )
+    advisory: str | None = Field(
+        default=None,
+        description=(
+            "Set when a whole-file read hit an over-threshold file and only a "
+            "head preview was returned. Explains the recommended workflow: "
+            "search first, then ranged reads."
+        ),
+    )
 
 
 class ReadFileToolConfig(BaseToolConfig):
@@ -71,6 +80,18 @@ class ReadFileToolConfig(BaseToolConfig):
 
     max_read_bytes: int = Field(
         default=64_000, description="Maximum total bytes to read from a file in one go."
+    )
+    large_file_threshold_kb: int = Field(
+        default=128,
+        description=(
+            "A whole-file read (no offset/limit) of a file larger than this "
+            "returns only a head preview plus an advisory instead of "
+            "max_read_bytes of content. Targeted reads are unaffected."
+        ),
+    )
+    large_file_preview_kb: int = Field(
+        default=10,
+        description="Size of the head preview returned for over-threshold files.",
     )
 
 
@@ -93,7 +114,28 @@ class ReadFile(
     ) -> AsyncGenerator[ToolStreamEvent | ReadFileResult, None]:
         file_path = self._prepare_and_validate_path(args)
 
-        read_result = await self._read_file(args, file_path)
+        # A naive whole-file read (no offset/limit) of an over-threshold file
+        # gets a small head preview plus an advisory instead of a 64KB flood.
+        # Targeted reads pass through untouched: punishing them would teach
+        # the model that ranged reads don't work either.
+        advisory: str | None = None
+        max_bytes = self.config.max_read_bytes
+        naive = args.offset == 0 and args.limit is None
+        threshold_bytes = self.config.large_file_threshold_kb * 1024
+        preview_bytes = self.config.large_file_preview_kb * 1024
+        size = file_path.resolve().stat().st_size
+        if naive and size > threshold_bytes:
+            max_bytes = min(max_bytes, preview_bytes)
+
+        read_result = await self._read_file(args, file_path, max_bytes=max_bytes)
+
+        if naive and size > threshold_bytes:
+            advisory = large_file_advisory(
+                size_bytes=size,
+                preview_bytes=read_result.bytes_read,
+                preview_lines=len(read_result.lines),
+                threshold_kb=self.config.large_file_threshold_kb,
+            )
 
         yield ReadFileResult(
             path=str(file_path),
@@ -101,6 +143,7 @@ class ReadFile(
             lines_read=len(read_result.lines),
             was_truncated=read_result.was_truncated,
             path_note=normalization_note(args.path, file_path),
+            advisory=advisory,
         )
 
     def resolve_permission(self, args: ReadFileArgs) -> PermissionContext | None:
@@ -142,11 +185,17 @@ class ReadFile(
         self._validate_path(file_path)
         return file_path
 
-    async def _read_file(self, args: ReadFileArgs, file_path: Path) -> _ReadResult:
+    async def _read_file(
+        self, args: ReadFileArgs, file_path: Path, *, max_bytes: int | None = None
+    ) -> _ReadResult:
         try:
-            return await self._do_read_file(args, file_path, encoding="utf-8")
+            return await self._do_read_file(
+                args, file_path, encoding="utf-8", max_bytes=max_bytes
+            )
         except (UnicodeDecodeError, ValueError):
-            return await self._do_read_file(args, file_path, errors="replace")
+            return await self._do_read_file(
+                args, file_path, errors="replace", max_bytes=max_bytes
+            )
 
     async def _do_read_file(
         self,
@@ -155,7 +204,9 @@ class ReadFile(
         *,
         encoding: str | None = None,
         errors: str | None = None,
+        max_bytes: int | None = None,
     ) -> _ReadResult:
+        byte_cap = max_bytes if max_bytes is not None else self.config.max_read_bytes
         try:
             lines_to_return: list[str] = []
             bytes_read = 0
@@ -174,7 +225,7 @@ class ReadFile(
                         break
 
                     line_bytes = len(line.encode("utf-8"))
-                    if bytes_read + line_bytes > self.config.max_read_bytes:
+                    if bytes_read + line_bytes > byte_cap:
                         was_truncated = True
                         break
 
@@ -237,12 +288,15 @@ class ReadFile(
         if event.result.was_truncated:
             message += " (truncated)"
 
+        warnings = []
+        if event.result.advisory:
+            warnings.append("Large file: head preview only (see advisory)")
+        elif event.result.was_truncated:
+            warnings.append("File was truncated due to size limit")
         return ToolResultDisplay(
             success=True,
             message=message,
-            warnings=["File was truncated due to size limit"]
-            if event.result.was_truncated
-            else [],
+            warnings=warnings,
         )
 
     @classmethod

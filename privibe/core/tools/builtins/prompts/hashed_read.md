@@ -16,6 +16,8 @@ the content hasn't changed. You pass these to `hashed_replace_line`, `hashed_rep
 
 **Use `offset` (0-indexed) and `limit` to read only the section you need**.
 
+A whole-file read (no `offset`/`limit`) of a file over the configured size threshold returns only a small head preview plus an `advisory` field. When you see the advisory, do not page through the file: search with `grep` or `find_symbol`, then read the relevant ranges with `offset`/`limit`.
+
 **`new_content` is the line content only — never include the `11|b1c4|` address prefix.** When you replace a line, send just the code, not what `hashed_read` printed. The replace tools defend against three common slips and tell you when they act:
 
 - If a leaked `(line_number, hash)` prefix appears in your `new_content`, it is stripped automatically. Pass `allow_literal=true` if the prefixed text is genuinely what the file should contain.
