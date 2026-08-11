@@ -1642,6 +1642,13 @@ class VibeApp(App):  # noqa: PLR0904
         self._clear_rewind_state()
         await self._switch_to_input_app()
 
+    def _cancel_rewind_confirm(self) -> bool:
+        """Dismiss a pending restore confirmation. True if one was pending."""
+        try:
+            return self.query_one(RewindApp).cancel_confirm()
+        except Exception:
+            return False
+
     async def on_rewind_app_rewind_with_restore(
         self, message: RewindApp.RewindWithRestore
     ) -> None:
@@ -1749,7 +1756,10 @@ class VibeApp(App):  # noqa: PLR0904
             return
 
         if self._current_bottom_app == BottomApp.Rewind:
-            self.run_worker(self._exit_rewind_mode(), exclusive=False)
+            # While a restore confirmation is pending, ESC steps back to the
+            # option list; a second ESC then leaves rewind mode.
+            if not self._cancel_rewind_confirm():
+                self.run_worker(self._exit_rewind_mode(), exclusive=False)
             self._last_escape_time = None
             return
 
@@ -1903,6 +1913,13 @@ class VibeApp(App):  # noqa: PLR0904
         self.call_after_refresh(schedule_switch)
 
     def action_clear_quit(self) -> None:
+        # Rewind mode has no visible input, so without this Ctrl+C would fall
+        # through to the app-exit countdown. Leave the mode instead.
+        if self._current_bottom_app == BottomApp.Rewind:
+            self.run_worker(self._exit_rewind_mode(), exclusive=False)
+            self._ctrl_c_exit_time = None
+            return
+
         # If input has text, clear it and reset exit countdown.
         input_widgets = self.query(ChatInputContainer)
         if input_widgets:
