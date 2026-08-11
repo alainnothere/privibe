@@ -616,3 +616,194 @@ async def test_chain_without_sibling_left_alone(tmp_path, monkeypatch, replace_l
 
     assert ".D();\n" in f.read_text(encoding="utf-8")
     assert result.content_note is None
+
+
+# ---------------------------------------------------------------------------
+# boundary-duplicate removal: multi-line window
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_two_line_leading_echo_removed(tmp_path, monkeypatch, replace_line_tool):
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "f.py"
+    f.write_text("a\nb\nc\nX\ne\n", encoding="utf-8")
+
+    # Patch-style echo of the two lines above the region.
+    result = await collect_result(
+        replace_line_tool.run(
+            HashedReplaceLineArgs(
+                path=str(f), replacements=[_rli(4, "X", "b\nc\nNEW")]
+            )
+        )
+    )
+
+    assert f.read_text(encoding="utf-8") == "a\nb\nc\nNEW\ne\n"
+    assert result.content_note is not None
+    assert "2 new lines" in result.content_note
+    assert "before" in result.content_note
+
+
+@pytest.mark.asyncio
+async def test_two_line_trailing_echo_removed(tmp_path, monkeypatch, replace_line_tool):
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "f.py"
+    f.write_text("a\nb\nc\nd\ne\n", encoding="utf-8")
+
+    result = await collect_result(
+        replace_line_tool.run(
+            HashedReplaceLineArgs(
+                path=str(f), replacements=[_rli(2, "b", "NEW\nc\nd")]
+            )
+        )
+    )
+
+    assert f.read_text(encoding="utf-8") == "a\nNEW\nc\nd\ne\n"
+    assert result.content_note is not None
+    assert "2 new lines" in result.content_note
+    assert "after" in result.content_note
+
+
+@pytest.mark.asyncio
+async def test_window_matches_even_when_single_line_does_not(
+    tmp_path, monkeypatch, replace_line_tool
+):
+    """The InstantPay shape: a dangling chain line re-replaced with an echo of
+    the two lines above it plus itself. lines[:1] does not match the line
+    directly above, but lines[:2] matches the pair, so the echo still pops
+    and the dangling line is simply rewritten in place.
+    """
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "f.cs"
+    prec = "            .HasPrecision(18, 2)"
+    comm = '            .HasComment("Transaction amount.");'
+    dangling = "            .HasPrecision(18, 2);"
+    f.write_text(f"head\n{prec}\n{comm}\n{dangling}\n", encoding="utf-8")
+
+    result = await collect_result(
+        replace_line_tool.run(
+            HashedReplaceLineArgs(
+                path=str(f),
+                replacements=[_rli(4, dangling, f"{prec}\n{comm}\n{dangling}")],
+            )
+        )
+    )
+
+    assert f.read_text(encoding="utf-8") == f"head\n{prec}\n{comm}\n{dangling}\n"
+    assert result.content_note is not None
+    assert "2 new lines" in result.content_note
+
+
+@pytest.mark.asyncio
+async def test_leading_and_trailing_echoes_removed_together(
+    tmp_path, monkeypatch, replace_line_tool
+):
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "f.py"
+    f.write_text("a\nb\nX\nd\ne\n", encoding="utf-8")
+
+    result = await collect_result(
+        replace_line_tool.run(
+            HashedReplaceLineArgs(
+                path=str(f), replacements=[_rli(3, "X", "b\nNEW\nd")]
+            )
+        )
+    )
+
+    assert f.read_text(encoding="utf-8") == "a\nb\nNEW\nd\ne\n"
+    assert result.content_note is not None
+    assert "before" in result.content_note
+    assert "after" in result.content_note
+
+
+@pytest.mark.asyncio
+async def test_sole_line_never_dropped(tmp_path, monkeypatch, replace_line_tool):
+    """A single-line replacement that duplicates its neighbour is kept: with
+    only one line there is no echoed context, just intentional duplication,
+    and dropping it would silently turn the replacement into a deletion.
+    """
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "f.py"
+    f.write_text("a\nb\nX\nd\n", encoding="utf-8")
+
+    result = await collect_result(
+        replace_line_tool.run(
+            HashedReplaceLineArgs(path=str(f), replacements=[_rli(3, "X", "b")])
+        )
+    )
+
+    assert f.read_text(encoding="utf-8") == "a\nb\nb\nd\n"
+    assert result.content_note is None
+
+
+@pytest.mark.asyncio
+async def test_echo_of_both_boundaries_keeps_last_line(
+    tmp_path, monkeypatch, replace_line_tool
+):
+    """Two lines of pure echoed context: the leading echo pops, but the sole
+    remaining line survives even though it duplicates the line below.
+    """
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "f.py"
+    f.write_text("a\nb\nX\nc\nd\n", encoding="utf-8")
+
+    result = await collect_result(
+        replace_line_tool.run(
+            HashedReplaceLineArgs(path=str(f), replacements=[_rli(3, "X", "b\nc")])
+        )
+    )
+
+    assert f.read_text(encoding="utf-8") == "a\nb\nc\nc\nd\n"
+    assert result.content_note is not None
+    assert "before" in result.content_note
+    assert "after" not in result.content_note
+
+
+@pytest.mark.asyncio
+async def test_window_capped_at_three_lines(tmp_path, monkeypatch, replace_line_tool):
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "f.py"
+    f.write_text("p\nq\nr\ns\nX\nz\n", encoding="utf-8")
+
+    # Four echoed lines above exceed the cap. A shorter window cannot align
+    # with a longer echo (the comparison anchors at the boundary), so the
+    # echo is left entirely alone rather than partially trimmed.
+    result = await collect_result(
+        replace_line_tool.run(
+            HashedReplaceLineArgs(
+                path=str(f), replacements=[_rli(5, "X", "p\nq\nr\ns\nNEW")]
+            )
+        )
+    )
+
+    assert f.read_text(encoding="utf-8") == "p\nq\nr\ns\np\nq\nr\ns\nNEW\nz\n"
+    assert result.content_note is None
+
+
+@pytest.mark.asyncio
+async def test_window_skips_neighbours_edited_in_same_batch(
+    tmp_path, monkeypatch, replace_line_tool
+):
+    """A window that would reach into another replacement's region does not
+    match against it: those lines are being rewritten, not echoed.
+    """
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "f.py"
+    f.write_text("a\nb\nc\nX\ne\n", encoding="utf-8")
+
+    result = await collect_result(
+        replace_line_tool.run(
+            HashedReplaceLineArgs(
+                path=str(f),
+                replacements=[
+                    _rli(2, "b", "B"),
+                    _rli(4, "X", "b\nc\nNEW"),
+                ],
+            )
+        )
+    )
+
+    # Line 2 is covered by the batch, so only the 1-line window against the
+    # untouched line 3 ("c") can match; lines[:1] is "b", which does not.
+    assert f.read_text(encoding="utf-8") == "a\nB\nc\nb\nc\nNEW\ne\n"
+    assert result.content_note is None

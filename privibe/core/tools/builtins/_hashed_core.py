@@ -595,6 +595,57 @@ def validate_all_hashes(
         )
 
 
+# Longest run of new lines at a boundary that may be dropped as an echo of
+# the untouched lines just outside the edited region. Models restating
+# context (patch-style hints) echo at most a few lines; the cap keeps a
+# large legitimate block from ever being silently swallowed.
+_DUP_WINDOW = 3
+
+
+def _dup_prefix_len(
+    lines: list[str], file_lines: list[str], covered: set[int], start_idx: int
+) -> int:
+    """Longest k (up to _DUP_WINDOW) with lines[:k] equal to the k untouched
+    lines directly above the region. Capped at len(lines) - 1: dropping the
+    last line would turn the replacement into a deletion.
+    """
+    best = 0
+    limit = min(_DUP_WINDOW, len(lines) - 1, start_idx)
+    for k in range(1, limit + 1):
+        if start_idx - k in covered:
+            break
+        if lines[:k] == file_lines[start_idx - k : start_idx]:
+            best = k
+    return best
+
+
+def _dup_suffix_len(
+    lines: list[str], file_lines: list[str], covered: set[int], after_idx: int
+) -> int:
+    """Mirror of _dup_prefix_len for the lines directly below the region."""
+    best = 0
+    limit = min(_DUP_WINDOW, len(lines) - 1, len(file_lines) - after_idx)
+    for k in range(1, limit + 1):
+        if after_idx + k - 1 in covered:
+            break
+        if lines[-k:] == file_lines[after_idx : after_idx + k]:
+            best = k
+    return best
+
+
+def _dup_note(line_no: int, count: int, side: str) -> str:
+    if count == 1:
+        return (
+            f"line {line_no}: removed a new line that duplicated the line "
+            f"immediately {side} it (pass keep_duplicate=true to keep it)"
+        )
+    return (
+        f"line {line_no}: removed {count} new lines that duplicated the lines "
+        f"immediately {side} the edited region "
+        "(pass keep_duplicate=true to keep them)"
+    )
+
+
 def prepare_replacements(
     resolved: list[tuple[int, int, LineReplacement]],
     file_lines: list[str],
@@ -612,17 +663,19 @@ def prepare_replacements(
       comment blocks align to the adjacent comment, and an off-grid base
       indent is shifted onto the file's indent grid. Runs before duplicate
       detection so a corrected line can still be recognized as a duplicate.
-    - A first/last new line that exactly duplicates the untouched original line
-      immediately outside the region is dropped (unless ``keep_duplicate``).
-      Only edit-induced boundary duplicates are touched: neighbours that are
-      themselves being edited in this batch are left alone, and duplicates that
-      already existed or live inside new_content are never removed.
+    - New lines at the start/end of new_content that exactly duplicate the
+      untouched original lines immediately outside the region are dropped, up
+      to _DUP_WINDOW lines per side (unless ``keep_duplicate``). Only
+      edit-induced boundary duplicates are touched: neighbours being edited in
+      this batch are left alone, duplicates that already existed or live
+      inside new_content are never removed, and new_content is never emptied
+      (its last line always survives, so a replacement can't silently become
+      a deletion).
     """
     covered: set[int] = set()
     for start_idx, end_idx, _ in resolved:
         covered.update(range(start_idx, end_idx + 1))
 
-    total = len(file_lines)
     prepared: list[tuple[int, int, LineReplacement, list[str]]] = []
     notes: list[str] = []
 
@@ -646,25 +699,14 @@ def prepare_replacements(
             notes.extend(indent_notes)
 
         if not keep_duplicate and lines:
-            before = start_idx - 1
-            if before >= 0 and before not in covered and lines[0] == file_lines[before]:
-                lines.pop(0)
-                notes.append(
-                    f"line {r.line}: removed a new line that duplicated the line "
-                    "immediately before it (pass keep_duplicate=true to keep it)"
-                )
-            after = end_idx + 1
-            if (
-                lines
-                and after < total
-                and after not in covered
-                and lines[-1] == file_lines[after]
-            ):
-                lines.pop()
-                notes.append(
-                    f"line {r.line}: removed a new line that duplicated the line "
-                    "immediately after it (pass keep_duplicate=true to keep it)"
-                )
+            lead = _dup_prefix_len(lines, file_lines, covered, start_idx)
+            if lead:
+                del lines[:lead]
+                notes.append(_dup_note(r.line, lead, "before"))
+            trail = _dup_suffix_len(lines, file_lines, covered, end_idx + 1)
+            if trail:
+                del lines[-trail:]
+                notes.append(_dup_note(r.line, trail, "after"))
 
         prepared.append((start_idx, end_idx, r, lines))
 
