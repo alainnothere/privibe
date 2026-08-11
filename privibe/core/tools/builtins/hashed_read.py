@@ -103,9 +103,12 @@ class HashedRead(
     ToolUIData[HashedReadArgs, HashedReadResult],
 ):
     description: ClassVar[str] = (
-        "Read a file returning each line prefixed with its 0-based line number and a "
-        "4-char hash. Use these (line, hash) pairs as addresses for hashed_replace_line,"
-        "hashed_replace_block, hashed_delete_line and hashed_delete_block"
+        "Read a file returning each line as 'line|hash|content', where line is a "
+        "1-based line number and hash is a 4-char hash of the content. Use these "
+        "(line, hash) pairs as addresses for hashed_replace_line, "
+        "hashed_replace_block, hashed_delete_line and hashed_delete_block. "
+        "The offset argument is 0-indexed, but the line numbers returned are 1-based: "
+        "pass the returned number through unchanged, never adjust it by one."
     )
 
     @final
