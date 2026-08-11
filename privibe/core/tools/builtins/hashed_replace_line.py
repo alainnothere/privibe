@@ -56,8 +56,10 @@ class HashedReplaceLineArgs(BaseModel):
     keep_duplicate: bool = Field(
         default=False,
         description=(
-            "By default a first/last new line that exactly duplicates the untouched line "
-            "just outside the edited region is dropped. Set true to keep the duplicate."
+            "By default new lines at the start/end of new_content that exactly "
+            "duplicate the untouched lines just outside the edited region are "
+            "dropped (up to a few lines per side; the last remaining line is "
+            "never dropped). Set true to keep the duplicates."
         ),
     )
     keep_indent: bool = Field(
