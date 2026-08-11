@@ -18,7 +18,7 @@ from textual.app import WINDOWS, App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
 from textual.driver import Driver
-from textual.events import AppBlur, AppFocus, MouseUp
+from textual.events import AppBlur, AppFocus, MouseUp, Resize
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -66,6 +66,7 @@ from privibe.cli.textual_ui.widgets.proxy_setup_app import ProxySetupApp
 from privibe.cli.textual_ui.widgets.question_app import QuestionApp
 from privibe.cli.textual_ui.widgets.rewind_app import RewindApp
 from privibe.cli.textual_ui.widgets.session_picker import SessionPickerApp
+from privibe.cli.textual_ui.widgets.tool_widgets import half_viewport_cap
 from privibe.cli.textual_ui.widgets.tools import ToolResultMessage
 from privibe.cli.textual_ui.widgets.voice_app import VoiceApp
 from privibe.cli.textual_ui.windowing import (
@@ -439,6 +440,16 @@ class VibeApp(App):  # noqa: PLR0904
 
     def _is_file_watcher_enabled(self) -> bool:
         return self.config.file_watcher_for_autocomplete
+
+    def on_resize(self, event: Resize) -> None:
+        """Re-apply the cells-based height caps (see half_viewport_cap):
+        they track 50% of the terminal height, so a resize invalidates the
+        value stored on every already-mounted capped region.
+        """
+        for message in self.query(ToolResultMessage):
+            message.apply_height_cap(event.size.height)
+        for scroll in self.query(".approval-tool-info-scroll"):
+            scroll.styles.max_height = half_viewport_cap(event.size.height)
 
     async def on_chat_input_container_submitted(
         self, event: ChatInputContainer.Submitted

@@ -11,7 +11,10 @@ from textual.message import Message
 from textual.widgets import Static
 
 from privibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
-from privibe.cli.textual_ui.widgets.tool_widgets import get_approval_widget
+from privibe.cli.textual_ui.widgets.tool_widgets import (
+    get_approval_widget,
+    half_viewport_cap,
+)
 from privibe.core.config import VibeConfig
 from privibe.core.tools.permissions import RequiredPermission
 
@@ -100,6 +103,11 @@ class ApprovalApp(Container):
                 yield self.tool_info_container
 
     async def on_mount(self) -> None:
+        # Cells-based cap (was max-height: 50vh in tcss; see
+        # half_viewport_cap). Re-applied from VibeApp.on_resize.
+        self.query_one(".approval-tool-info-scroll").styles.max_height = (
+            half_viewport_cap(self.app.size.height)
+        )
         await self._update_tool_info()
         self._update_options()
         self.focus()

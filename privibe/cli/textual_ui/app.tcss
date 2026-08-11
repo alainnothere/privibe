@@ -523,7 +523,10 @@ StatusMessage {
 .tool-result-content {
     width: 1fr;
     height: auto;
-    max-height: 50vh;
+    /* max-height (50% of screen) is set in cells from ToolResultMessage:
+       a vh value here is skipped when Textual measures the auto-height
+       container, desyncing border/container height from the clamped
+       content (phantom trailing rows + second scrollbar). */
     overflow-y: auto;
     padding: 0;
 }
@@ -774,7 +777,9 @@ StatusMessage {
 .approval-tool-info-scroll {
     width: 100%;
     height: auto;
-    max-height: 50vh;
+    /* max-height (50% of screen) is set in cells from ApprovalApp: a vh
+       value here is skipped when Textual measures the auto-height
+       #approval-content, desyncing its height from the clamped scroll. */
 }
 
 .approval-title {
