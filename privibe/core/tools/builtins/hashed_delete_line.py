@@ -50,6 +50,13 @@ class HashedDeleteLineResult(BaseModel):
         default=None,
         description="Set when the input path was rewritten across path dialects.",
     )
+    content_note: str | None = Field(
+        default=None,
+        description=(
+            "Set when the tool corrected your addresses (e.g. re-pointed a "
+            "stale line number shifted by this session's earlier edits)."
+        ),
+    )
 
 
 class HashedDeleteLine(
@@ -91,6 +98,7 @@ class HashedDeleteLine(
             total_lines_deleted=result.total_lines_changed,
             context=result.context,
             path_note=result.path_note,
+            content_note=result.content_note,
         )
 
     @classmethod
@@ -113,6 +121,7 @@ class HashedDeleteLine(
                 f"Deleted {r.total_deletions} line{'s' if r.total_deletions != 1 else ''} "
                 f"from {display_path(r.path)}"
             ),
+            warnings=[r.content_note] if r.content_note else [],
         )
 
     @classmethod

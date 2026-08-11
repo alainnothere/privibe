@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
+import zlib
 
 import anyio
 from pydantic import BaseModel, Field
@@ -294,6 +295,80 @@ def correct_indentation(
     return [c + "\n" for c in out], notes
 
 
+# ---------------------------------------------------------------------------
+# Shift map: per-file bookkeeping of the line-number shifts this session's
+# hashed edits introduced, so a stale (line, hash) address from a pre-edit
+# read can be deterministically re-pointed at its moved line instead of
+# forcing a re-read/re-write round trip. Hashes are content-only, so an edit
+# above a line changes nothing about its address except the number, and by
+# exactly the delta recorded here. Translation is positional bookkeeping, not
+# content search: it is only attempted when the given address fails, and only
+# applied when the hash verifies at the translated position.
+#
+# Lifecycle: cleared when the model re-reads the file (hashed_read, which
+# re-baselines its addresses to current coordinates), discarded when the file
+# changes outside the hashed tools (fingerprint mismatch) or when a
+# translation fails (the map has diverged), never persisted across sessions.
+# ---------------------------------------------------------------------------
+
+# (start_idx, end_idx, line_delta) of one applied edit, in the coordinates of
+# the file as it was just before that edit's call.
+_ShiftEdit = tuple[int, int, int]
+
+
+@dataclass
+class _ShiftMap:
+    fingerprint: int
+    # One generation per successful apply call; edits within a generation
+    # share that call's pre-edit coordinates.
+    generations: list[list[_ShiftEdit]] = field(default_factory=list)
+
+
+_shift_maps: dict[str, _ShiftMap] = {}
+
+
+def _content_fingerprint(lines: list[str]) -> int:
+    return zlib.crc32("".join(lines).encode("utf-8"))
+
+
+def reset_shift_map(path: str) -> None:
+    """Forget recorded shifts for a file (keyed by resolved path string)."""
+    _shift_maps.pop(path, None)
+
+
+def clear_all_shift_maps() -> None:
+    """Drop every recorded shift map. Test isolation hook."""
+    _shift_maps.clear()
+
+
+def _translate_interval(
+    smap: _ShiftMap, start_idx: int, end_idx: int
+) -> tuple[int, int] | None:
+    """Walk [start_idx, end_idx] through the recorded generations.
+
+    The interval shifts rigidly past edits entirely above it and ignores
+    edits entirely below. Any recorded edit that intersects it means the
+    addressed content itself was rewritten, so translation refuses (None)
+    rather than risk silently overwriting an earlier edit. Returns None too
+    when nothing moved: the given address was simply wrong, not stale.
+    """
+    cs, ce = start_idx, end_idx
+    for generation in smap.generations:
+        shift = 0
+        for s, e, delta in generation:
+            if e < cs:
+                shift += delta
+            elif s > ce:
+                continue
+            else:
+                return None
+        cs += shift
+        ce += shift
+    if (cs, ce) == (start_idx, end_idx):
+        return None
+    return cs, ce
+
+
 class LineReplacement(BaseModel):
     line: int = Field(description="1-based line number from hashed_read.")
     hash: str = Field(description="4-char hash from hashed_read for that line.")
@@ -360,6 +435,100 @@ def _context_around(file_lines: list[str], idx: int) -> str:
     start = max(0, idx - _ERROR_CONTEXT_LINES)
     end = min(len(file_lines), idx + _ERROR_CONTEXT_LINES + 1)
     return format_hashed_lines(file_lines[start:end], start + 1)
+
+
+def _address_ok(r: LineReplacement, start_idx: int, end_idx: int, file_lines: list[str]) -> bool:
+    """True when the address is in range and its endpoint hashes match."""
+    if start_idx < 0 or end_idx >= len(file_lines) or end_idx < start_idx:
+        return False
+    if _line_hash(file_lines[start_idx].rstrip("\r\n")) != r.hash:
+        return False
+    if r.end_line is not None and r.end_hash is not None:
+        if _line_hash(file_lines[end_idx].rstrip("\r\n")) != r.end_hash:
+            return False
+    return True
+
+
+def translate_stale_addresses(
+    key: str,
+    replacements: list[LineReplacement],
+    file_lines: list[str],
+) -> tuple[list[LineReplacement], list[str]]:
+    """Re-point stale addresses at their shifted lines via the file's map.
+
+    Addresses whose hashes match as given are current and pass untouched. A
+    mismatched address is walked through the recorded shifts and adopted only
+    if its hashes verify at the translated position, with a note. Any failure
+    (fingerprint mismatch, translation refused, hash still wrong) discards the
+    map and returns the replacements unchanged, so the normal validation error
+    reports the lines the model actually sent and the re-read re-baselines.
+    """
+    smap = _shift_maps.get(key)
+    if smap is None:
+        return replacements, []
+    if smap.fingerprint != _content_fingerprint(file_lines):
+        # The file changed outside the hashed tools; the map is untrustworthy.
+        reset_shift_map(key)
+        return replacements, []
+
+    out: list[LineReplacement] = []
+    notes: list[str] = []
+    for r in replacements:
+        start_idx = r.line - 1
+        end_idx = (r.end_line - 1) if r.end_line is not None else start_idx
+        if r.end_line is not None and r.end_hash is None:
+            # Malformed address; let resolve_replacements report it.
+            out.append(r)
+            continue
+        if _address_ok(r, start_idx, end_idx, file_lines):
+            out.append(r)
+            continue
+        translated = (
+            _translate_interval(smap, start_idx, end_idx)
+            if 0 <= start_idx <= end_idx
+            else None
+        )
+        if translated is not None:
+            new_start, new_end = translated
+            update: dict[str, int] = {"line": new_start + 1}
+            if r.end_line is not None:
+                update["end_line"] = new_end + 1
+            candidate = r.model_copy(update=update)
+            if _address_ok(candidate, new_start, new_end, file_lines):
+                shift = new_start - start_idx
+                notes.append(
+                    f"line {r.line}: address shifted {shift:+d} "
+                    f"line{'s' if abs(shift) != 1 else ''} to line {new_start + 1} "
+                    "to follow this session's earlier edits "
+                    "(hashes verified at the new position)"
+                )
+                out.append(candidate)
+                continue
+        reset_shift_map(key)
+        return replacements, []
+    return out, notes
+
+
+def record_shift_generation(
+    key: str,
+    prepared_asc: list[tuple[int, int, LineReplacement, list[str]]],
+    new_lines: list[str],
+) -> None:
+    """Append this call's edits to the file's map and refresh the fingerprint.
+
+    Zero-delta edits are recorded too: they shift nothing, but a later stale
+    interval overlapping them must still be refused (its content changed).
+    """
+    edits: list[_ShiftEdit] = [
+        (start_idx, end_idx, len(lines) - (end_idx - start_idx + 1))
+        for start_idx, end_idx, _r, lines in prepared_asc
+    ]
+    smap = _shift_maps.get(key)
+    if smap is None:
+        smap = _ShiftMap(fingerprint=0)
+        _shift_maps[key] = smap
+    smap.fingerprint = _content_fingerprint(new_lines)
+    smap.generations.append(edits)
 
 
 def resolve_replacements(
@@ -551,6 +720,10 @@ async def apply_replacements_to_file(
     file_path = resolve_file_path(path_str)
     file_lines = await read_file_lines(file_path)
 
+    replacements, shift_notes = translate_stale_addresses(
+        str(file_path), replacements, file_lines
+    )
+
     resolved = resolve_replacements(replacements, file_lines)
     validate_all_hashes(resolved, file_lines)
 
@@ -572,12 +745,14 @@ async def apply_replacements_to_file(
         total_lines_changed += end_idx - start_idx + 1
 
     await write_file_lines(file_path, new_lines)
+    record_shift_generation(str(file_path), prepared_asc, new_lines)
     context = build_success_context(new_lines, prepared_asc)
+    all_notes = shift_notes + notes
     return ApplyResult(
         path=str(file_path),
         total_ops=len(replacements),
         total_lines_changed=total_lines_changed,
         context=context,
         path_note=normalization_note(path_str, file_path),
-        content_note="\n".join(notes) if notes else None,
+        content_note="\n".join(all_notes) if all_notes else None,
     )
