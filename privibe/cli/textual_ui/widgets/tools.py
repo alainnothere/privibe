@@ -14,6 +14,7 @@ from privibe.cli.textual_ui.widgets.tool_widgets import (
     FileDiffWidget,
     _truncate_lines,
     get_result_widget,
+    half_viewport_cap,
 )
 from privibe.core.tools.ui import ToolUIDataAdapter
 from privibe.core.types import ToolCallEvent, ToolResultEvent
@@ -144,7 +145,18 @@ class ToolResultMessage(Static):
             self._content_container = Vertical(classes="tool-result-content")
             yield self._content_container
 
+    def apply_height_cap(self, screen_height: int | None = None) -> None:
+        """Clamp the content region to half the screen, in cells (see
+        half_viewport_cap). Re-applied from VibeApp.on_resize, which passes
+        the new height explicitly since app.size may not be updated yet.
+        """
+        if self._content_container is not None:
+            self._content_container.styles.max_height = half_viewport_cap(
+                screen_height if screen_height is not None else self.app.size.height
+            )
+
     async def on_mount(self) -> None:
+        self.apply_height_cap()
         if self._call_widget:
             success = self._determine_success()
             self._call_widget.stop_spinning(success=success)

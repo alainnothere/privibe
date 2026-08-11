@@ -24,6 +24,17 @@ from privibe.core.tools.builtins.write_file import WriteFileArgs, WriteFileResul
 from privibe.core.types import FileDiff
 
 
+def half_viewport_cap(screen_height: int) -> int:
+    """Cells equivalent of `max-height: 50vh` for capped scroll regions.
+
+    Set from Python (in cells) because Textual skips a non-cells max-height
+    when measuring an auto-height parent (Widget._get_box_model), so a tcss
+    `max-height: 50vh` lets the parent size itself to the unclamped content
+    height: trailing blank rows below the region and a stretched border.
+    """
+    return max(1, screen_height // 2)
+
+
 def _truncate_lines(content: str, max_lines: int) -> tuple[str, str | None]:
     """Truncate content to max_lines, returning (content, truncation_info)."""
     lines = content.strip("\n").split("\n")
