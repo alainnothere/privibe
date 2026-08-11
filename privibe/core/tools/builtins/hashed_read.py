@@ -141,6 +141,16 @@ class HashedRead(
                 threshold_kb=self.config.large_file_threshold_kb,
             )
 
+        # A read re-baselines the model's addresses to current coordinates,
+        # so recorded shifts from earlier edits no longer apply (even for a
+        # partial read: keeping older baselines alive would need
+        # multi-generation translation, and a stale address outside the read
+        # window just gets the normal re-read error). Lazy import:
+        # _hashed_core imports from this module.
+        from privibe.core.tools.builtins._hashed_core import reset_shift_map
+
+        reset_shift_map(str(file_path))
+
         start_num = args.offset + 1  # convert 0-indexed offset to 1-based line number
         yield HashedReadResult(
             path=str(file_path),
