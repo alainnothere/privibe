@@ -1192,6 +1192,21 @@ FeedbackBar {
     color: ansi_default;
 }
 
+.rewind-confirm {
+    height: auto;
+    color: ansi_red;
+    text-style: bold;
+}
+
+.rewind-confirm-input {
+    width: 100%;
+    height: auto;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+
 .rewind-help {
     height: auto;
     color: ansi_bright_black;
