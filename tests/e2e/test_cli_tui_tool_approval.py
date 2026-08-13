@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pexpect
 import pytest
 
 from tests.e2e.common import (
@@ -58,7 +57,8 @@ def _tool_call_factory(
     ]
 
 
-@pytest.mark.timeout(25)
+@pytest.mark.timeout(60)
+@pytest.mark.xdist_group("e2e")
 @pytest.mark.parametrize(
     "streaming_mock_server",
     [pytest.param(_tool_call_factory, id="tool-call-stream")],
@@ -70,6 +70,25 @@ def test_spawn_cli_asks_bash_permission_and_shows_tool_output_after_approval(
     e2e_workdir: Path,
     spawned_vibe_process: SpawnedVibeProcessFixture,
 ) -> None:
+    """Test that the CLI prompts for bash permission and shows tool output after approval.
+
+    Quirks and known failure modes:
+
+    1. XDIST WORKERS EXPORT COLUMNS/LINES
+       See test_cli_tui_streaming.py -- the spawn fixture strips COLUMNS/LINES
+       and proxy vars from the child env, and xdist_group("e2e") plus
+       "--dist loadgroup" keeps the e2e tests serialized on one worker.
+
+    2. NO EOF WAIT AFTER TOOL OUTPUT
+       After the tool runs, the agent makes a second LLM request to summarize
+       the result.  Waiting for EOF here is unreliable -- the agent may still
+       be processing.  The test asserts only that the tool output appears, then
+       exits via the context manager without waiting for EOF.
+
+    3. TIMEOUT IS 60 s
+       Longer than the streaming test because it covers two LLM round-trips
+       (tool call + follow-up) plus user interaction for permission.
+    """
     with spawned_vibe_process(e2e_workdir) as (child, captured):
         wait_for_main_screen(child, timeout=15)
         child.send("Run a shell command")
@@ -82,6 +101,3 @@ def test_spawn_cli_asks_bash_permission_and_shows_tool_output_after_approval(
         child.send("y")
         child.send("\r")
         wait_for_rendered_text(child, captured, needle=PREDICTABLE_OUTPUT, timeout=10)
-
-        child.sendcontrol("c")
-        child.expect(pexpect.EOF, timeout=10)

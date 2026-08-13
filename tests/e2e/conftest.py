@@ -64,11 +64,23 @@ def spawned_vibe_process() -> SpawnedVibeFactory:
         workdir: Path, extra_args: Sequence[str] | None = None
     ) -> SpawnedVibeContext:
         captured = io.StringIO()
+        # The spawned TUI must see neither COLUMNS/LINES (pytest-xdist workers
+        # export 80x24, and Textual prefers those env vars over the real pty
+        # size, so the 120x36 layout and its banner never render) nor proxy
+        # variables (they would route the request to the localhost mock server
+        # through a real proxy).
+        child_env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in ("COLUMNS", "LINES")
+            and key.lower()
+            not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
+        }
         child = pexpect.spawn(
             "uv",
             ["run", "privibe", "--workdir", str(workdir), *(extra_args or [])],
             cwd=str(TESTS_ROOT.parent),
-            env=os.environ,
+            env=child_env,
             encoding="utf-8",
             timeout=30,
             dimensions=(36, 120),
