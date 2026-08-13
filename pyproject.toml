@@ -167,7 +167,7 @@ max-nested-blocks = 4
 ignore_decorators = ["@*"]
 
 [tool.pytest.ini_options]
-addopts = "-vvvv -q -n auto --durations=10 --import-mode=importlib --maxschedchunk=1"
+addopts = "-vvvv -q -n auto --dist loadgroup --durations=10 --import-mode=importlib --maxschedchunk=1"
 timeout = 10
 filterwarnings = [
     # (e2e) streaming mock server is started in a thread; and the cli is spawn in a fork

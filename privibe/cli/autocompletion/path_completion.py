@@ -85,12 +85,18 @@ class PathCompletionController:
         app = getattr(self._view, "app", None)
         if app:
             with self._query_lock:
-                self._pending_future = self._executor.submit(
+                future = self._executor.submit(
                     self._compute_completions, text, cursor_index
                 )
-                self._pending_future.add_done_callback(
-                    lambda f: self._handle_completion_result(f, query)
-                )
+                self._pending_future = future
+            # Registered outside the lock: if the worker already finished,
+            # add_done_callback runs _handle_completion_result synchronously in
+            # this thread, and that handler acquires _query_lock again -- doing
+            # this while still holding the (non-reentrant) lock deadlocks the
+            # widget's message pump.
+            future.add_done_callback(
+                lambda f: self._handle_completion_result(f, query)
+            )
         else:
             suggestions = self._compute_completions(text, cursor_index)
             self._update_suggestions(suggestions)

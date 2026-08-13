@@ -64,6 +64,30 @@ def wait_for_main_screen(child: pexpect.spawn, timeout: float = 20.0) -> None:
     child.expect(ansi_tolerant_pattern("Privibe v"), timeout=timeout)
 
 
+def send_exit_sequence(child: pexpect.spawn, max_presses: int = 3) -> None:
+    """Exit the TUI via the Ctrl+C double-press handshake, without fixed sleeps.
+
+    action_clear_quit consumes a Ctrl+C press to interrupt a running agent or
+    to clear input text; only an idle app with an empty input starts the exit
+    countdown and shows the "Press Ctrl+C again to exit" toast. Press until
+    that toast renders, then confirm within its 3 s window and wait for EOF.
+    """
+    for _ in range(max_presses):
+        child.sendcontrol("c")
+        try:
+            child.expect(
+                ansi_tolerant_pattern("Press Ctrl+C again to exit"), timeout=2
+            )
+        except pexpect.TIMEOUT:
+            continue
+        child.sendcontrol("c")
+        child.expect(pexpect.EOF, timeout=10)
+        return
+    raise AssertionError(
+        f"TUI never showed the Ctrl+C exit prompt after {max_presses} presses."
+    )
+
+
 def wait_for_rendered_text(
     child: pexpect.spawn, captured: io.StringIO, needle: str, timeout: float
 ) -> None:

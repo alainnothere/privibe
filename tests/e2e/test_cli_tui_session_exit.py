@@ -12,6 +12,7 @@ import pytest
 from tests.e2e.common import (
     SpawnedVibeProcessFixture,
     ansi_tolerant_pattern,
+    send_exit_sequence,
     strip_ansi,
     wait_for_main_screen,
     wait_for_request_count,
@@ -79,6 +80,7 @@ def _finish_turn(
 
 
 @pytest.mark.timeout(30)
+@pytest.mark.xdist_group("e2e")
 @pytest.mark.parametrize(
     "streaming_mock_server",
     [pytest.param(_usage_by_run_factory, id="fresh-usage-after-resume")],
@@ -90,6 +92,35 @@ def test_resumed_session_prints_only_fresh_token_usage_on_exit(
     e2e_workdir: Path,
     spawned_vibe_process: SpawnedVibeProcessFixture,
 ) -> None:
+    """Test that a resumed session prints only fresh token usage on exit.
+
+    Quirks and known failure modes:
+
+    1. EXIT IS A CTRL+C HANDSHAKE
+       See test_cli_tui_streaming.py -- send_exit_sequence presses Ctrl+C
+       until the exit toast renders, then confirms.  This test exits twice
+       (once after the first run, once after the resume).
+
+    2. XDIST WORKERS EXPORT COLUMNS/LINES
+       See test_cli_tui_streaming.py -- the spawn fixture strips COLUMNS/LINES
+       and proxy vars from the child env, and xdist_group("e2e") plus
+       "--dist loadgroup" keeps the e2e tests serialized on one worker.
+
+    3. TWO SPAWNED PROCESSES
+       The test spawns the CLI twice: once fresh, once with --resume.
+       Each spawn needs its own wait_for_main_screen + exit handshake.
+       The session ID is extracted from the first run's output via regex.
+
+    4. _FINISH_TURN HELPER
+       The helper waits for the LLM response, then polls the captured output
+       until it stops changing for 0.3 s.  This is necessary because the TUI
+       renders incrementally -- the token usage line appears after the response
+       is fully rendered.  Without this wait, the test may read incomplete output.
+
+    5. TIMEOUT IS 30 s
+       Covers two full CLI lifecycles (spawn + message + exit), each needing
+       ~5 s startup + ~10 s for the LLM round-trip.
+    """
     with spawned_vibe_process(e2e_workdir) as (child, captured):
         wait_for_main_screen(child, timeout=15)
         child.send("First run")
@@ -103,8 +134,7 @@ def test_resumed_session_prints_only_fresh_token_usage_on_exit(
             request_count_getter=lambda: len(streaming_mock_server.requests),
         )
 
-        child.sendcontrol("c")
-        child.expect(pexpect.EOF, timeout=10)
+        send_exit_sequence(child)
 
     first_output = strip_ansi(captured.getvalue())
     resume_match = re.search(r"Or: privibe --resume ([0-9a-f-]+)", first_output)
@@ -130,8 +160,7 @@ def test_resumed_session_prints_only_fresh_token_usage_on_exit(
             request_count_getter=lambda: len(streaming_mock_server.requests),
         )
 
-        resumed_child.sendcontrol("c")
-        resumed_child.expect(pexpect.EOF, timeout=10)
+        send_exit_sequence(resumed_child)
 
         second_output = strip_ansi(resumed_captured.getvalue())
 
