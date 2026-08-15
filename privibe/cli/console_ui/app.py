@@ -685,14 +685,22 @@ class ConsoleUI:
         self._print_transcript(None)
 
     def _command_effort(self) -> None:
+        from privibe.cli.commands import effort_cycle_notice
         from privibe.core.config import cycle_reasoning_effort
 
         new_value = cycle_reasoning_effort(self.agent_loop.current_reasoning_effort())
         self.agent_loop.set_reasoning_effort(new_value)
-        print(
-            f"Reasoning effort for new messages: {new_value}. "
-            "Existing messages keep the effort they were sent with."
+        config = self.agent_loop.config
+        provider = config.get_provider_for_model(config.get_active_model())
+        notice = effort_cycle_notice(
+            new_value,
+            provider.name,
+            getattr(provider, "per_message_reasoning_effort", False),
+            getattr(self, "_effort_backend_noticed", False),
         )
+        if new_value != "off":
+            self._effort_backend_noticed = True
+        print(notice)
 
     def _command_preview_lines(self) -> None:
         config = self.agent_loop.config

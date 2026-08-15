@@ -24,7 +24,7 @@ from textual.widgets import Static
 
 from privibe import __version__ as CORE_VERSION
 from privibe.cli.clipboard import copy_selection_to_clipboard, is_reliable_clipboard_available
-from privibe.cli.commands import CommandRegistry
+from privibe.cli.commands import CommandRegistry, effort_cycle_notice
 from privibe.cli.narrator_manager import (
     NarratorManager,
     NarratorManagerPort,
@@ -295,6 +295,9 @@ class VibeApp(App):  # noqa: PLR0904
         self.event_handler: EventHandler | None = None
 
         self.commands = CommandRegistry()
+        # One-shot flag so the companion-build note on /effort shows once per
+        # session instead of on every cycle.
+        self._effort_backend_noticed = False
 
         self._chat_input_container: ChatInputContainer | None = None
         self._current_bottom_app: BottomApp = BottomApp.Input
@@ -2077,12 +2080,17 @@ class VibeApp(App):  # noqa: PLR0904
     async def _cycle_reasoning_effort(self) -> None:
         new_value = cycle_reasoning_effort(self.agent_loop.current_reasoning_effort())
         self.agent_loop.set_reasoning_effort(new_value)
-        await self._mount_and_scroll(
-            UserCommandMessage(
-                f"Reasoning effort for new messages: {new_value}. "
-                "Existing messages keep the effort they were sent with."
-            )
+        config = self.agent_loop.config
+        provider = config.get_provider_for_model(config.get_active_model())
+        notice = effort_cycle_notice(
+            new_value,
+            provider.name,
+            getattr(provider, "per_message_reasoning_effort", False),
+            self._effort_backend_noticed,
         )
+        if new_value != "off":
+            self._effort_backend_noticed = True
+        await self._mount_and_scroll(UserCommandMessage(notice))
 
     async def _cycle_preview_lines(self) -> None:
         new_value = cycle_preview_lines(

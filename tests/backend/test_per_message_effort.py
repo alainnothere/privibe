@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 
+from privibe.cli.commands import effort_cycle_notice
 from privibe.core.agent_loop import AgentLoop
 from privibe.core.config import ProviderConfig, cycle_reasoning_effort
 from privibe.core.llm.backend.generic import OpenAIAdapter
@@ -98,15 +99,30 @@ def test_adapter_strips_effort_for_default_provider() -> None:
     assert "chat_template_kwargs" not in body
 
 
-def test_kwarg_sent_even_when_no_message_carries_effort() -> None:
-    # The kwarg suppresses the template's system-level effort instruction;
-    # its presence must not depend on message content or the rendered
-    # prefix would change between requests and void the KV cache.
+def test_kwarg_not_sent_while_conversation_unstamped() -> None:
+    # A conversation that never used /effort must render exactly as stock,
+    # keeping its cache, even on an opted-in provider.
     body = _payload(
         _provider(per_message_effort=True),
         [LLMMessage(role=Role.user, content="plain")],
     )
+    assert "chat_template_kwargs" not in body
+
+
+def test_kwarg_appears_with_first_stamp_and_is_replay_stable() -> None:
+    # Kwarg presence is a pure function of the stored conversation: once any
+    # message is stamped it is sent on every request, so a resumed
+    # conversation renders byte-identically.
+    provider = _provider(per_message_effort=True)
+    stamped = [
+        LLMMessage(role=Role.user, content="q1"),
+        LLMMessage(role=Role.assistant, content="a1"),
+        LLMMessage(role=Role.user, content="q2", reasoning_effort="low"),
+    ]
+    body = _payload(provider, stamped)
     assert body["chat_template_kwargs"] == {"per_message_reasoning_effort": True}
+    replayed = [LLMMessage.model_validate(m.model_dump()) for m in stamped]
+    assert _payload(provider, replayed) == body
 
 
 # ---------------------------------------------------------------------------
@@ -148,3 +164,30 @@ def test_current_effort_override_beats_history() -> None:
 def test_current_effort_off_disables_stamping_despite_history() -> None:
     loop = _bare_loop(list(CONVERSATION), override="off")
     assert loop.current_reasoning_effort() is None
+
+
+# ---------------------------------------------------------------------------
+# /effort cycle notice
+# ---------------------------------------------------------------------------
+
+
+def test_notice_off_has_no_warnings() -> None:
+    notice = effort_cycle_notice("off", "llamacpp", False, False)
+    assert "off" in notice
+    assert "\n" not in notice
+
+
+def test_notice_warns_when_provider_not_sending() -> None:
+    notice = effort_cycle_notice("low", "openrouter", False, False)
+    assert "Stamping locally only" in notice
+    assert "openrouter" in notice
+    assert "per_message_reasoning_effort" in notice
+
+
+def test_notice_mentions_companion_build_once() -> None:
+    first = effort_cycle_notice("low", "llamacpp", True, False)
+    assert "companion llama-server" in first
+    assert "silently ignores" in first
+    later = effort_cycle_notice("medium", "llamacpp", True, True)
+    assert "companion" not in later
+    assert "\n" not in later
