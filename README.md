@@ -17,6 +17,8 @@ llama.cpp server, this is that.
 
 ![privibe first steps: clone, install with uv, configure, and say hi](docs/first-steps.gif)
 
+Step-by-step version of this demo: [docs/getting-started.md](docs/getting-started.md).
+
 Resuming and switching between sessions (played at 4x):
 
 ![resuming and switching between sessions](docs/resume_and_continue_sessions.gif)
