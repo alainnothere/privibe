@@ -6,10 +6,10 @@ from weakref import WeakKeyDictionary
 from textual.widget import Widget
 
 from privibe.cli.textual_ui.windowing.history import (
+    build_history_id_index,
     build_tool_call_map,
+    resolve_visible_history_indices,
     split_history_tail,
-    visible_history_indices,
-    visible_history_widgets_count,
 )
 from privibe.cli.textual_ui.windowing.state import SessionWindowing
 from privibe.core.types import LLMMessage
@@ -57,11 +57,12 @@ def sync_backfill_state(
     if not history_messages:
         windowing.reset()
         return False, None
-    visible_indices = visible_history_indices(messages_children, history_widget_indices)
-    visible_history_widgets = visible_history_widgets_count(messages_children)
+    visible_indices = resolve_visible_history_indices(
+        messages_children,
+        history_widget_indices,
+        build_history_id_index(history_messages),
+    )
     has_backfill = windowing.recompute_backfill(
-        history_messages,
-        visible_indices=visible_indices,
-        visible_history_widgets_count=visible_history_widgets,
+        history_messages, visible_indices=visible_indices
     )
     return has_backfill, build_tool_call_map(history_messages)

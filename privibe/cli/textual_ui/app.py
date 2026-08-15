@@ -683,14 +683,20 @@ class VibeApp(App):  # noqa: PLR0904
         try:
             compact_index = children.index(message.compact_widget)
         except ValueError:
-            return
+            compact_index = 0
 
-        if compact_index == 0:
-            return
+        if compact_index > 0:
+            with self.batch_update():
+                for widget in children[:compact_index]:
+                    await widget.remove()
 
-        with self.batch_update():
-            for widget in children[:compact_index]:
-                await widget.remove()
+        # History was rewound to the summary; all windowing bookkeeping refers
+        # to the old history and must not survive, or "Load more" could
+        # resurface messages that no longer exist.
+        self._windowing.reset()
+        self._history_widget_indices = WeakKeyDictionary()
+        self._tool_call_map = None
+        await self._load_more.hide()
 
     async def _handle_command(self, user_input: str) -> bool:
         if command := self.commands.find_command(user_input):
@@ -1530,6 +1536,11 @@ class VibeApp(App):  # noqa: PLR0904
 
         user_widgets = self._get_user_message_widgets()
         if not user_widgets:
+            # Pruning may have removed every mounted user message; they are
+            # still in history behind the load-more button. Enter rewind by
+            # loading batches until one mounts.
+            if self._load_more.widget is not None and self._windowing.has_backfill:
+                self.run_worker(self._rewind_enter_from_backfill(), exclusive=False)
             return
 
         if not self._rewind_mode:
@@ -1548,6 +1559,27 @@ class VibeApp(App):  # noqa: PLR0904
             target = user_widgets[-1]
 
         self.run_worker(self._select_rewind_widget(target), exclusive=False)
+
+    async def _rewind_enter_from_backfill(self) -> None:
+        """Enter rewind mode when no user message widget is mounted.
+
+        Load history batches until a user message mounts, then highlight the
+        newest one. _rewind_mode is set only on success so Escape handling
+        never sees a half-open rewind state. If the backfill exhausts without
+        producing a user message, there is nothing to rewind to.
+        """
+        while self._load_more.widget is not None and self._windowing.has_backfill:
+            remaining_before = self._windowing.remaining
+            await self.on_history_load_more_requested(HistoryLoadMoreRequested())
+            user_widgets = self._get_user_message_widgets()
+            if user_widgets:
+                self._rewind_mode = True
+                await self._select_rewind_widget(user_widgets[-1])
+                return
+            # Defensive: if a load did not actually consume backfill, stop
+            # rather than spin forever.
+            if self._windowing.remaining >= remaining_before:
+                return
 
     async def _rewind_prev_at_top(self) -> None:
         """Handle alt+up at the topmost mounted user message.

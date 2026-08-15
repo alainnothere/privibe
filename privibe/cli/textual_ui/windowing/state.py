@@ -53,7 +53,6 @@ class SessionWindowing:
         self,
         history_messages: list[LLMMessage],
         visible_indices: list[int],
-        visible_history_widgets_count: int,
     ) -> bool:
         if not history_messages:
             self._backfill_messages = []
@@ -75,7 +74,12 @@ class SessionWindowing:
             else:
                 backfill_end = self._backfill_cursor
         else:
-            backfill_end = max(len(history_messages) - visible_history_widgets_count, 0)
+            # No mounted widget resolves to any history message, so nothing
+            # on screen represents history: all of it belongs in the backfill.
+            # Never estimate from widget counts here; the widget-to-message
+            # ratio is not fixed (tool calls, reasoning), and a wrong boundary
+            # drops messages into an unrecoverable hole.
+            backfill_end = len(history_messages)
         backfill_end = min(backfill_end, len(history_messages))
         self._backfill_messages = history_messages[:backfill_end]
         self._backfill_cursor = len(self._backfill_messages)

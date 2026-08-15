@@ -90,22 +90,53 @@ def split_history_tail(
     return tail_messages, backfill_messages, tail_start_index
 
 
-def visible_history_indices(
-    children: list[Widget], history_widget_indices: WeakKeyDictionary[Widget, int]
+def build_history_id_index(messages: Sequence[LLMMessage]) -> dict[str, int]:
+    """Map every stable message id to its non-system history index.
+
+    Keys: message_id and reasoning_message_id verbatim, tool call ids as
+    "call:<id>" (the assistant message holding the call) and "result:<id>"
+    (the tool result message), matching the history_key each widget exposes.
+    """
+    id_index: dict[str, int] = {}
+    for i, msg in enumerate(messages):
+        if msg.message_id:
+            id_index[msg.message_id] = i
+        if msg.reasoning_message_id:
+            id_index[msg.reasoning_message_id] = i
+        if msg.role == Role.tool and msg.tool_call_id:
+            id_index[f"result:{msg.tool_call_id}"] = i
+        if msg.tool_calls:
+            for tool_call in msg.tool_calls:
+                if tool_call.id:
+                    id_index[f"call:{tool_call.id}"] = i
+
+    return id_index
+
+
+def resolve_visible_history_indices(
+    children: list[Widget],
+    history_widget_indices: WeakKeyDictionary[Widget, int],
+    id_index: dict[str, int],
 ) -> list[int]:
-    return [
-        idx
-        for child in children
-        if (idx := history_widget_indices.get(child)) is not None
-    ]
+    """Resolve each mounted widget to the history index of its message.
 
-
-def visible_history_widgets_count(children: list[Widget]) -> int:
-    history_widget_types = (
-        UserMessage,
-        AssistantMessage,
-        ReasoningMessage,
-        ToolCallMessage,
-        ToolResultMessage,
-    )
-    return sum(isinstance(child, history_widget_types) for child in children)
+    Resolution order: the index stamped at build time (resume/load-more
+    widgets), the message_index carried by live user messages, then the
+    stable-id lookup for live-streamed widgets. Widgets that resolve nowhere
+    (slash-command echoes, widgets whose message has not landed in history
+    yet, decorative widgets) contribute nothing.
+    """
+    indices: list[int] = []
+    for child in children:
+        stamped = history_widget_indices.get(child)
+        if stamped is not None:
+            indices.append(stamped)
+            continue
+        if isinstance(child, UserMessage) and child.message_index is not None:
+            # message_index is into agent_loop.messages (system message at 0)
+            indices.append(child.message_index - 1)
+            continue
+        key = getattr(child, "history_key", None)
+        if key is not None and (resolved := id_index.get(key)) is not None:
+            indices.append(resolved)
+    return indices

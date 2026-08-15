@@ -79,8 +79,13 @@ class StreamingMessageBase(Static):
     # the block size. Throttling flushes caps that cost.
     FLUSH_INTERVAL: float = 0.05
 
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str, history_key: str | None = None) -> None:
         super().__init__()
+        # Stable id of the history message this widget renders (message_id
+        # for assistant content, reasoning_message_id for reasoning), used by
+        # windowing to resolve the backfill boundary. None for widgets built
+        # from history, which are tracked by index instead.
+        self.history_key = history_key
         self._content = content
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
@@ -185,8 +190,8 @@ class StreamingMessageBase(Static):
 
 
 class AssistantMessage(StreamingMessageBase):
-    def __init__(self, content: str) -> None:
-        super().__init__(content)
+    def __init__(self, content: str, history_key: str | None = None) -> None:
+        super().__init__(content, history_key=history_key)
         self.add_class("assistant-message")
 
     def compose(self) -> ComposeResult:
@@ -202,8 +207,13 @@ class ReasoningMessage(SpinnerMixin, StreamingMessageBase):
     SPINNING_TEXT = "Thinking"
     COMPLETED_TEXT = "Thought"
 
-    def __init__(self, content: str, collapsed: bool = True) -> None:
-        super().__init__(content)
+    def __init__(
+        self,
+        content: str,
+        collapsed: bool = True,
+        history_key: str | None = None,
+    ) -> None:
+        super().__init__(content, history_key=history_key)
         self.add_class("reasoning-message")
         self.collapsed = collapsed
         self._indicator_widget: Static | None = None
