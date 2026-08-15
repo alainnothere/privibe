@@ -41,6 +41,14 @@ class ToolCallMessage(StatusMessage):
         if self._is_history:
             self._is_spinning = False
 
+    @property
+    def history_key(self) -> str | None:
+        """Stable id for windowing: the tool call id, prefixed to distinguish
+        the assistant message holding the call from the tool result message."""
+        if self._event is None or not self._event.tool_call_id:
+            return None
+        return f"call:{self._event.tool_call_id}"
+
     def compose(self) -> ComposeResult:
         with Vertical(classes="tool-call-container"):
             with Horizontal():
@@ -138,6 +146,14 @@ class ToolResultMessage(Static):
     @property
     def tool_name(self) -> str:
         return self._tool_name
+
+    @property
+    def history_key(self) -> str | None:
+        """Stable id for windowing: the tool call id, prefixed to distinguish
+        the tool result message from the assistant message holding the call."""
+        if self._event is None or not self._event.tool_call_id:
+            return None
+        return f"result:{self._event.tool_call_id}"
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="tool-result-container"):

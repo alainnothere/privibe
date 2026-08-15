@@ -149,7 +149,7 @@ class EventHandler:
             self.current_streaming_reasoning = None
 
         if self.current_streaming_message is None:
-            msg = AssistantMessage(event.content)
+            msg = AssistantMessage(event.content, history_key=event.message_id)
             self.current_streaming_message = msg
             await self.mount_callback(msg)
         else:
@@ -164,7 +164,11 @@ class EventHandler:
 
         if self.current_streaming_reasoning is None:
             tools_collapsed = self.get_tools_collapsed()
-            msg = ReasoningMessage(event.content, collapsed=tools_collapsed)
+            msg = ReasoningMessage(
+                event.content,
+                collapsed=tools_collapsed,
+                history_key=event.message_id,
+            )
             self.current_streaming_reasoning = msg
             await self.mount_callback(msg)
         else:
