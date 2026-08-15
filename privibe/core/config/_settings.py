@@ -911,6 +911,17 @@ class VibeConfig(BaseSettings):
             return []
         return [Path(p).expanduser().resolve() for p in v]
 
+    @field_validator("extra_instruction_files", "agent_paths", mode="before")
+    @classmethod
+    def _expand_user_in_paths(cls, v: Any) -> list[Path]:
+        if not v:
+            return []
+        # expanduser only, no resolve(): relative paths must keep resolving
+        # against the effective cwd at use time (harness/agents managers),
+        # not the cwd at config-load time. Without this, "~/x" in config.toml
+        # silently resolved to <cwd>/~/x and the file was never loaded.
+        return [Path(p).expanduser() for p in v]
+
     @field_validator("tools", mode="before")
     @classmethod
     def _normalize_tool_configs(cls, v: Any) -> dict[str, dict[str, Any]]:
