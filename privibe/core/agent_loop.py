@@ -246,6 +246,12 @@ class AgentLoop:
         self._current_user_message_id: str | None = None
         self._is_user_prompt_call: bool = False
         self._act_call_count: int = 0
+        # Reasoning effort chosen via /effort THIS session ("off" / "low" /
+        # "medium" / "xhigh"); None means no explicit choice yet, in which
+        # case the next message inherits the last stamped user message
+        # (which is how a resumed session keeps its effort without extra
+        # persistence). See current_reasoning_effort().
+        self._reasoning_effort_override: str | None = None
         # Cosmetic model name detected from the endpoint (display-only; never
         # written to config). Stored with the alias it was detected for so a
         # stale name is never shown next to a different active model.
@@ -334,6 +340,31 @@ class AgentLoop:
     def refresh_config(self) -> None:
         self._base_config = VibeConfig.load()
         self.agent_manager.invalidate_config()
+
+    def current_reasoning_effort(self) -> str | None:
+        """The effort value to stamp on the next user message, or None.
+
+        An explicit /effort choice this session wins. With no choice yet the
+        value is inherited from the most recent stamped user message, so a
+        resumed session continues with the effort it was using.
+        """
+        if self._reasoning_effort_override is not None:
+            if self._reasoning_effort_override == "off":
+                return None
+            return self._reasoning_effort_override
+        for msg in reversed(self.messages[:]):
+            if msg.role == Role.user and msg.reasoning_effort:
+                return msg.reasoning_effort
+        return None
+
+    def set_reasoning_effort(self, value: str) -> None:
+        """Set the effort stamped on user messages from now on.
+
+        Accepts "off", "low", "medium", "xhigh". Existing messages keep
+        their stored efforts (they are frozen KV-prefix bytes); only future
+        messages are affected.
+        """
+        self._reasoning_effort_override = value
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         self.approval_callback = callback
@@ -830,7 +861,10 @@ class AgentLoop:
         self, user_msg: str, client_message_id: str | None = None
     ) -> AsyncGenerator[BaseEvent]:
         user_message = LLMMessage(
-            role=Role.user, content=user_msg, message_id=client_message_id
+            role=Role.user,
+            content=user_msg,
+            message_id=client_message_id,
+            reasoning_effort=self.current_reasoning_effort(),
         )
         self.messages.add(user_message)
         self.stats.steps += 1

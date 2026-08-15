@@ -43,7 +43,13 @@ def merge_consecutive_user_messages(messages: Sequence[LLMMessage]) -> list[LLMM
             curr_content = msg.content or ""
             merged_content = f"{prev_content}\n\n{curr_content}".strip()
             result[-1] = LLMMessage(
-                role=Role.user, content=merged_content, message_id=result[-1].message_id
+                role=Role.user,
+                content=merged_content,
+                message_id=result[-1].message_id,
+                # An injected middleware message never carries an effort; the
+                # real user message's effort must survive the merge whichever
+                # side it lands on.
+                reasoning_effort=result[-1].reasoning_effort or msg.reasoning_effort,
             )
         else:
             result.append(msg)

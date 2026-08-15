@@ -174,6 +174,13 @@ class ProviderConfig(BaseModel):
     project_id: str = ""
     region: str = ""
     stream_tool_calls: bool = False
+    # Send per-message reasoning_effort fields and the
+    # per_message_reasoning_effort chat_template_kwarg on every request.
+    # Requires a llama-server built with the message-field passthrough and a
+    # chat template that renders message.reasoning_effort (see llama.cpp fork
+    # branch disk-cache-eviction). Leave off for stock/OpenAI-compatible
+    # servers, which may reject unknown message fields.
+    per_message_reasoning_effort: bool = False
 
 
 class TranscribeClient(StrEnum):
@@ -470,6 +477,20 @@ def cycle_message_prune_rows(
 ) -> int:
     """Next value in the kept-message-rows cycle (default 50 -> ... -> 1000)."""
     return _next_in_cycle(current, tuple(options))
+
+
+# Efforts stamped per user message for llama.cpp per-message reasoning; the
+# set Qwen3.8's chat template validates ("off" means stamp nothing).
+REASONING_EFFORT_OPTIONS: tuple[str, ...] = ("off", "low", "medium", "xhigh")
+
+
+def cycle_reasoning_effort(current: str | None) -> str:
+    """Next value in the per-message effort cycle (off -> low -> medium -> xhigh)."""
+    try:
+        idx = REASONING_EFFORT_OPTIONS.index(current or "off")
+    except ValueError:
+        return REASONING_EFFORT_OPTIONS[0]
+    return REASONING_EFFORT_OPTIONS[(idx + 1) % len(REASONING_EFFORT_OPTIONS)]
 
 
 def cycle_context_size_mode(auto_detect: bool, every: int) -> tuple[bool, int]:

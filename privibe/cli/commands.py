@@ -105,6 +105,11 @@ class CommandRegistry:
                 description="Cycle the tool-result preview length (3 → 5 → 10 lines)",
                 handler="_cycle_preview_lines",
             ),
+            "effort": Command(
+                aliases=frozenset(["/effort"]),
+                description="Cycle reasoning effort stamped on new messages (off → low → medium → xhigh; needs per-message effort support on the llama.cpp server)",
+                handler="_cycle_reasoning_effort",
+            ),
             "scrollback": Command(
                 aliases=frozenset(["/scrollback"]),
                 description="Cycle how many rows of message history to keep before pruning (50 → 100 → 250 → 500 → 1000)",
