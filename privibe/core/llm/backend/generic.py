@@ -176,11 +176,17 @@ class OpenAIAdapter(APIAdapter):
         payload = self.build_payload(
             model_name, converted_messages, temperature, tools, max_tokens, tool_choice
         )
-        if per_message_effort:
-            # Constant on every request of every conversation for this
-            # provider: it suppresses the template's system-level effort
-            # instruction, so flipping it between requests would change the
-            # rendered prefix and void the KV cache.
+        if per_message_effort and any(
+            msg.reasoning_effort for msg in merged_messages
+        ):
+            # The kwarg suppresses the template's system-level effort
+            # instruction, so its presence must be a pure function of the
+            # stored conversation or the rendered prefix would change
+            # between requests and void the KV cache. Derived from "any
+            # message is stamped": false for never-stamped conversations
+            # (stock rendering, cache untouched), and once a conversation
+            # gains its first stamp it stays true on every request and
+            # every resume forever.
             payload["chat_template_kwargs"] = {"per_message_reasoning_effort": True}
 
         if enable_streaming:

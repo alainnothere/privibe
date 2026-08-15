@@ -6,6 +6,37 @@ import sys
 ALT_KEY = "⌥" if sys.platform == "darwin" else "Alt"
 
 
+def effort_cycle_notice(
+    new_value: str, provider_name: str, provider_sends_effort: bool, already_noticed: bool
+) -> str:
+    """User-facing message for an /effort cycle, shared by both UIs.
+
+    Appends the situational note the user needs at exactly the moment the
+    misunderstanding could be born: either the provider is not sending the
+    stamps at all, or it is and the server must be the companion build.
+    """
+    msg = (
+        f"Reasoning effort for new messages: {new_value}. "
+        "Existing messages keep the effort they were sent with."
+    )
+    if new_value == "off":
+        return msg
+    if not provider_sends_effort:
+        return (
+            f"{msg}\nStamping locally only: provider '{provider_name}' is not "
+            "configured to send it (set per_message_reasoning_effort = true "
+            "on the provider to enable)."
+        )
+    if not already_noticed:
+        return (
+            f"{msg}\nNote: this relies on privibe's companion llama-server "
+            "build (the disk-cache-eviction fork branch) with the per-message "
+            "chat template loaded. A stock llama-server accepts these "
+            "requests but silently ignores the effort settings."
+        )
+    return msg
+
+
 @dataclass
 class Command:
     aliases: frozenset[str]
