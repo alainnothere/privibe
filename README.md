@@ -1,6 +1,6 @@
 # privibe
 
-Minimal CLI coding agent for private, local-first development.
+CLI coding agent for private, local-first development.
 
 privibe is a fork of [Mistral Vibe](https://github.com/mistralai/mistral-vibe)
 reworked to not do any call back home of any kind and then run against **local** 
@@ -76,8 +76,14 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
   prefix immutable, so the server's prompt/KV cache stays valid across turns.
 - KV cache is preserved on `--resume`/`--continue` by restoring the original
   system prompt instead of regenerating it (which would invalidate the cache).
-- Context-size auto-detection with a `/detect-context-size` toggle, and an
-  opt-in model warmup.
+- Context-size auto-detection with a `/detect-context-size` toggle (re-runs on
+  model swap), and an opt-in model warmup.
+- Per-message reasoning effort: `/effort` cycles off/low/medium/xhigh for new
+  messages without invalidating the KV cache. Needs a patched llama-server
+  build; stock servers silently ignore the stamps.
+- Long sessions stay responsive: the transcript is windowed behind a
+  "Load more" button, and streaming output is render-throttled so drawing
+  keeps up even when the model generates faster than the terminal can paint.
 - Tolerates SSE keep-alive pings from newer llama.cpp servers.
 
 ### Expanded code-editing toolset
@@ -85,17 +91,28 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
   operations, plus `find_symbol`.
 - Per-agent file **undo stack** with a `restore_file` tool; writes are
   serialized.
+- Tuned for smaller local models: best-effort indent correction on edits,
+  hashed line addresses re-pointed when earlier edits shift them, and naive
+  reads of huge files return a head preview plus guidance instead of flooding
+  the context.
 - Cross-dialect path translation (Windows / WSL / Git Bash / Cygwin) with a
   `[paths]` config section.
 - `@`-mention file completion backed by a stateless git enumeration.
 
 ### TUI / UX
+- **Console mode**: `--console` runs the same agent as a plain-text REPL (no
+  colors, no TUI), including tool output and session resume.
+- **Rewind**: Alt+Up browses your previous messages; fork the conversation
+  from any of them, and optionally restore files to that point (the file
+  restore is gated behind a typed confirmation code).
 - **Agent steering**: queue messages mid-turn instead of cancelling the agent.
 - Double-press `Ctrl+C` to exit (no more accidental one-key quits).
 - Clipboard fixes for Linux/X11 terminals, a `/autocopy` toggle, and a warning
   when clipboard tools are missing.
 - `/resume` session picker showing the folder and a short preview of each
-  session; conversation history is re-rendered on resume.
+  session, with search: type to filter, `-word` to exclude, results ranked by
+  match. Conversation history is re-rendered on resume.
+- File edits show a diff in the TUI.
 - Model name + tokens/sec in the context footer.
 - Configurable tool-result preview length (`/preview-lines`), scrollback
   (`/scrollback`), and an `/llm-debug` dump toggle.
@@ -110,10 +127,12 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
 
 ## Configuration
 
-Config lives in `~/.privibe/config.toml`. The `[paths]` section (documented in
+Config lives in `~/.privibe/config.toml` (set `PRIVIBE_HOME` to relocate it).
+The `[paths]` section (documented in
 `privibe/core/config/default_config.toml`) controls cross-dialect path
 translation. Models, providers, and feature toggles are set there too; several
 have in-app `/commands` (`/model`, `/config`, `/autocopy`, … — see `/help`).
+The active model can also be picked for a single run with `--model`.
 
 ## License
 
