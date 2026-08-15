@@ -79,8 +79,9 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
 - Context-size auto-detection with a `/detect-context-size` toggle (re-runs on
   model swap), and an opt-in model warmup.
 - Per-message reasoning effort: `/effort` cycles off/low/medium/xhigh for new
-  messages without invalidating the KV cache. Needs a patched llama-server
-  build; stock servers silently ignore the stamps.
+  messages without invalidating the KV cache. Needs the companion
+  [llama-server build](https://github.com/alainnothere/llama.cpp/tree/disk-cache-eviction);
+  stock servers silently ignore the stamps.
 - Long sessions stay responsive: the transcript is windowed behind a
   "Load more" button, and streaming output is render-throttled so drawing
   keeps up even when the model generates faster than the terminal can paint.
