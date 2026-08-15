@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from textual.timer import Timer
+
     from privibe.cli.textual_ui.app import ChatScroll
 
 from textual.app import ComposeResult
@@ -70,6 +73,12 @@ class UserMessage(Static):
 
 
 class StreamingMessageBase(Static):
+    # Minimum seconds between flushes to the markdown stream. Textual's
+    # Markdown.append re-parses, re-highlights, and re-renders the entire
+    # still-open block on every call, so per-token appends are quadratic in
+    # the block size. Throttling flushes caps that cost.
+    FLUSH_INTERVAL: float = 0.05
+
     def __init__(self, content: str) -> None:
         super().__init__()
         self._content = content
@@ -77,6 +86,8 @@ class StreamingMessageBase(Static):
         self._stream: MarkdownStream | None = None
         self._content_initialized = False
         self._to_write_buffer = ""
+        self._last_flush_time = 0.0
+        self._flush_timer: Timer | None = None
 
     def _get_markdown(self) -> Markdown:
         if self._markdown is None:
@@ -106,14 +117,43 @@ class StreamingMessageBase(Static):
         if not self._should_write_content():
             return
 
-        if self._is_chat_at_bottom():
-            to_write = self._to_write_buffer + content
-            self._to_write_buffer = ""
-            stream = self._ensure_stream()
-            await stream.write(to_write)
+        self._to_write_buffer += content
+
+        if not self._is_chat_at_bottom():
             return
 
-        self._to_write_buffer += content
+        elapsed = time.monotonic() - self._last_flush_time
+        if elapsed >= self.FLUSH_INTERVAL:
+            await self._flush_buffer()
+        elif self._flush_timer is None:
+            # Trailing flush so the last tokens of a burst are not stuck in
+            # the buffer until the next append or stop_stream.
+            self._flush_timer = self.set_timer(
+                self.FLUSH_INTERVAL - elapsed, self._flush_on_timer
+            )
+
+    async def _flush_buffer(self) -> None:
+        self._cancel_flush_timer()
+        self._last_flush_time = time.monotonic()
+        to_write = self._to_write_buffer
+        self._to_write_buffer = ""
+        if to_write:
+            stream = self._ensure_stream()
+            await stream.write(to_write)
+
+    async def _flush_on_timer(self) -> None:
+        self._flush_timer = None
+        if (
+            self._to_write_buffer
+            and self._should_write_content()
+            and self._is_chat_at_bottom()
+        ):
+            await self._flush_buffer()
+
+    def _cancel_flush_timer(self) -> None:
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
 
     async def write_initial_content(self) -> None:
         if self._content_initialized:
@@ -125,6 +165,7 @@ class StreamingMessageBase(Static):
             self._to_write_buffer = ""
 
     async def stop_stream(self) -> None:
+        self._cancel_flush_timer()
         if self._to_write_buffer and self._should_write_content():
             stream = self._ensure_stream()
             await stream.write(self._to_write_buffer)
