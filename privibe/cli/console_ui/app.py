@@ -113,6 +113,7 @@ Available commands:
   /replay    Reprint the whole conversation (resume shows only the tail)
   /log       Show the current session log directory
   /preview-lines  Cycle how many tool output lines are shown (3 / 5 / 10)
+  /effort    Cycle reasoning effort stamped on new messages (off / low / medium / xhigh)
   /exit      Exit (also /quit, or Ctrl+D)
 
 Anything else is sent to the agent. /name runs a skill if one matches.
@@ -669,6 +670,8 @@ class ConsoleUI:
                 self._command_log()
             case "/preview-lines":
                 self._command_preview_lines()
+            case "/effort":
+                self._command_effort()
             case "/replay":
                 self._command_replay()
             case _:
@@ -680,6 +683,16 @@ class ConsoleUI:
             print("No conversation history.")
             return
         self._print_transcript(None)
+
+    def _command_effort(self) -> None:
+        from privibe.core.config import cycle_reasoning_effort
+
+        new_value = cycle_reasoning_effort(self.agent_loop.current_reasoning_effort())
+        self.agent_loop.set_reasoning_effort(new_value)
+        print(
+            f"Reasoning effort for new messages: {new_value}. "
+            "Existing messages keep the effort they were sent with."
+        )
 
     def _command_preview_lines(self) -> None:
         config = self.agent_loop.config

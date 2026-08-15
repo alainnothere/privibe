@@ -93,6 +93,7 @@ from privibe.core.config import (
     cycle_context_size_mode,
     cycle_message_prune_rows,
     cycle_preview_lines,
+    cycle_reasoning_effort,
 )
 from privibe.core.config.harness_files._harness_manager import get_harness_files_manager
 from privibe.core.logger import logger, stderr_logging_suspended
@@ -2072,6 +2073,16 @@ class VibeApp(App):  # noqa: PLR0904
         self.agent_loop.refresh_config()
         state = "enabled" if new_value else "disabled"
         await self._mount_and_scroll(UserCommandMessage(f"Auto-copy to clipboard {state}."))
+
+    async def _cycle_reasoning_effort(self) -> None:
+        new_value = cycle_reasoning_effort(self.agent_loop.current_reasoning_effort())
+        self.agent_loop.set_reasoning_effort(new_value)
+        await self._mount_and_scroll(
+            UserCommandMessage(
+                f"Reasoning effort for new messages: {new_value}. "
+                "Existing messages keep the effort they were sent with."
+            )
+        )
 
     async def _cycle_preview_lines(self) -> None:
         new_value = cycle_preview_lines(

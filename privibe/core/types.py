@@ -223,6 +223,13 @@ class LLMMessage(BaseModel):
     name: str | None = None
     tool_call_id: str | None = None
     message_id: str | None = None
+    # Per-message reasoning effort ("low" / "medium" / "xhigh"), stamped on
+    # user messages at creation and stored with the message forever: the
+    # llama.cpp chat template renders it as an instruction line inside the
+    # user block, so it is part of the KV-cache prefix bytes exactly like
+    # content. Only sent on the wire by providers that opt in
+    # (ProviderConfig.per_message_reasoning_effort).
+    reasoning_effort: str | None = None
 
     @model_validator(mode="before")
     @classmethod

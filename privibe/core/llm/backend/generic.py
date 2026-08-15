@@ -150,12 +150,22 @@ class OpenAIAdapter(APIAdapter):
             merge_consecutive_user_messages(messages)
         )
         field_name = provider.reasoning_field_name
+        per_message_effort = getattr(provider, "per_message_reasoning_effort", False)
         converted_messages = [
             self._ensure_assistant_content(
                 self._reasoning_to_api(
                     msg.model_dump(
                         exclude_none=True,
-                        exclude={"message_id", "reasoning_message_id", "injected"},
+                        exclude=(
+                            {"message_id", "reasoning_message_id", "injected"}
+                            if per_message_effort
+                            else {
+                                "message_id",
+                                "reasoning_message_id",
+                                "injected",
+                                "reasoning_effort",
+                            }
+                        ),
                     ),
                     field_name,
                 )
@@ -166,6 +176,12 @@ class OpenAIAdapter(APIAdapter):
         payload = self.build_payload(
             model_name, converted_messages, temperature, tools, max_tokens, tool_choice
         )
+        if per_message_effort:
+            # Constant on every request of every conversation for this
+            # provider: it suppresses the template's system-level effort
+            # instruction, so flipping it between requests would change the
+            # rendered prefix and void the KV cache.
+            payload["chat_template_kwargs"] = {"per_message_reasoning_effort": True}
 
         if enable_streaming:
             payload["stream"] = True
