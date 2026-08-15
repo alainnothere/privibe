@@ -15,6 +15,11 @@ If you want the original, hosted, Mistral-centric experience, use upstream
 Mistral Vibe. If you want a small coding agent you can point at your own local
 llama.cpp server, this is that.
 
+![privibe first steps: clone, install with uv, configure, and say hi](docs/first-steps.gif)
+
+More demos: [resuming and switching between sessions](docs/resume_and_continue_sessions.gif)
+(about 2 minutes, played at 4x).
+
 > **Note on backends:** this fork is developed and tested against a local
 > **llama.cpp** server (via its OpenAI-compatible API). The Anthropic and
 > Mistral backend adapters inherited from upstream are still in the code but are
