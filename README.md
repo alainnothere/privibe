@@ -17,8 +17,9 @@ llama.cpp server, this is that.
 
 ![privibe first steps: clone, install with uv, configure, and say hi](docs/first-steps.gif)
 
-More demos: [resuming and switching between sessions](docs/resume_and_continue_sessions.gif)
-(about 2 minutes, played at 4x).
+Resuming and switching between sessions (played at 4x):
+
+![resuming and switching between sessions](docs/resume_and_continue_sessions.gif)
 
 > **Note on backends:** this fork is developed and tested against a local
 > **llama.cpp** server (via its OpenAI-compatible API). The Anthropic and
