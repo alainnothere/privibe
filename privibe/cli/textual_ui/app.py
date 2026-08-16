@@ -59,6 +59,7 @@ from privibe.cli.textual_ui.widgets.messages import (
     WarningMessage,
 )
 from privibe.cli.textual_ui.widgets.model_picker import ModelPickerApp
+from privibe.cli.textual_ui.widgets.option_picker import OptionPickerApp
 from privibe.cli.textual_ui.widgets.narrator_status import NarratorStatus
 from privibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from privibe.cli.textual_ui.widgets.path_display import PathDisplay
@@ -88,12 +89,9 @@ from privibe.core.audio_player.audio_player import AudioPlayer
 from privibe.core.audio_recorder import AudioRecorder
 from privibe.core.autocompletion.path_prompt_adapter import render_path_prompt
 from privibe.core.config import (
+    REASONING_EFFORT_OPTIONS,
     VibeConfig,
     context_size_mode_label,
-    cycle_context_size_mode,
-    cycle_message_prune_rows,
-    cycle_preview_lines,
-    cycle_reasoning_effort,
 )
 from privibe.core.config.harness_files._harness_manager import get_harness_files_manager
 from privibe.core.logger import logger, stderr_logging_suspended
@@ -142,11 +140,20 @@ class BottomApp(StrEnum):
     Config = auto()
     Input = auto()
     ModelPicker = auto()
+    OptionPicker = auto()
     ProxySetup = auto()
     Question = auto()
     Rewind = auto()
     SessionPicker = auto()
     Voice = auto()
+
+
+def _options_with_current(options: list[int], current: int) -> list[int]:
+    """Preset picker options plus the current value, kept sorted, so the picker
+    can always preselect what is active even if it was typed in by hand."""
+    if current in options:
+        return list(options)
+    return sorted([*options, current])
 
 
 class ChatScroll(VerticalScroll):
@@ -352,6 +359,7 @@ class VibeApp(App):  # noqa: PLR0904
                 safety=self.agent_loop.agent_profile.safety,
                 agent_name=self.agent_loop.agent_profile.display_name.lower(),
                 skill_entries_getter=self._get_skill_entries,
+                current_values_getter=self._get_command_current_values,
                 file_watcher_for_autocomplete_getter=self._is_file_watcher_enabled,
                 voice_manager=self._voice_manager,
             )
@@ -699,15 +707,33 @@ class VibeApp(App):  # noqa: PLR0904
         await self._load_more.hide()
 
     async def _handle_command(self, user_input: str) -> bool:
-        if command := self.commands.find_command(user_input):
+        command, args = self.commands.parse_command(user_input)
+        if command:
             await self._mount_and_scroll(UserMessage(user_input))
             handler = getattr(self, command.handler)
+            call_args = (args,) if command.takes_args else ()
             if asyncio.iscoroutinefunction(handler):
-                await handler()
+                await handler(*call_args)
             else:
-                handler()
+                handler(*call_args)
             return True
         return False
+
+    def _get_command_current_values(self) -> dict[str, str]:
+        """Live values shown next to settings commands in the completion popup."""
+        config = self.config
+        if not config.auto_detect_context_size:
+            detect = "off"
+        elif config.context_size_redetect_every == 0:
+            detect = "auto"
+        else:
+            detect = f"every {config.context_size_redetect_every} turns"
+        return {
+            "/effort": self.agent_loop.current_reasoning_effort() or "off",
+            "/preview-lines": str(config.tool_result_preview_lines),
+            "/scrollback": str(config.message_prune_keep_rows),
+            "/detect-context-size": detect,
+        }
 
     def _get_skill_entries(self) -> list[tuple[str, str]]:
         if not self.agent_loop:
@@ -1447,6 +1473,8 @@ class VibeApp(App):  # noqa: PLR0904
                     self.query_one(ConfigApp).focus()
                 case BottomApp.ModelPicker:
                     self.query_one(ModelPickerApp).focus()
+                case BottomApp.OptionPicker:
+                    self.query_one(OptionPickerApp).focus()
                 case BottomApp.ProxySetup:
                     self.query_one(ProxySetupApp).focus()
                 case BottomApp.Approval:
@@ -1500,6 +1528,14 @@ class VibeApp(App):  # noqa: PLR0904
         try:
             model_picker = self.query_one(ModelPickerApp)
             model_picker.post_message(ModelPickerApp.Cancelled())
+        except Exception:
+            pass
+        self._last_escape_time = None
+
+    def _handle_option_picker_app_escape(self) -> None:
+        try:
+            option_picker = self.query_one(OptionPickerApp)
+            option_picker.post_message(OptionPickerApp.Cancelled())
         except Exception:
             pass
         self._last_escape_time = None
@@ -1796,6 +1832,10 @@ class VibeApp(App):  # noqa: PLR0904
 
         if self._current_bottom_app == BottomApp.ModelPicker:
             self._handle_model_picker_app_escape()
+            return
+
+        if self._current_bottom_app == BottomApp.OptionPicker:
+            self._handle_option_picker_app_escape()
             return
 
         if self._current_bottom_app == BottomApp.SessionPicker:
@@ -2109,8 +2149,71 @@ class VibeApp(App):  # noqa: PLR0904
         state = "enabled" if new_value else "disabled"
         await self._mount_and_scroll(UserCommandMessage(f"Auto-copy to clipboard {state}."))
 
-    async def _cycle_reasoning_effort(self) -> None:
-        new_value = cycle_reasoning_effort(self.agent_loop.current_reasoning_effort())
+    async def _open_option_picker(
+        self,
+        setting: str,
+        title: str,
+        options: list[tuple[str, str]],
+        current: str,
+        error: str | None = None,
+    ) -> None:
+        if self._current_bottom_app == BottomApp.OptionPicker:
+            return
+        await self._switch_from_input(
+            OptionPickerApp(
+                setting=setting,
+                title=title,
+                options=options,
+                current=current,
+                error=error,
+            )
+        )
+
+    async def on_option_picker_app_option_picked(
+        self, event: OptionPickerApp.OptionPicked
+    ) -> None:
+        await self._switch_to_input_app()
+        match event.setting:
+            case "effort":
+                await self._apply_reasoning_effort(event.value)
+            case "preview_lines":
+                await self._apply_preview_lines(int(event.value))
+            case "scrollback":
+                await self._apply_scrollback(int(event.value))
+            case "detect_context_size":
+                match event.value:
+                    case "off":
+                        await self._apply_context_size_detection(False, 0)
+                    case "auto":
+                        await self._apply_context_size_detection(True, 0)
+                    case every:
+                        await self._apply_context_size_detection(True, int(every))
+
+    async def on_option_picker_app_cancelled(
+        self, event: OptionPickerApp.Cancelled
+    ) -> None:
+        await self._switch_to_input_app()
+
+    async def _select_reasoning_effort(self, args: str = "") -> None:
+        error: str | None = None
+        if args:
+            value = args.lower()
+            if value in REASONING_EFFORT_OPTIONS:
+                await self._apply_reasoning_effort(value)
+                return
+            error = (
+                f"'{args}' is not a valid effort "
+                f"(valid: {', '.join(REASONING_EFFORT_OPTIONS)})."
+            )
+        await self._open_option_picker(
+            setting="effort",
+            title="Reasoning effort for new messages",
+            options=[(v, v) for v in REASONING_EFFORT_OPTIONS],
+            current=self.agent_loop.current_reasoning_effort() or "off",
+            error=error,
+        )
+
+    async def _apply_reasoning_effort(self, new_value: str) -> None:
         self.agent_loop.set_reasoning_effort(new_value)
         config = self.agent_loop.config
         provider = config.get_provider_for_model(config.get_active_model())
@@ -2124,22 +2227,48 @@ class VibeApp(App):  # noqa: PLR0904
             self._effort_backend_noticed = True
         await self._mount_and_scroll(UserCommandMessage(notice))
 
-    async def _cycle_preview_lines(self) -> None:
-        new_value = cycle_preview_lines(
-            self.config.tool_result_preview_lines,
-            self.config.tool_result_preview_options,
+    async def _select_preview_lines(self, args: str = "") -> None:
+        error: str | None = None
+        if args:
+            if args.isdigit() and int(args) > 0:
+                await self._apply_preview_lines(int(args))
+                return
+            error = f"'{args}' is not a valid preview length (use a positive number)."
+        current = self.config.tool_result_preview_lines
+        options = _options_with_current(self.config.tool_result_preview_options, current)
+        await self._open_option_picker(
+            setting="preview_lines",
+            title="Tool result preview lines",
+            options=[(str(o), f"{o} lines") for o in options],
+            current=str(current),
+            error=error,
         )
+
+    async def _apply_preview_lines(self, new_value: int) -> None:
         VibeConfig.save_updates({"tool_result_preview_lines": new_value})
         self.agent_loop.refresh_config()
         await self._mount_and_scroll(
             UserCommandMessage(f"Tool result preview set to {new_value} lines.")
         )
 
-    async def _cycle_scrollback(self) -> None:
-        new_value = cycle_message_prune_rows(
-            self.config.message_prune_keep_rows,
-            self.config.message_prune_keep_options,
+    async def _select_scrollback(self, args: str = "") -> None:
+        error: str | None = None
+        if args:
+            if args.isdigit() and int(args) > 0:
+                await self._apply_scrollback(int(args))
+                return
+            error = f"'{args}' is not a valid scrollback size (use a positive number)."
+        current = self.config.message_prune_keep_rows
+        options = _options_with_current(self.config.message_prune_keep_options, current)
+        await self._open_option_picker(
+            setting="scrollback",
+            title="Message scrollback rows",
+            options=[(str(o), f"{o} rows") for o in options],
+            current=str(current),
+            error=error,
         )
+
+    async def _apply_scrollback(self, new_value: int) -> None:
         VibeConfig.save_updates({"message_prune_keep_rows": new_value})
         self.agent_loop.refresh_config()
         # Apply the new (often lower) threshold to the already-mounted history now.
@@ -2148,16 +2277,55 @@ class VibeApp(App):  # noqa: PLR0904
             UserCommandMessage(f"Message scrollback set to {new_value} rows.")
         )
 
-    async def _cycle_context_size_detection(self) -> None:
-        """Single context-size control: off -> auto -> every 1/2/5/10 turns -> off.
+    # Cadence presets shown in the /detect-context-size picker; the typed
+    # argument accepts any positive turn count, not just these.
+    _CONTEXT_SIZE_CADENCE_PRESETS = (1, 2, 5, 10)
 
-        Drives both the master enable and the poll cadence so there is never a
-        master-off/cadence-set mismatch.
-        """
-        auto, every = cycle_context_size_mode(
-            self.config.auto_detect_context_size,
-            self.config.context_size_redetect_every,
+    async def _select_context_size_detection(self, args: str = "") -> None:
+        error: str | None = None
+        if args:
+            value = args.lower()
+            if value == "off":
+                await self._apply_context_size_detection(False, 0)
+                return
+            if value == "auto":
+                await self._apply_context_size_detection(True, 0)
+                return
+            if value.isdigit() and int(value) > 0:
+                await self._apply_context_size_detection(True, int(value))
+                return
+            error = (
+                f"'{args}' is not a valid mode "
+                "(valid: off, auto, or a positive number of turns)."
+            )
+
+        config = self.config
+        if not config.auto_detect_context_size:
+            current = "off"
+        elif config.context_size_redetect_every == 0:
+            current = "auto"
+        else:
+            current = str(config.context_size_redetect_every)
+
+        cadences = list(self._CONTEXT_SIZE_CADENCE_PRESETS)
+        if current.isdigit():
+            cadences = _options_with_current(cadences, int(current))
+        options = [
+            ("off", "off"),
+            ("auto", "auto (re-detect when the model changes)"),
+            *((str(n), f"every {n} turn(s)") for n in cadences),
+        ]
+        await self._open_option_picker(
+            setting="detect_context_size",
+            title="Context-size detection",
+            options=options,
+            current=current,
+            error=error,
         )
+
+    async def _apply_context_size_detection(self, auto: bool, every: int) -> None:
+        """Drives both the master enable and the poll cadence so there is never
+        a master-off/cadence-set mismatch."""
         VibeConfig.save_updates(
             {"auto_detect_context_size": auto, "context_size_redetect_every": every}
         )
