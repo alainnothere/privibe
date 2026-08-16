@@ -37,10 +37,12 @@ class EventHandler:
         mount_callback: Callable,
         get_tools_collapsed: Callable[[], bool],
         on_profile_changed: Callable[[], None] | None = None,
+        get_reasoning_markdown: Callable[[], bool] | None = None,
     ) -> None:
         self.mount_callback = mount_callback
         self.get_tools_collapsed = get_tools_collapsed
         self.on_profile_changed = on_profile_changed
+        self.get_reasoning_markdown = get_reasoning_markdown
         self.tool_calls: dict[str, ToolCallMessage] = {}
         self.current_compact: CompactMessage | None = None
         self.current_streaming_message: AssistantMessage | None = None
@@ -168,6 +170,9 @@ class EventHandler:
                 event.content,
                 collapsed=tools_collapsed,
                 history_key=event.message_id,
+                markdown=self.get_reasoning_markdown()
+                if self.get_reasoning_markdown
+                else False,
             )
             self.current_streaming_reasoning = msg
             await self.mount_callback(msg)

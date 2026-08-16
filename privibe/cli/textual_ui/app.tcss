@@ -306,6 +306,15 @@ Markdown {
     }
 }
 
+.reasoning-message-content-plain {
+    width: 100%;
+    height: auto;
+    padding: 0 0 0 2;
+    margin: 0;
+    color: ansi_bright_black;
+    text-style: italic;
+}
+
 .interrupt-message,
 .error-message,
 .warning-message,
