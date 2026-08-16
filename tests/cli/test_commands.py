@@ -73,6 +73,47 @@ class TestCommandRegistry:
         registry = CommandRegistry()
         assert registry.find_command("/stable-prefix") is None
 
+    def test_parse_command_exact_match_has_no_args(self) -> None:
+        registry = CommandRegistry()
+        command, args = registry.parse_command("/effort")
+        assert command is not None
+        assert command.handler == "_select_reasoning_effort"
+        assert args == ""
+
+    def test_parse_command_splits_args_for_takes_args_commands(self) -> None:
+        registry = CommandRegistry()
+        command, args = registry.parse_command("/effort low")
+        assert command is not None
+        assert command.handler == "_select_reasoning_effort"
+        assert args == "low"
+
+        command, args = registry.parse_command("/scrollback 250")
+        assert command is not None
+        assert args == "250"
+
+        command, args = registry.parse_command("/preview-lines 5")
+        assert command is not None
+        assert args == "5"
+
+    def test_parse_command_ignores_args_on_plain_commands(self) -> None:
+        # "/help foo" must keep falling through to skills / the LLM.
+        registry = CommandRegistry()
+        command, args = registry.parse_command("/help foo")
+        assert command is None
+        assert args == ""
+
+    def test_parse_command_unknown_input(self) -> None:
+        registry = CommandRegistry()
+        assert registry.parse_command("/nonexistent low") == (None, "")
+        assert registry.parse_command("hello world") == (None, "")
+        assert registry.parse_command("") == (None, "")
+
+    def test_parse_command_normalizes_alias_and_strips_args(self) -> None:
+        registry = CommandRegistry()
+        command, args = registry.parse_command("  /EFFORT   medium  ")
+        assert command is not None
+        assert args == "medium"
+
     def test_every_command_handler_exists_on_the_app(self) -> None:
         # The app dispatches via getattr(self, command.handler); guard against a
         # typo'd or missing handler for any registered command.

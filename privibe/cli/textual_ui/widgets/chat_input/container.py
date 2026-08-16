@@ -44,6 +44,7 @@ class ChatInputContainer(Vertical):
         safety: AgentSafety = AgentSafety.NEUTRAL,
         agent_name: str = "",
         skill_entries_getter: Callable[[], list[tuple[str, str]]] | None = None,
+        current_values_getter: Callable[[], dict[str, str]] | None = None,
         file_watcher_for_autocomplete_getter: Callable[[], bool] | None = None,
         voice_manager: VoiceManagerPort | None = None,
         **kwargs: Any,
@@ -54,6 +55,7 @@ class ChatInputContainer(Vertical):
         self._safety = safety
         self._agent_name = agent_name
         self._skill_entries_getter = skill_entries_getter
+        self._current_values_getter = current_values_getter
         self._file_watcher_for_autocomplete_getter = (
             file_watcher_for_autocomplete_getter
         )
@@ -69,11 +71,16 @@ class ChatInputContainer(Vertical):
         self._body: ChatInputBody | None = None
 
     def _get_slash_entries(self) -> list[tuple[str, str]]:
-        entries = [
-            (alias, command.description)
-            for command in self._command_registry.commands.values()
-            for alias in sorted(command.aliases)
-        ]
+        current_values = (
+            self._current_values_getter() if self._current_values_getter else {}
+        )
+        entries = []
+        for command in self._command_registry.commands.values():
+            for alias in sorted(command.aliases):
+                description = command.description
+                if value := current_values.get(alias):
+                    description = f"{description} (current: {value})"
+                entries.append((alias, description))
         if self._skill_entries_getter:
             entries.extend(self._skill_entries_getter())
         return sorted(entries)

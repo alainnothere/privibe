@@ -1151,6 +1151,50 @@ NarratorStatus {
     margin-top: 1;
 }
 
+#optionpicker-app {
+    width: 100%;
+    height: auto;
+    background: transparent;
+    border: solid ansi_bright_black;
+    padding: 0 1;
+    margin: 0;
+}
+
+#optionpicker-content {
+    width: 100%;
+    height: auto;
+}
+
+.optionpicker-error {
+    height: auto;
+    color: ansi_red;
+}
+
+.optionpicker-title {
+    height: auto;
+    text-style: bold;
+    color: ansi_blue;
+}
+
+#optionpicker-options {
+    width: 100%;
+    max-height: 50vh;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    border: none;
+}
+
+#optionpicker-options:focus {
+    border: none;
+}
+
+.optionpicker-help {
+    width: 100%;
+    height: auto;
+    color: ansi_bright_black;
+    margin-top: 1;
+}
+
 FeedbackBar {
     width: auto;
     height: auto;

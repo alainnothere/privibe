@@ -43,6 +43,7 @@ class Command:
     description: str
     handler: str
     exits: bool = False
+    takes_args: bool = False
 
 
 class CommandRegistry:
@@ -128,23 +129,27 @@ class CommandRegistry:
             ),
             "detect_context_size": Command(
                 aliases=frozenset(["/detect-context-size"]),
-                description="Cycle context-size detection (off → auto → re-detect every 1/2/5/10 turns)",
-                handler="_cycle_context_size_detection",
+                description="Set context-size detection; /detect-context-size off|auto|<turns> or pick from a menu",
+                handler="_select_context_size_detection",
+                takes_args=True,
             ),
             "preview_lines": Command(
                 aliases=frozenset(["/preview-lines"]),
-                description="Cycle the tool-result preview length (3 → 5 → 10 lines)",
-                handler="_cycle_preview_lines",
+                description="Set the tool-result preview length; /preview-lines <n> or pick from a menu",
+                handler="_select_preview_lines",
+                takes_args=True,
             ),
             "effort": Command(
                 aliases=frozenset(["/effort"]),
-                description="Cycle reasoning effort stamped on new messages (off → low → medium → xhigh; needs per-message effort support on the llama.cpp server)",
-                handler="_cycle_reasoning_effort",
+                description="Set reasoning effort stamped on new messages; /effort <value> or pick from a menu (needs per-message effort support on the llama.cpp server)",
+                handler="_select_reasoning_effort",
+                takes_args=True,
             ),
             "scrollback": Command(
                 aliases=frozenset(["/scrollback"]),
-                description="Cycle how many rows of message history to keep before pruning (50 → 100 → 250 → 500 → 1000)",
-                handler="_cycle_scrollback",
+                description="Set how many rows of message history to keep before pruning; /scrollback <n> or pick from a menu",
+                handler="_select_scrollback",
+                takes_args=True,
             ),
             "list_tools": Command(
                 aliases=frozenset(["/list-tools"]),
@@ -180,6 +185,23 @@ class CommandRegistry:
     def find_command(self, user_input: str) -> Command | None:
         cmd_name = self.get_command_name(user_input)
         return self.commands.get(cmd_name) if cmd_name else None
+
+    def parse_command(self, user_input: str) -> tuple[Command | None, str]:
+        """Split "/cmd value" into (command, "value").
+
+        A trailing argument is only recognized for commands that declare
+        takes_args, so "/help foo" still falls through to skills / the LLM
+        exactly as before.
+        """
+        command = self.find_command(user_input)
+        if command:
+            return (command, "")
+        parts = user_input.strip().split(None, 1)
+        if len(parts) == 2:
+            command = self.find_command(parts[0])
+            if command and command.takes_args:
+                return (command, parts[1].strip())
+        return (None, "")
 
     def get_command_name(self, user_input: str) -> str | None:
         return self._alias_map.get(user_input.lower().strip())

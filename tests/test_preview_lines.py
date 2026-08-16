@@ -30,7 +30,8 @@ def test_config_default_is_3():
 def test_command_registered():
     cmd = CommandRegistry().find_command("/preview-lines")
     assert cmd is not None
-    assert cmd.handler == "_cycle_preview_lines"
+    assert cmd.handler == "_select_preview_lines"
+    assert cmd.takes_args
 
 
 def test_command_can_be_excluded():
@@ -69,7 +70,8 @@ def test_scrollback_config_default_is_250():
 def test_scrollback_command_registered():
     cmd = CommandRegistry().find_command("/scrollback")
     assert cmd is not None
-    assert cmd.handler == "_cycle_scrollback"
+    assert cmd.handler == "_select_scrollback"
+    assert cmd.takes_args
 
 
 def test_scrollback_command_can_be_excluded():
