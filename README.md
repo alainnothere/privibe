@@ -26,6 +26,13 @@ research (played at 4x):
 
 ![resuming and switching between sessions, and reusing knowledge across sessions via context files](docs/resume_and_continue_sessions.gif)
 
+Resuming a session with its KV cache restored from disk: with the companion
+[llama-server build](https://github.com/alainnothere/llama.cpp/tree/disk-cache-eviction),
+evicted conversations are saved to disk and reloaded on resume, so picking an
+old session back up does not reprocess the whole conversation:
+
+![resuming a session with the KV cache restored from disk](docs/resume_from_disk.gif)
+
 > **Note on backends:** this fork is developed and tested against a local
 > **llama.cpp** server (via its OpenAI-compatible API). The Anthropic and
 > Mistral backend adapters inherited from upstream are still in the code but are
