@@ -528,6 +528,10 @@ class VibeConfig(BaseSettings):
     vim_keybindings: bool = False
     disable_welcome_banner_animation: bool = False
     autocopy_to_clipboard: bool = True
+    # Render streamed thinking through the Markdown widget. Off by default:
+    # Textual re-parses the whole still-open block on every append, so a
+    # rambling model slows the UI down more and more; plain text streams flat.
+    render_reasoning_markdown: bool = False
     auto_detect_context_size: bool = True
     context_size_redetect_every: int = 0
     tool_result_preview_lines: int = 3

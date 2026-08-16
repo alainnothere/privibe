@@ -72,6 +72,26 @@ class UserMessage(Static):
         self.remove_class("pending")
 
 
+def cap_open_block(text: str, open_len: int, cap: int) -> tuple[str, int]:
+    """Track the still-open markdown block's size and force it closed at *cap*.
+
+    Textual's MarkdownStream re-parses the entire still-open block on every
+    append, so an unbroken paragraph makes each flush progressively slower.
+    Injecting a paragraph break every *cap* chars bounds that cost. Display
+    only: the stored message content is untouched.
+
+    Returns (text to write, new open-block length).
+    """
+    last_break = text.rfind("\n\n")
+    if last_break == -1:
+        open_len += len(text)
+    else:
+        open_len = len(text) - (last_break + 2)
+    if open_len >= cap:
+        return text + "\n\n", 0
+    return text, open_len
+
+
 class StreamingMessageBase(Static):
     # Minimum seconds between flushes to the markdown stream. Textual's
     # Markdown.append re-parses, re-highlights, and re-renders the entire
@@ -137,14 +157,23 @@ class StreamingMessageBase(Static):
                 self.FLUSH_INTERVAL - elapsed, self._flush_on_timer
             )
 
+    async def _write_display(self, to_write: str) -> None:
+        stream = self._ensure_stream()
+        await stream.write(to_write)
+
+    async def _finalize_display(self) -> None:
+        if self._stream is None:
+            return
+        await self._stream.stop()
+        self._stream = None
+
     async def _flush_buffer(self) -> None:
         self._cancel_flush_timer()
         self._last_flush_time = time.monotonic()
         to_write = self._to_write_buffer
         self._to_write_buffer = ""
         if to_write:
-            stream = self._ensure_stream()
-            await stream.write(to_write)
+            await self._write_display(to_write)
 
     async def _flush_on_timer(self) -> None:
         self._flush_timer = None
@@ -165,22 +194,15 @@ class StreamingMessageBase(Static):
             return
         self._content_initialized = True
         if self._content and self._should_write_content():
-            stream = self._ensure_stream()
-            await stream.write(self._content)
+            await self._write_display(self._content)
             self._to_write_buffer = ""
 
     async def stop_stream(self) -> None:
         self._cancel_flush_timer()
         if self._to_write_buffer and self._should_write_content():
-            stream = self._ensure_stream()
-            await stream.write(self._to_write_buffer)
+            await self._write_display(self._to_write_buffer)
         self._to_write_buffer = ""
-
-        if self._stream is None:
-            return
-
-        await self._stream.stop()
-        self._stream = None
+        await self._finalize_display()
 
     def _should_write_content(self) -> bool:
         return True
@@ -206,16 +228,23 @@ class ReasoningMessage(SpinnerMixin, StreamingMessageBase):
     SPINNER_TYPE = SpinnerType.PULSE
     SPINNING_TEXT = "Thinking"
     COMPLETED_TEXT = "Thought"
+    # Max chars a single open markdown block may reach while streaming; see
+    # cap_open_block. Only applies when markdown rendering is enabled.
+    OPEN_BLOCK_CAP = 4096
 
     def __init__(
         self,
         content: str,
         collapsed: bool = True,
         history_key: str | None = None,
+        markdown: bool = False,
     ) -> None:
         super().__init__(content, history_key=history_key)
         self.add_class("reasoning-message")
         self.collapsed = collapsed
+        self._render_markdown = markdown
+        self._plain_widget: NoMarkupStatic | None = None
+        self._open_block_len = 0
         self._indicator_widget: Static | None = None
         self._triangle_widget: Static | None = None
         self.init_spinner()
@@ -235,10 +264,30 @@ class ReasoningMessage(SpinnerMixin, StreamingMessageBase):
                     "▶" if self.collapsed else "▼", classes="reasoning-triangle"
                 )
                 yield self._triangle_widget
-            markdown = Markdown("", classes="reasoning-message-content")
-            markdown.display = not self.collapsed
-            self._markdown = markdown
-            yield markdown
+            if self._render_markdown:
+                markdown = Markdown("", classes="reasoning-message-content")
+                markdown.display = not self.collapsed
+                self._markdown = markdown
+                yield markdown
+            else:
+                plain = NoMarkupStatic("", classes="reasoning-message-content-plain")
+                plain.display = not self.collapsed
+                self._plain_widget = plain
+                yield plain
+
+    async def _write_display(self, to_write: str) -> None:
+        if self._render_markdown:
+            to_write, self._open_block_len = cap_open_block(
+                to_write, self._open_block_len, self.OPEN_BLOCK_CAP
+            )
+            await super()._write_display(to_write)
+            return
+        if self._plain_widget:
+            self._plain_widget.update(self._content)
+
+    async def _finalize_display(self) -> None:
+        if self._render_markdown:
+            await super()._finalize_display()
 
     def on_mount(self) -> None:
         self.start_spinner_timer()
@@ -262,15 +311,28 @@ class ReasoningMessage(SpinnerMixin, StreamingMessageBase):
         self.collapsed = collapsed
         if self._triangle_widget:
             self._triangle_widget.update("▶" if collapsed else "▼")
-        if self._markdown:
+        if self._render_markdown and self._markdown:
             self._markdown.display = not collapsed
             if not collapsed and self._content:
                 if self._stream is not None:
                     await self._stream.stop()
                     self._stream = None
                 await self._markdown.update("")
+                # The full rewrite reopens the content's trailing block; track
+                # its size so the cap keeps bounding subsequent appends.
+                last_break = self._content.rfind("\n\n")
+                self._open_block_len = (
+                    len(self._content) - (last_break + 2)
+                    if last_break != -1
+                    else len(self._content)
+                )
                 stream = self._ensure_stream()
                 await stream.write(self._content)
+                self._to_write_buffer = ""
+        elif self._plain_widget:
+            self._plain_widget.display = not collapsed
+            if not collapsed and self._content:
+                self._plain_widget.update(self._content)
                 self._to_write_buffer = ""
 
 

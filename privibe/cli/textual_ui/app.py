@@ -382,6 +382,7 @@ class VibeApp(App):  # noqa: PLR0904
             mount_callback=self._mount_and_scroll,
             get_tools_collapsed=lambda: self._tools_collapsed,
             on_profile_changed=self._on_profile_changed,
+            get_reasoning_markdown=lambda: self.config.render_reasoning_markdown,
         )
 
         self._chat_input_container = self.query_one(ChatInputContainer)
