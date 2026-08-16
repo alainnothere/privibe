@@ -19,9 +19,12 @@ llama.cpp server, this is that.
 
 Step-by-step version of this demo: [docs/getting-started.md](docs/getting-started.md).
 
-Resuming and switching between sessions (played at 4x):
+Resuming and switching between sessions, plus context files in action: the
+lets-document skill compiles what one session learned into a context file, and
+a second, unrelated session picks up from that knowledge without redoing the
+research (played at 4x):
 
-![resuming and switching between sessions](docs/resume_and_continue_sessions.gif)
+![resuming and switching between sessions, and reusing knowledge across sessions via context files](docs/resume_and_continue_sessions.gif)
 
 > **Note on backends:** this fork is developed and tested against a local
 > **llama.cpp** server (via its OpenAI-compatible API). The Anthropic and
