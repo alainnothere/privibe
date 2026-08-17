@@ -82,6 +82,13 @@ def bootstrap_config_files() -> None:
         except Exception as e:
             logger.warning("Config migration check failed: %s", e)
 
+    # Seed / refresh the locally editable prompt copies; see privibe/cli/cli.py.
+    try:
+        from privibe.core.prompts.sync import sync_default_prompts
+        sync_default_prompts()
+    except Exception as e:
+        logger.warning("Prompt sync failed: %s", e)
+
     history_file = HISTORY_FILE.path
     if not history_file.exists():
         try:

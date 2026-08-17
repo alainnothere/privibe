@@ -170,6 +170,13 @@ def bootstrap_config_files() -> None:
 
     _bootstrap_sample_skills()
 
+    # Seed / refresh the locally editable prompt copies in ~/.privibe/prompts.
+    try:
+        from privibe.core.prompts.sync import sync_default_prompts
+        sync_default_prompts()
+    except Exception as e:
+        rprint(f"[yellow]Could not sync default prompts: {e}[/]")
+
 
 def _bootstrap_sample_skills() -> None:
     """Copy bundled sample skills to ~/.privibe/skills/ if they don't already exist."""
