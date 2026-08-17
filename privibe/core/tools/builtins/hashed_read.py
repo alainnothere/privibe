@@ -61,7 +61,8 @@ class HashedReadResult(BaseModel):
     start_line: int
     lines_read: int
     was_truncated: bool = Field(
-        description="True if reading was stopped due to the byte limit."
+        description="True if the read stopped before end of file, whether due "
+        "to the byte cap or the line limit."
     )
     path_note: str | None = Field(
         default=None,
@@ -197,6 +198,11 @@ class HashedRead(
                         line_index += 1
                         continue
                     if args.limit is not None and len(lines) >= args.limit:
+                        # Reaching this check means the iterator produced a
+                        # line beyond the limit, so more content provably
+                        # exists; a file with exactly `limit` lines exits the
+                        # loop naturally and stays untruncated.
+                        was_truncated = True
                         break
                     line_bytes = len(line.encode("utf-8"))
                     if bytes_read + line_bytes > byte_cap:

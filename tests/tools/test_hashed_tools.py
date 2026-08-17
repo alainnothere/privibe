@@ -155,6 +155,38 @@ async def test_hashed_read_truncates(tmp_path, monkeypatch):
     assert result.was_truncated
 
 
+@pytest.mark.asyncio
+async def test_hashed_read_limit_stop_sets_truncated(
+    tmp_path, monkeypatch, hashed_read_tool
+):
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "file.txt"
+    f.write_text("a\nb\nc\nd\n", encoding="utf-8")
+
+    result = await collect_result(
+        hashed_read_tool.run(HashedReadArgs(path=str(f), limit=2))
+    )
+
+    assert result.lines_read == 2
+    assert result.was_truncated
+
+
+@pytest.mark.asyncio
+async def test_hashed_read_limit_at_exact_eof_not_truncated(
+    tmp_path, monkeypatch, hashed_read_tool
+):
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "file.txt"
+    f.write_text("a\nb\nc\nd\n", encoding="utf-8")
+
+    result = await collect_result(
+        hashed_read_tool.run(HashedReadArgs(path=str(f), offset=2, limit=2))
+    )
+
+    assert result.lines_read == 2
+    assert not result.was_truncated
+
+
 # ---------------------------------------------------------------------------
 # Helpers for new tools
 # ---------------------------------------------------------------------------

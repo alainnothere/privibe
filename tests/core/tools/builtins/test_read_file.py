@@ -11,12 +11,14 @@ from privibe.core.config.harness_files import (
 )
 from privibe.core.tools.builtins.read_file import (
     ReadFile,
+    ReadFileArgs,
     ReadFileResult,
     ReadFileState,
     ReadFileToolConfig,
 )
 from privibe.core.trusted_folders import trusted_folders_manager
 from privibe.core.utils import VIBE_WARNING_TAG
+from tests.mock.utils import collect_result
 
 
 @pytest.fixture()
@@ -35,6 +37,36 @@ def _setup_manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
 
 def _make_read_file() -> ReadFile:
     return ReadFile(config=ReadFileToolConfig(), state=ReadFileState())
+
+
+class TestLimitTruncation:
+    """A limit-stopped read must report was_truncated, not just byte-cap stops."""
+
+    @pytest.mark.asyncio
+    async def test_limit_stop_before_eof_sets_was_truncated(
+        self, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "file.txt"
+        f.write_text("a\nb\nc\nd\n", encoding="utf-8")
+
+        result = await collect_result(
+            _make_read_file().run(ReadFileArgs(path=str(f), limit=2))
+        )
+
+        assert result.lines_read == 2
+        assert result.was_truncated
+
+    @pytest.mark.asyncio
+    async def test_limit_at_exact_eof_is_not_truncated(self, tmp_path: Path) -> None:
+        f = tmp_path / "file.txt"
+        f.write_text("a\nb\nc\nd\n", encoding="utf-8")
+
+        result = await collect_result(
+            _make_read_file().run(ReadFileArgs(path=str(f), offset=2, limit=2))
+        )
+
+        assert result.lines_read == 2
+        assert not result.was_truncated
 
 
 class TestGetResultExtra:
