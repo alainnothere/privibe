@@ -114,13 +114,13 @@ async def test_hashed_read_basic(tmp_path, monkeypatch, hashed_read_tool):
 
 
 @pytest.mark.asyncio
-async def test_hashed_read_offset_and_limit(tmp_path, monkeypatch, hashed_read_tool):
+async def test_hashed_read_start_line_and_limit(tmp_path, monkeypatch, hashed_read_tool):
     monkeypatch.chdir(tmp_path)
     f = tmp_path / "file.txt"
     f.write_text("a\nb\nc\nd\n", encoding="utf-8")
 
     result = await collect_result(
-        hashed_read_tool.run(HashedReadArgs(path=str(f), offset=1, limit=2))
+        hashed_read_tool.run(HashedReadArgs(path=str(f), start_line=2, limit=2))
     )
 
     lines = result.content.splitlines()
@@ -180,7 +180,7 @@ async def test_hashed_read_limit_at_exact_eof_not_truncated(
     f.write_text("a\nb\nc\nd\n", encoding="utf-8")
 
     result = await collect_result(
-        hashed_read_tool.run(HashedReadArgs(path=str(f), offset=2, limit=2))
+        hashed_read_tool.run(HashedReadArgs(path=str(f), start_line=3, limit=2))
     )
 
     assert result.lines_read == 2

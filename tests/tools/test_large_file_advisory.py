@@ -92,11 +92,11 @@ async def test_targeted_read_of_big_file_is_untouched(
     assert with_limit.advisory is None
     assert with_limit.lines_read == 50
 
-    with_offset = await collect_result(
-        read_file_tool.run(ReadFileArgs(path=str(f), offset=90))
+    with_start_line = await collect_result(
+        read_file_tool.run(ReadFileArgs(path=str(f), start_line=91))
     )
-    assert with_offset.advisory is None
-    assert with_offset.lines_read == 10
+    assert with_start_line.advisory is None
+    assert with_start_line.lines_read == 10
 
 
 @pytest.mark.asyncio
@@ -158,7 +158,7 @@ async def test_hashed_targeted_read_of_big_file_is_untouched(
     f = _write_big_file(tmp_path)
 
     result = await collect_result(
-        hashed_read_tool.run(HashedReadArgs(path=str(f), offset=40, limit=20))
+        hashed_read_tool.run(HashedReadArgs(path=str(f), start_line=41, limit=20))
     )
 
     assert result.advisory is None

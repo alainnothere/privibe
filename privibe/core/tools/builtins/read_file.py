@@ -40,9 +40,10 @@ class _ReadResult(NamedTuple):
 
 class ReadFileArgs(BaseModel):
     path: str
-    offset: int = Field(
-        default=0,
-        description="Line number to start reading from (0-indexed, inclusive).",
+    start_line: int = Field(
+        default=1,
+        description="First line to read (1-based, inclusive) — ordinary "
+        "editor line numbers.",
     )
     limit: int | None = Field(
         default=None, description="Maximum number of lines to read."
@@ -85,8 +86,8 @@ class ReadFileToolConfig(BaseToolConfig):
     large_file_threshold_kb: int = Field(
         default=128,
         description=(
-            "A whole-file read (no offset/limit) of a file larger than this "
-            "returns only a head preview plus an advisory instead of "
+            "A whole-file read (no start_line/limit) of a file larger than "
+            "this returns only a head preview plus an advisory instead of "
             "max_read_bytes of content. Targeted reads are unaffected."
         ),
     )
@@ -115,13 +116,13 @@ class ReadFile(
     ) -> AsyncGenerator[ToolStreamEvent | ReadFileResult, None]:
         file_path = self._prepare_and_validate_path(args)
 
-        # A naive whole-file read (no offset/limit) of an over-threshold file
-        # gets a small head preview plus an advisory instead of a 64KB flood.
-        # Targeted reads pass through untouched: punishing them would teach
-        # the model that ranged reads don't work either.
+        # A naive whole-file read (no start_line/limit) of an over-threshold
+        # file gets a small head preview plus an advisory instead of a 64KB
+        # flood. Targeted reads pass through untouched: punishing them would
+        # teach the model that ranged reads don't work either.
         advisory: str | None = None
         max_bytes = self.config.max_read_bytes
-        naive = args.offset == 0 and args.limit is None
+        naive = args.start_line == 1 and args.limit is None
         threshold_bytes = self.config.large_file_threshold_kb * 1024
         preview_bytes = self.config.large_file_preview_kb * 1024
         size = file_path.resolve().stat().st_size
@@ -218,7 +219,7 @@ class ReadFile(
             ) as f:
                 line_index = 0
                 async for line in f:
-                    if line_index < args.offset:
+                    if line_index < args.start_line - 1:
                         line_index += 1
                         continue
 
@@ -251,8 +252,8 @@ class ReadFile(
     def _validate_inputs(self, args: ReadFileArgs) -> None:
         if not args.path.strip():
             raise ToolError("Path cannot be empty")
-        if args.offset < 0:
-            raise ToolError("Offset cannot be negative")
+        if args.start_line < 1:
+            raise ToolError("start_line is 1-based; the first line is 1")
         if args.limit is not None and args.limit <= 0:
             raise ToolError("Limit, if provided, must be a positive number")
 
@@ -274,10 +275,10 @@ class ReadFile(
     @classmethod
     def format_call_display(cls, args: ReadFileArgs) -> ToolCallDisplay:
         summary = f"Reading {args.path}"
-        if args.offset > 0 or args.limit is not None:
+        if args.start_line > 1 or args.limit is not None:
             parts = []
-            if args.offset > 0:
-                parts.append(f"from line {args.offset}")
+            if args.start_line > 1:
+                parts.append(f"from line {args.start_line}")
             if args.limit is not None:
                 parts.append(f"limit {args.limit} lines")
             summary += f" ({', '.join(parts)})"
