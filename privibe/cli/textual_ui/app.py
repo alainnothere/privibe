@@ -1887,9 +1887,13 @@ class VibeApp(App):  # noqa: PLR0904
             messages_area = self._cached_messages_area or self.query_one("#messages")
             if self._tool_call_map is None:
                 self._tool_call_map = {}
-            if self._load_more.widget:
+            # The live prune can detach the load-more button via a bulk
+            # remove_children without the manager noticing; a detached widget
+            # cannot anchor a mount, so fall back to mounting at the top.
+            load_more_widget = self._load_more.widget
+            if load_more_widget is not None and load_more_widget.parent is not None:
                 before: Widget | int | None = None
-                after: Widget | None = self._load_more.widget
+                after: Widget | None = load_more_widget
             else:
                 before = 0
                 after = None
