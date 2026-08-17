@@ -81,7 +81,7 @@ def test_run_programmatic_preload_streaming_is_batched(
         ]
 
         assert (
-            spy.emitted[0][1] == "You are Vibe, a super useful programming assistant."
+            spy.emitted[0][1] == "You are privibe, a CLI coding assistant."
         )
         assert spy.emitted[1][1] == "Previously, you told me about decorators."
         assert spy.emitted[2][1] == "Sure, decorators allow you to wrap functions."
@@ -134,7 +134,7 @@ def test_run_programmatic_ignores_system_messages_in_previous(
         # the loaded history, shifting the live prompt one index forward.
         assert roles == [Role.system, Role.user, Role.user, Role.user, Role.assistant]
         assert (
-            spy.emitted[0][1] == "You are Vibe, a super useful programming assistant."
+            spy.emitted[0][1] == "You are privibe, a CLI coding assistant."
         )
         assert spy.emitted[1][1] == "Continue our previous discussion."
         assert spy.emitted[3][1] == "Let's move on to practical examples."
