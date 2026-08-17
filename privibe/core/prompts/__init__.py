@@ -30,26 +30,43 @@ def _override_dirs() -> list[Path]:
     return mgr.project_prompts_dirs + mgr.user_prompts_dirs
 
 
+# Subdirectory of each prompts dir holding the per-tool prompt overrides,
+# namespaced so a tool file can never collide with a top-level prompt.
+TOOL_PROMPTS_SUBDIR = "tools"
+
+
+def read_prompt_override(rel_path: str) -> str | None:
+    """Return the first non-empty override for a prompts-relative path.
+
+    Empty override files warn once and are skipped, so an accidental blank
+    file can never silence a prompt.
+    """
+    for directory in _override_dirs():
+        candidate = directory / rel_path
+        if candidate.is_file():
+            stripped = read_safe(candidate).strip()
+            if stripped:
+                return stripped
+            if candidate not in _warned_empty_overrides:
+                _warned_empty_overrides.add(candidate)
+                from privibe.core.logger import logger
+
+                logger.warning(
+                    "Prompt override %s is empty; using the packaged prompt",
+                    candidate,
+                )
+    return None
+
+
 class Prompt(StrEnum):
     @property
     def path(self) -> Path:
         return (_PROMPTS_DIR / self.value).with_suffix(".md")
 
     def read(self) -> str:
-        for directory in _override_dirs():
-            candidate = (directory / self.value).with_suffix(".md")
-            if candidate.is_file():
-                stripped = read_safe(candidate).strip()
-                if stripped:
-                    return stripped
-                if candidate not in _warned_empty_overrides:
-                    _warned_empty_overrides.add(candidate)
-                    from privibe.core.logger import logger
-
-                    logger.warning(
-                        "Prompt override %s is empty; using the packaged prompt",
-                        candidate,
-                    )
+        override = read_prompt_override(f"{self.value}.md")
+        if override is not None:
+            return override
         return read_safe(self.path).strip()
 
 
@@ -71,4 +88,9 @@ class UtilityPrompt(Prompt):
     TURN_SUMMARY = auto()
 
 
-__all__ = ["SystemPrompt", "UtilityPrompt"]
+__all__ = [
+    "TOOL_PROMPTS_SUBDIR",
+    "SystemPrompt",
+    "UtilityPrompt",
+    "read_prompt_override",
+]

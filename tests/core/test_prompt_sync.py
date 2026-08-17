@@ -5,9 +5,16 @@ import json
 from pathlib import Path
 
 from privibe.core.prompts import SystemPrompt, UtilityPrompt
-from privibe.core.prompts.sync import MANIFEST_FILENAME, sync_default_prompts
+from privibe.core.prompts.sync import (
+    _TOOL_PROMPTS_DIR,
+    MANIFEST_FILENAME,
+    sync_default_prompts,
+)
 
 ALL_PROMPT_NAMES = [f"{p.value}.md" for p in [*SystemPrompt, *UtilityPrompt]]
+ALL_TOOL_PROMPT_KEYS = sorted(
+    f"tools/{p.name}" for p in _TOOL_PROMPTS_DIR.glob("*.md")
+)
 
 
 def _prompts_dir(config_dir: Path) -> Path:
@@ -23,14 +30,24 @@ def _manifest(config_dir: Path) -> dict[str, str]:
 def test_first_run_copies_all_prompts(config_dir: Path) -> None:
     written = sync_default_prompts()
 
-    assert written == len(ALL_PROMPT_NAMES)
+    assert written == len(ALL_PROMPT_NAMES) + len(ALL_TOOL_PROMPT_KEYS)
     for name, prompt in zip(
         ALL_PROMPT_NAMES, [*SystemPrompt, *UtilityPrompt], strict=True
     ):
         local = _prompts_dir(config_dir) / name
         assert local.read_bytes() == prompt.path.read_bytes()
     manifest = _manifest(config_dir)
-    assert sorted(manifest) == sorted(ALL_PROMPT_NAMES)
+    assert sorted(manifest) == sorted([*ALL_PROMPT_NAMES, *ALL_TOOL_PROMPT_KEYS])
+
+
+def test_first_run_seeds_tool_prompts(config_dir: Path) -> None:
+    sync_default_prompts()
+
+    assert ALL_TOOL_PROMPT_KEYS  # the bus is not allowed to run empty
+    for key in ALL_TOOL_PROMPT_KEYS:
+        local = _prompts_dir(config_dir) / key
+        shipped = _TOOL_PROMPTS_DIR / Path(key).name
+        assert local.read_bytes() == shipped.read_bytes()
 
 
 def test_second_run_is_a_no_op(config_dir: Path) -> None:
@@ -164,6 +181,58 @@ def test_read_applies_to_utility_prompts_too(config_dir: Path) -> None:
     (prompts_dir / "compact.md").write_text("CUSTOM COMPACT", encoding="utf-8")
 
     assert UtilityPrompt.COMPACT.read() == "CUSTOM COMPACT"
+
+
+def test_tool_prompt_override_wins(config_dir: Path) -> None:
+    tools_dir = _prompts_dir(config_dir) / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    (tools_dir / "bash.md").write_text("CUSTOM BASH RULES", encoding="utf-8")
+
+    from privibe.core.tools.builtins.bash import Bash
+
+    assert Bash.get_tool_prompt() == "CUSTOM BASH RULES"
+
+
+def test_tool_prompt_falls_back_to_packaged(config_dir: Path) -> None:
+    from privibe.core.tools.builtins.bash import Bash
+
+    packaged = (_TOOL_PROMPTS_DIR / "bash.md").read_text(encoding="utf-8")
+    assert Bash.get_tool_prompt() == packaged
+
+
+def test_tool_prompt_empty_override_falls_back(config_dir: Path) -> None:
+    tools_dir = _prompts_dir(config_dir) / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    (tools_dir / "bash.md").write_text("   \n", encoding="utf-8")
+
+    from privibe.core.tools.builtins.bash import Bash
+
+    packaged = (_TOOL_PROMPTS_DIR / "bash.md").read_text(encoding="utf-8")
+    assert Bash.get_tool_prompt() == packaged
+
+
+def test_edited_tool_prompt_is_never_overwritten(config_dir: Path) -> None:
+    sync_default_prompts()
+
+    local = _prompts_dir(config_dir) / "tools" / "bash.md"
+    local.write_text("my custom bash guidance", encoding="utf-8")
+
+    written = sync_default_prompts()
+
+    assert written == 0
+    assert local.read_text(encoding="utf-8") == "my custom bash guidance"
+
+
+def test_deleted_tool_prompt_stays_deleted(config_dir: Path) -> None:
+    sync_default_prompts()
+
+    local = _prompts_dir(config_dir) / "tools" / "bash.md"
+    local.unlink()
+
+    written = sync_default_prompts()
+
+    assert written == 0
+    assert not local.exists()
 
 
 def test_mode_reminder_override_keeps_substitution(config_dir: Path) -> None:
