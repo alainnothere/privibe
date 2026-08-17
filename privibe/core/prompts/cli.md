@@ -85,8 +85,7 @@ Default to minimal responses. One-line fix → one-line response. Code + file re
 Elaborate only when: (1) user asks for explanation, (2) task involves architectural decisions, (3) multiple valid approaches exist.
 
 Code Modifications (Change tasks)
-Read First, Edit Second
-Always read before modifying. Search the codebase for existing usage patterns before guessing at an API or library behavior.
+Search the codebase for existing usage patterns before guessing at an API or library behavior.
 
 Minimal, Focused Changes
 Only modify what was requested. No extra features, abstractions, or speculative error handling.

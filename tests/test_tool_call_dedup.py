@@ -9,10 +9,7 @@ from privibe.core.agents import AgentManager
 from privibe.core.agents.models import BuiltinAgentName
 from privibe.core.config import VibeConfig
 from privibe.core.skills.manager import SkillManager
-from privibe.core.system_prompt import (
-    DUPLICATE_TOOL_CALL_NOTE,
-    get_universal_system_prompt,
-)
+from privibe.core.system_prompt import get_universal_system_prompt
 from privibe.core.tools.base import ToolPermission
 from privibe.core.tools.manager import ToolManager
 from privibe.core.types import BaseEvent, FunctionCall, Role, ToolCall, ToolResultEvent
@@ -391,19 +388,13 @@ def _reorder(config: VibeConfig):
     return tool_manager, config, skill_manager, agent_manager
 
 
-def test_system_prompt_mentions_duplicate_dedup() -> None:
+def test_system_prompt_omits_duplicate_dedup_note() -> None:
+    # The runtime skip notice teaches dedup in-band; the system prompt
+    # must not carry a note about it.
     detail_config = build_test_vibe_config(
         system_prompt_id="tests",
         include_project_context=False,
         include_prompt_detail=True,
     )
     detail_prompt = get_universal_system_prompt(*_reorder(detail_config))
-    assert DUPLICATE_TOOL_CALL_NOTE in detail_prompt
-
-    no_detail_config = build_test_vibe_config(
-        system_prompt_id="tests",
-        include_project_context=False,
-        include_prompt_detail=False,
-    )
-    no_detail_prompt = get_universal_system_prompt(*_reorder(no_detail_config))
-    assert DUPLICATE_TOOL_CALL_NOTE not in no_detail_prompt
+    assert "Duplicate tool calls" not in detail_prompt

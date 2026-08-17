@@ -1,6 +1,4 @@
-Use `find_symbol` as the **first choice** when looking for any named symbol (function, method, class, interface, trait). Prefer it over `grep` — grep only returns matching lines and requires a follow-up file read, while `find_symbol` returns the full definition body with hashed lines in one call. Fall back to `grep` only when `find_symbol` cannot locate the symbol or the search targets something other than a named definition.
-
-**Why this exists:** The grep → read-file → scroll workflow costs 3+ round trips and returns far more than you need. `find_symbol` collapses this into one call.
+`find_symbol` locates a named symbol (function, method, class, interface, trait) and returns its full definition body with hashed lines in one call.
 
 **Parameters:**
 
