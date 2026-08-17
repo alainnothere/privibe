@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
-import functools
 import inspect
 from pathlib import Path
 import re
@@ -160,20 +159,30 @@ class BaseTool[
         yield  # type: ignore[misc]
 
     @classmethod
-    @functools.cache
     def get_tool_prompt(cls) -> str | None:
         """Loads and returns the content of the tool's .md prompt file, if it exists.
 
         The prompt file is expected to be in a 'prompts' subdirectory relative to
         the tool's source file, with the same name but a .md extension
-        (e.g., bash.py -> prompts/bash.md).
+        (e.g., bash.py -> prompts/bash.md). A local copy under a prompts
+        override dir (tools/<name>.md) wins over the packaged file. Reads are
+        uncached so an edited override reaches the next session's system
+        prompt; within a session the result is baked into the frozen prefix.
         """
+        # Lazy import: core.prompts pulls in the harness manager on read.
+        from privibe.core.prompts import TOOL_PROMPTS_SUBDIR, read_prompt_override
+
         try:
             class_file = inspect.getfile(cls)
             class_path = Path(class_file)
             prompt_dir = class_path.parent / "prompts"
             prompt_path = cls.prompt_path or prompt_dir / f"{class_path.stem}.md"
 
+            override = read_prompt_override(
+                f"{TOOL_PROMPTS_SUBDIR}/{prompt_path.stem}.md"
+            )
+            if override is not None:
+                return override
             return read_safe(prompt_path)
         except (FileNotFoundError, TypeError, OSError):
             pass

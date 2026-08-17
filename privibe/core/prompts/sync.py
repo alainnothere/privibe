@@ -23,11 +23,19 @@ import hashlib
 import json
 from pathlib import Path
 
+from privibe import VIBE_ROOT
 from privibe.core.config.harness_files._paths import GLOBAL_PROMPTS_DIR
 from privibe.core.logger import logger
-from privibe.core.prompts import Prompt, SystemPrompt, UtilityPrompt
+from privibe.core.prompts import (
+    TOOL_PROMPTS_SUBDIR,
+    Prompt,
+    SystemPrompt,
+    UtilityPrompt,
+)
 
 MANIFEST_FILENAME = ".manifest.json"
+
+_TOOL_PROMPTS_DIR = VIBE_ROOT / "core" / "tools" / "builtins" / "prompts"
 
 
 def _sha256(data: bytes) -> str:
@@ -44,6 +52,41 @@ def _load_manifest(manifest_path: Path) -> dict[str, str]:
     return {}
 
 
+def _sync_one(
+    shipped_path: Path, local: Path, key: str, manifest: dict[str, str]
+) -> int:
+    """Sync a single shipped prompt into its local copy. Returns files written."""
+    try:
+        shipped = shipped_path.read_bytes()
+    except OSError as e:
+        logger.warning("Cannot read bundled prompt %s: %s", shipped_path, e)
+        return 0
+    shipped_hash = _sha256(shipped)
+    recorded = manifest.get(key)
+    written = 0
+
+    if recorded is None:
+        # First sight of this prompt. A pre-existing local file is
+        # user-authored and must survive; an empty one is an accident
+        # (Prompt.read ignores empty overrides), so seed both cases.
+        try:
+            existing = local.read_bytes()
+        except OSError:
+            existing = b""
+        if not existing.strip():
+            local.write_bytes(shipped)
+            written = 1
+    elif local.exists():
+        local_hash = _sha256(local.read_bytes())
+        if local_hash == recorded and shipped_hash != recorded:
+            local.write_bytes(shipped)
+            written = 1
+    # in manifest but missing locally: the user deleted it; respect that.
+
+    manifest[key] = shipped_hash
+    return written
+
+
 def sync_default_prompts() -> int:
     """Sync bundled prompts into the user prompts dir. Returns files written."""
     prompts_dir = GLOBAL_PROMPTS_DIR.path
@@ -54,34 +97,16 @@ def sync_default_prompts() -> int:
 
     prompts: list[Prompt] = [*SystemPrompt, *UtilityPrompt]
     for prompt in prompts:
-        try:
-            shipped = prompt.path.read_bytes()
-        except OSError as e:
-            logger.warning("Cannot read bundled prompt %s: %s", prompt.path, e)
-            continue
-        shipped_hash = _sha256(shipped)
         local = (prompts_dir / prompt.value).with_suffix(".md")
-        recorded = manifest.get(local.name)
+        written += _sync_one(prompt.path, local, local.name, manifest)
 
-        if recorded is None:
-            # First sight of this prompt. A pre-existing local file is
-            # user-authored and must survive; an empty one is an accident
-            # (Prompt.read ignores empty overrides), so seed both cases.
-            try:
-                existing = local.read_bytes()
-            except OSError:
-                existing = b""
-            if not existing.strip():
-                local.write_bytes(shipped)
-                written += 1
-        elif local.exists():
-            local_hash = _sha256(local.read_bytes())
-            if local_hash == recorded and shipped_hash != recorded:
-                local.write_bytes(shipped)
-                written += 1
-        # in manifest but missing locally: the user deleted it; respect that.
-
-        manifest[local.name] = shipped_hash
+    # Per-tool prompts ride the same bus, namespaced under tools/ so a tool
+    # file can never collide with a top-level prompt of the same name.
+    tools_dir = prompts_dir / TOOL_PROMPTS_SUBDIR
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    for shipped_path in sorted(_TOOL_PROMPTS_DIR.glob("*.md")):
+        key = f"{TOOL_PROMPTS_SUBDIR}/{shipped_path.name}"
+        written += _sync_one(shipped_path, tools_dir / shipped_path.name, key, manifest)
 
     try:
         manifest_path.write_text(
