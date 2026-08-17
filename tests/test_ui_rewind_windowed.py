@@ -238,3 +238,44 @@ async def test_compact_resets_windowing_state() -> None:
         assert not app._windowing.has_backfill
         assert app._load_more.widget is None
         assert len(app.query(HistoryLoadMoreMessage)) == 0
+
+
+@pytest.mark.asyncio
+async def test_load_more_survives_detachment_by_live_prune() -> None:
+    """A bulk remove_children (live prune) can detach the load-more button
+    without the manager noticing. The next load-more request must fall back
+    to mounting at the top and remount the button, not crash with a
+    MountError on the detached anchor."""
+    config = VibeConfig(session_logging=SessionLoggingConfig(enabled=False))
+    agent_loop = build_test_agent_loop(config=config)
+    history = [LLMMessage(role=Role.user, content="deep-target")]
+    history += [LLMMessage(role=Role.assistant, content=f"a{i}") for i in range(40)]
+    agent_loop.messages._data.extend(history)
+
+    app = VibeApp(agent_loop=agent_loop)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot.pause, lambda: len(app.query(HistoryLoadMoreMessage)) == 1
+        )
+        remaining_before = app._windowing.remaining
+
+        # Detach the button behind the manager's back, as the prune does, and
+        # reinstate the stale reference: in the real race the rewind worker
+        # runs in the window before _try_prune's deferred cleanup clears it.
+        messages_area = app.query_one("#messages")
+        stale = app._load_more.widget
+        assert stale is not None
+        await messages_area.remove_children([stale])
+        await pilot.pause(0.1)
+        assert stale.parent is None
+        app._load_more.widget = stale
+
+        await app.on_history_load_more_requested(HistoryLoadMoreRequested())
+        await pilot.pause(0.1)
+
+        assert app._windowing.remaining < remaining_before
+        assert app._windowing.has_backfill
+        healed = app._load_more.widget
+        assert healed is not None
+        assert healed is not stale
+        assert healed.parent is not None

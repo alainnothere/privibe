@@ -91,6 +91,11 @@ class HistoryLoadMoreManager:
         self.widget: HistoryLoadMoreMessage | None = None
 
     async def show(self, messages_area: Widget, remaining: int) -> None:
+        if self.widget is not None and self.widget.parent is None:
+            # Detached behind our back: a bulk remove_children (live prune)
+            # can remove the button without going through hide(). Drop the
+            # stale reference so a fresh button mounts.
+            self.widget = None
         if self.widget is None:
             widget = HistoryLoadMoreMessage()
             await messages_area.mount(widget, before=0)
