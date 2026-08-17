@@ -1,0 +1,2 @@
+# README demo media stays on GitHub; it has no business inside source archives.
+docs/*.gif export-ignore
