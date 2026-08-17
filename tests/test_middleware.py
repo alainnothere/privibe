@@ -6,9 +6,9 @@ from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from privibe.core.agents.models import BUILTIN_AGENTS, CHAT, AgentProfile, BuiltinAgentName
 from privibe.core.config import VibeConfig
 from privibe.core.middleware import (
-    CHAT_AGENT_EXIT,
-    CHAT_AGENT_REMINDER,
-    PLAN_AGENT_EXIT,
+    chat_agent_exit,
+    chat_agent_reminder,
+    plan_agent_exit,
     ConversationContext,
     MiddlewareAction,
     MiddlewarePipeline,
@@ -340,7 +340,7 @@ class TestMiddlewarePipelineWithReadOnlyAgent:
                 lambda: BUILTIN_AGENTS[BuiltinAgentName.PLAN],
                 BuiltinAgentName.PLAN,
                 plan_reminder,
-                PLAN_AGENT_EXIT,
+                plan_agent_exit,
             )
         )
 
@@ -360,7 +360,7 @@ class TestMiddlewarePipelineWithReadOnlyAgent:
                 lambda: BUILTIN_AGENTS[BuiltinAgentName.DEFAULT],
                 BuiltinAgentName.PLAN,
                 plan_reminder,
-                PLAN_AGENT_EXIT,
+                plan_agent_exit,
             )
         )
 
@@ -380,15 +380,15 @@ class TestMiddlewarePipelineWithReadOnlyAgent:
                 lambda: current_profile,
                 BuiltinAgentName.PLAN,
                 plan_reminder,
-                PLAN_AGENT_EXIT,
+                plan_agent_exit,
             )
         )
         pipeline.add(
             ReadOnlyAgentMiddleware(
                 lambda: current_profile,
                 BuiltinAgentName.CHAT,
-                CHAT_AGENT_REMINDER,
-                CHAT_AGENT_EXIT,
+                chat_agent_reminder,
+                chat_agent_exit,
             )
         )
 
@@ -399,13 +399,13 @@ class TestMiddlewarePipelineWithReadOnlyAgent:
         current_profile = CHAT
         result = await pipeline.run_before_turn(ctx)
         assert result.action == MiddlewareAction.INJECT_MESSAGE
-        assert PLAN_AGENT_EXIT in (result.message or "")
-        assert CHAT_AGENT_REMINDER in (result.message or "")
+        assert plan_agent_exit() in (result.message or "")
+        assert chat_agent_reminder() in (result.message or "")
 
         current_profile = BUILTIN_AGENTS[BuiltinAgentName.PLAN]
         result = await pipeline.run_before_turn(ctx)
         assert result.action == MiddlewareAction.INJECT_MESSAGE
-        assert CHAT_AGENT_EXIT in (result.message or "")
+        assert chat_agent_exit() in (result.message or "")
         assert PLAN_REMINDER_SNIPPET in (result.message or "")
 
 
@@ -452,7 +452,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
         )
         result = await plan_middleware_after.before_turn(ctx)
         assert result.action == MiddlewareAction.INJECT_MESSAGE
-        assert result.message == PLAN_AGENT_EXIT
+        assert result.message == plan_agent_exit()
 
     @pytest.mark.asyncio
     async def test_switch_agent_allows_reinjection_on_reentry(self) -> None:
@@ -479,7 +479,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
             messages=agent.messages, stats=agent.stats, config=agent.config
         )
         result = await plan_middleware.before_turn(ctx)
-        assert result.message == PLAN_AGENT_EXIT
+        assert result.message == plan_agent_exit()
 
         await agent.switch_agent(BuiltinAgentName.PLAN)
 
@@ -516,7 +516,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
         )
         result = await plan_middleware.before_turn(ctx)
         assert result.action == MiddlewareAction.INJECT_MESSAGE
-        assert result.message == PLAN_AGENT_EXIT
+        assert result.message == plan_agent_exit()
 
     @pytest.mark.asyncio
     async def test_switch_between_non_plan_agents_no_injection(self) -> None:
@@ -581,7 +581,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
         await agent.switch_agent(BuiltinAgentName.DEFAULT)
         r = await plan_middleware.before_turn(_ctx())
         assert r.action == MiddlewareAction.INJECT_MESSAGE
-        assert r.message == PLAN_AGENT_EXIT
+        assert r.message == plan_agent_exit()
 
         # 4. Stay in default: no injection
         r = await plan_middleware.before_turn(_ctx())
@@ -601,7 +601,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
         await agent.switch_agent(BuiltinAgentName.DEFAULT)
         r = await plan_middleware.before_turn(_ctx())
         assert r.action == MiddlewareAction.INJECT_MESSAGE
-        assert r.message == PLAN_AGENT_EXIT
+        assert r.message == plan_agent_exit()
 
         # 8. Stay in default: no injection
         r = await plan_middleware.before_turn(_ctx())

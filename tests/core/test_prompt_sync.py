@@ -164,3 +164,17 @@ def test_read_applies_to_utility_prompts_too(config_dir: Path) -> None:
     (prompts_dir / "compact.md").write_text("CUSTOM COMPACT", encoding="utf-8")
 
     assert UtilityPrompt.COMPACT.read() == "CUSTOM COMPACT"
+
+
+def test_mode_reminder_override_keeps_substitution(config_dir: Path) -> None:
+    from privibe.core.middleware import make_plan_agent_reminder
+
+    prompts_dir = _prompts_dir(config_dir)
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    (prompts_dir / "plan_reminder.md").write_text(
+        "CUSTOM PLAN RULES at $plan_file_path", encoding="utf-8"
+    )
+
+    message = make_plan_agent_reminder("/tmp/my-plan.md")
+
+    assert "CUSTOM PLAN RULES at /tmp/my-plan.md" in message

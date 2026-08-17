@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
+from string import Template
 from typing import TYPE_CHECKING, Any, Protocol
 
 from privibe.core.agents import AgentProfile
+from privibe.core.prompts import UtilityPrompt
 from privibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
@@ -125,30 +127,32 @@ class ContextWarningMiddleware:
         self.has_warned = False
 
 
+# Mode reminder/exit texts live in privibe/core/prompts/*.md (locally
+# editable via ~/.privibe/prompts/); the warning-tag wrapper is protocol and
+# stays here. Read lazily so an edited local copy applies without a restart.
+
+
+def _wrap_warning(body: str) -> str:
+    return f"<{VIBE_WARNING_TAG}>{body}</{VIBE_WARNING_TAG}>"
+
+
 def make_plan_agent_reminder(plan_file_path: str) -> str:
-    return f"""<{VIBE_WARNING_TAG}>Plan mode is active. You MUST NOT make any edits (except to the plan file below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
-
-## Plan File Info
-Create or edit your plan at {plan_file_path} using the write_file and search_replace tools.
-Build your plan incrementally by writing to or editing this file.
-This is the only file you are allowed to edit. Make sure to create it early and edit as soon as you internally update your plan.
-
-## Instructions
-1. Research the user's query using read-only tools (grep, read_file, etc.)
-2. If you are unsure about requirements or approach, use the ask_user_question tool to clarify before finalizing your plan
-3. Write your plan to the plan file above
-4. When your plan is complete, call the exit_plan_mode tool to request user approval and switch to implementation mode</{VIBE_WARNING_TAG}>"""
+    template = UtilityPrompt.PLAN_REMINDER.read()
+    return _wrap_warning(
+        Template(template).safe_substitute(plan_file_path=plan_file_path)
+    )
 
 
-PLAN_AGENT_EXIT = f"""<{VIBE_WARNING_TAG}>Plan mode has ended. If you have a plan ready, you can now start executing it. If not, you can now use editing tools and make changes to the system.</{VIBE_WARNING_TAG}>"""
+def plan_agent_exit() -> str:
+    return _wrap_warning(UtilityPrompt.PLAN_EXIT.read())
 
-CHAT_AGENT_REMINDER = f"""<{VIBE_WARNING_TAG}>Chat mode is active. The user wants to have a conversation -- ask questions, get explanations, or discuss code and architecture. You MUST NOT make any edits, run any non-readonly tools, or otherwise make any changes to the system. This supersedes any other instructions you have received. Instead, you should:
-1. Answer the user's questions directly and comprehensively
-2. Explain code, concepts, or architecture as requested
-3. Use read-only tools (grep, read_file) to look up relevant code when needed
-4. Focus on being informative and conversational -- your response IS the deliverable, not a precursor to action</{VIBE_WARNING_TAG}>"""
 
-CHAT_AGENT_EXIT = f"""<{VIBE_WARNING_TAG}>Chat mode has ended. You can now use editing tools and make changes to the system.</{VIBE_WARNING_TAG}>"""
+def chat_agent_reminder() -> str:
+    return _wrap_warning(UtilityPrompt.CHAT_REMINDER.read())
+
+
+def chat_agent_exit() -> str:
+    return _wrap_warning(UtilityPrompt.CHAT_EXIT.read())
 
 
 class ReadOnlyAgentMiddleware:
@@ -157,17 +161,25 @@ class ReadOnlyAgentMiddleware:
         profile_getter: Callable[[], AgentProfile],
         agent_name: str,
         reminder: str | Callable[[], str],
-        exit_message: str,
+        exit_message: str | Callable[[], str],
     ) -> None:
         self._profile_getter = profile_getter
         self._agent_name = agent_name
         self._reminder = reminder
-        self.exit_message = exit_message
+        self._exit_message = exit_message
         self._was_active = False
 
     @property
     def reminder(self) -> str:
         return self._reminder() if callable(self._reminder) else self._reminder
+
+    @property
+    def exit_message(self) -> str:
+        return (
+            self._exit_message()
+            if callable(self._exit_message)
+            else self._exit_message
+        )
 
     def _is_active(self) -> bool:
         return self._profile_getter().name == self._agent_name
