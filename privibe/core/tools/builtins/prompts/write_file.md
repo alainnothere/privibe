@@ -1,42 +1,9 @@
-Use `write_file` to write content to a file.
+Use `write_file` to create a new file, or to overwrite an existing one by setting `overwrite: true` — without it, writing to an existing path fails, so you cannot clobber a file by accident. Parent directories are created automatically.
 
-**Arguments:**
-- `path`: The file path (relative or absolute)
-- `content`: The content to write to the file
-- `overwrite`: Must be set to `true` to overwrite an existing file (default: `false`)
+**Best practices:**
 
-**IMPORTANT SAFETY RULES:**
-
-- By default, the tool will **fail if the file already exists** to prevent accidental data loss
-- To **overwrite** an existing file, you **MUST** set `overwrite: true`
-- To **create a new file**, just provide the `path` and `content` (overwrite defaults to false)
-- If parent directories don't exist, they will be created automatically
-
-**BEST PRACTICES:**
-
-- **ALWAYS** use the `hashed_read` tool first before overwriting an existing file to understand its current contents
-- **ALWAYS** prefer using `hashed_replace_line` and `hashed_replace_block` to edit existing files rather than overwriting them completely
-- **NEVER** write new files unless explicitly required - prefer modifying existing files
-- **NEVER** proactively create documentation files (*.md) or README files unless explicitly requested
-- **AVOID** using emojis in file content unless the user explicitly requests them
-
-**Usage Examples:**
-
-```python
-# Create a new file (will error if file exists)
-write_file(
-    path="src/new_module.py",
-    content="def hello():\n    return 'Hello World'"
-)
-
-# Overwrite an existing file (must read it first!)
-# First: hashed_read(path="src/existing.py")
-# Then:
-write_file(
-    path="src/existing.py",
-    content="# Updated content\ndef new_function():\n    pass",
-    overwrite=True
-)
-```
-
-**Remember:** For editing existing files, prefer `hashed_replace_line` and `hashed_replace_block` over `write_file` to preserve unchanged portions and avoid accidental data loss.
+- ALWAYS read a file (`hashed_read`) before overwriting it.
+- Prefer `hashed_replace_line`/`hashed_replace_block` for editing existing files — overwriting rewrites the whole file and risks losing content you did not intend to touch.
+- Never write new files unless the task requires it; prefer modifying existing ones.
+- Never proactively create documentation files (*.md) or READMEs unless explicitly requested.
+- Avoid emojis in file content unless the user explicitly asks for them.
