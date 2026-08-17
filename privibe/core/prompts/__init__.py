@@ -61,8 +61,12 @@ class SystemPrompt(Prompt):
 
 class UtilityPrompt(Prompt):
     AGENTS_DOC = auto()
+    CHAT_EXIT = auto()
+    CHAT_REMINDER = auto()
     COMPACT = auto()
     DANGEROUS_DIRECTORY = auto()
+    PLAN_EXIT = auto()
+    PLAN_REMINDER = auto()
     PROJECT_CONTEXT = auto()
     TURN_SUMMARY = auto()
 

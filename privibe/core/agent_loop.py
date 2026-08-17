@@ -31,9 +31,6 @@ from privibe.core.llm.format import (
 )
 from privibe.core.llm.types import BackendLike
 from privibe.core.middleware import (
-    CHAT_AGENT_EXIT,
-    CHAT_AGENT_REMINDER,
-    PLAN_AGENT_EXIT,
     AutoCompactMiddleware,
     ContextWarningMiddleware,
     ConversationContext,
@@ -44,7 +41,10 @@ from privibe.core.middleware import (
     ReadOnlyAgentMiddleware,
     ResetReason,
     TurnLimitMiddleware,
+    chat_agent_exit,
+    chat_agent_reminder,
     make_plan_agent_reminder,
+    plan_agent_exit,
 )
 from privibe.core.plan_session import PlanSession
 from privibe.core.prompts import UtilityPrompt
@@ -777,15 +777,15 @@ class AgentLoop:
                 lambda: self.agent_profile,
                 BuiltinAgentName.PLAN,
                 lambda: make_plan_agent_reminder(self._plan_session.plan_file_path_str),
-                PLAN_AGENT_EXIT,
+                plan_agent_exit,
             )
         )
         self.middleware_pipeline.add(
             ReadOnlyAgentMiddleware(
                 lambda: self.agent_profile,
                 BuiltinAgentName.CHAT,
-                CHAT_AGENT_REMINDER,
-                CHAT_AGENT_EXIT,
+                chat_agent_reminder,
+                chat_agent_exit,
             )
         )
 
