@@ -195,5 +195,5 @@ def large_file_advisory(
         f"{threshold_kb} KB large-file threshold). Do NOT page through the "
         "rest sequentially; that floods the context. Instead: locate what "
         "you need with grep or find_symbol, then read only the relevant "
-        "ranges by passing offset and limit."
+        "ranges by passing start_line and limit."
     )

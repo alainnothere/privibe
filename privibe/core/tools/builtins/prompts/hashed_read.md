@@ -14,10 +14,9 @@ Everything after the second `|` is the line's exact content, so its leading whit
 Together, `(line, hash)` is a composed address: the line number locates the line, the hash confirms
 the content hasn't changed. You pass these to `hashed_replace_line`, `hashed_replace_block`, `hashed_delete_line`, or `hashed_delete_block` — never guess or copy a hash by hand.
 
-**Use `offset` (0-indexed) and `limit` to read only the section you need**.
-The `offset` argument is 0-indexed, but the line numbers returned are 1-based: pass the returned number through unchanged, never adjust it by one.
+**Use `start_line` and `limit` to read only the section you need**. `start_line` is a 1-based line number, the same numbering the output prints.
 
-A whole-file read (no `offset`/`limit`) of a file over the configured size threshold returns only a small head preview plus an `advisory` field. When you see the advisory, do not page through the file: search with `grep` or `find_symbol`, then read the relevant ranges with `offset`/`limit`.
+A whole-file read (no `start_line`/`limit`) of a file over the configured size threshold returns only a small head preview plus an `advisory` field. When you see the advisory, do not page through the file: search with `grep` or `find_symbol`, then read the relevant ranges with `start_line`/`limit`.
 
 **`new_content` is the line content only — never include the `11|b1c4|` address prefix.** When you replace a line, send just the code, not what `hashed_read` printed. The replace tools defend against three common slips and tell you when they act:
 

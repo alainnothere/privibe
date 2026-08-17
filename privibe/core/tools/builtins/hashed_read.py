@@ -46,9 +46,11 @@ def format_hashed_lines(lines: list[str], start_num: int) -> str:
 
 class HashedReadArgs(BaseModel):
     path: str
-    offset: int = Field(
-        default=0,
-        description="Line number to start reading from (0-indexed, inclusive).",
+    start_line: int = Field(
+        default=1,
+        ge=1,
+        description="First line to read (1-based, inclusive), matching the "
+        "line numbers printed in the output.",
     )
     limit: int | None = Field(
         default=None, description="Maximum number of lines to read."
@@ -88,7 +90,7 @@ class HashedReadConfig(BaseToolConfig):
     large_file_threshold_kb: int = Field(
         default=128,
         description=(
-            "A whole-file read (no offset/limit) of a file larger than this "
+            "A whole-file read (no start_line/limit) of a file larger than this "
             "returns only a head preview plus an advisory instead of "
             "max_read_bytes of content. Targeted reads are unaffected."
         ),
@@ -116,10 +118,10 @@ class HashedRead(
 
         # Same policy as read_file: a naive whole-file read of an
         # over-threshold file gets a head preview plus an advisory; targeted
-        # (offset/limit) reads pass through untouched.
+        # (start_line/limit) reads pass through untouched.
         advisory: str | None = None
         max_bytes = self.config.max_read_bytes
-        naive = args.offset == 0 and args.limit is None
+        naive = args.start_line == 1 and args.limit is None
         threshold_bytes = self.config.large_file_threshold_kb * 1024
         preview_bytes = self.config.large_file_preview_kb * 1024
         size = file_path.stat().st_size
@@ -148,11 +150,10 @@ class HashedRead(
 
         reset_shift_map(str(file_path))
 
-        start_num = args.offset + 1  # convert 0-indexed offset to 1-based line number
         yield HashedReadResult(
             path=str(file_path),
-            content=format_hashed_lines(lines, start_num),
-            start_line=start_num,
+            content=format_hashed_lines(lines, args.start_line),
+            start_line=args.start_line,
             lines_read=len(lines),
             was_truncated=was_truncated,
             path_note=normalization_note(args.path, file_path),
@@ -190,7 +191,7 @@ class HashedRead(
             async with await anyio.Path(file_path).open(encoding="utf-8", errors="replace") as f:
                 line_index = 0
                 async for line in f:
-                    if line_index < args.offset:
+                    if line_index < args.start_line - 1:
                         line_index += 1
                         continue
                     if args.limit is not None and len(lines) >= args.limit:
@@ -214,10 +215,10 @@ class HashedRead(
     @classmethod
     def format_call_display(cls, args: HashedReadArgs) -> ToolCallDisplay:
         summary = f"Reading {args.path} (hashed)"
-        if args.offset > 0 or args.limit is not None:
+        if args.start_line > 1 or args.limit is not None:
             parts = []
-            if args.offset > 0:
-                parts.append(f"from line {args.offset}")
+            if args.start_line > 1:
+                parts.append(f"from line {args.start_line}")
             if args.limit is not None:
                 parts.append(f"limit {args.limit}")
             summary += f" ({', '.join(parts)})"

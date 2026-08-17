@@ -62,7 +62,7 @@ class TestLimitTruncation:
         f.write_text("a\nb\nc\nd\n", encoding="utf-8")
 
         result = await collect_result(
-            _make_read_file().run(ReadFileArgs(path=str(f), offset=2, limit=2))
+            _make_read_file().run(ReadFileArgs(path=str(f), start_line=3, limit=2))
         )
 
         assert result.lines_read == 2

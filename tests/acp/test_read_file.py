@@ -105,11 +105,11 @@ class TestAcpReadFileExecution:
         params = mock_client._last_read_params
         assert params["session_id"] == "test_session_123"
         assert params["path"] == str(test_file)
-        assert params["line"] is None  # offset=0 means no line specified
+        assert params["line"] is None  # start_line=1 means no line specified
         assert params["limit"] is None
 
     @pytest.mark.asyncio
-    async def test_run_with_offset(
+    async def test_run_with_start_line(
         self, mock_client: MockClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
@@ -122,14 +122,14 @@ class TestAcpReadFileExecution:
             ),
         )
 
-        args = ReadFileArgs(path=str(test_file), offset=1)
+        args = ReadFileArgs(path=str(test_file), start_line=2)
         result = await collect_result(tool.run(args))
 
         assert result.lines_read == 2
         assert result.content == "line 2\nline 3"
 
         params = mock_client._last_read_params
-        assert params["line"] == 2  # offset=1 means line 2 (1-indexed)
+        assert params["line"] == 2  # ACP line is 1-based, same as start_line
 
     @pytest.mark.asyncio
     async def test_run_with_limit(
@@ -155,7 +155,7 @@ class TestAcpReadFileExecution:
         assert params["limit"] == 2
 
     @pytest.mark.asyncio
-    async def test_run_with_offset_and_limit(
+    async def test_run_with_start_line_and_limit(
         self, mock_client: MockClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
@@ -168,7 +168,7 @@ class TestAcpReadFileExecution:
             ),
         )
 
-        args = ReadFileArgs(path=str(test_file), offset=1, limit=1)
+        args = ReadFileArgs(path=str(test_file), start_line=2, limit=1)
         result = await collect_result(tool.run(args))
 
         assert result.lines_read == 1

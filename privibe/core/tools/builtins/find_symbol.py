@@ -368,7 +368,7 @@ def _format_match(file_path: str, line_num: int, ext: str) -> str:
     formatted = format_hashed_lines(lines[ctx_start : end_idx + 1], ctx_start + 1)
 
     header = f"=== {file_path}:{line_num} ==="
-    suffix = f"\n[body truncated at {MAX_BODY_LINES} lines — use hashed_read with offset/limit for more]" if truncated else ""
+    suffix = f"\n[body truncated at {MAX_BODY_LINES} lines — use hashed_read with start_line/limit for more]" if truncated else ""
     return f"{header}\n{formatted}{suffix}"
 
 

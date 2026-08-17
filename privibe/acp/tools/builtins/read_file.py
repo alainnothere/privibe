@@ -33,7 +33,7 @@ class ReadFile(CoreReadFileTool, BaseAcpTool[AcpReadFileState]):
     ) -> _ReadResult:
         client, session_id, _ = self._load_state()
 
-        line = args.offset + 1 if args.offset > 0 else None
+        line = args.start_line if args.start_line > 1 else None
         limit = args.limit
 
         await self._send_in_progress_session_update()

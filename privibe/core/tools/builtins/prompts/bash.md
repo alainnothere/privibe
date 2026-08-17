@@ -14,9 +14,9 @@ Use the `bash` tool to run one-off shell commands.
 **File Operations - DO NOT USE:**
 - `cat filename` → Use `hashed_read(path="filename")`
 - `head -n 20 filename` → Use `hashed_read(path="filename", limit=20)`
-- `tail -n 20 filename` → Read with offset: `hashed_read(path="filename", offset=<line_number>, limit=20)`
-- `sed -n '100,200p' filename` → Use `hashed_read(path="filename", offset=99, limit=101)`
-- `less`, `more`, `vim`, `nano` → Use `hashed_read` with offset/limit for navigation
+- `tail -n 20 filename` → Read from a line: `hashed_read(path="filename", start_line=<line_number>, limit=20)`
+- `sed -n '100,200p' filename` → Use `hashed_read(path="filename", start_line=100, limit=101)`
+- `less`, `more`, `vim`, `nano` → Use `hashed_read` with start_line/limit for navigation
 - `echo "content" > file` → Use `write_file(path="file", content="content")`
 - `echo "content" >> file` → Read first, then `write_file` with overwrite=true
 
@@ -54,7 +54,7 @@ RIGHT:
 # First chunk
 hashed_read(path="large_file.txt", limit=1000)
 # If was_truncated=true, read next chunk
-hashed_read(path="large_file.txt", offset=1000, limit=1000)
+hashed_read(path="large_file.txt", start_line=1001, limit=1000)
 ```
 
 **Example: Searching for patterns**

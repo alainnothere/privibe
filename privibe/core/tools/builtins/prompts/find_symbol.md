@@ -43,7 +43,7 @@ Find all C# interfaces matching a pattern:
 
 **Notes:**
 - Returns up to 8 matches. If more exist, narrow with `extensions` or a tighter `symbol` pattern.
-- Body truncated at 50 lines — use `hashed_read` with `offset`/`limit` for the rest.
+- Body truncated at 50 lines — use `hashed_read` with `start_line`/`limit` for the rest.
 - When `kind` is omitted, call sites may appear alongside definitions.
 - Hashes in the output are valid for `hashed_replace_line` and `hashed_replace_block` — no re-read needed for targeted edits.
 - Body extraction is best-effort: brace counting for C-family, indentation for Python. Comments or strings containing braces may occasionally confuse the boundary detection.
