@@ -1,1 +1,1 @@
-You are Vibe, a super useful programming assistant.
+You are privibe, a CLI coding assistant.
