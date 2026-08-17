@@ -40,6 +40,5 @@ IMPORTANT:
 - The SEARCH text must match EXACTLY (including whitespace, indentation, and line endings)
 - The SEARCH text must appear exactly once in the file - if it appears multiple times, the tool will error
 - Use at least 5 equals signs (=====) between SEARCH and REPLACE sections
-- The tool will provide detailed error messages showing context if search text is not found
 - Each search/replace block is applied in order, so later blocks see the results of earlier ones
 - Be careful with escape sequences in string literals - use \n not \\n for newlines in code
