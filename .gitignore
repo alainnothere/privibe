@@ -7,6 +7,9 @@ mistral-vibe-source-*.zip
 privibe-source-*.zip
 exportOpenRouterKey.sh
 
+# Raw screencast footage for the README GIFs; never ships
+docs/*.mkv
+
 # Icon must end with two \r
 Icon
 
