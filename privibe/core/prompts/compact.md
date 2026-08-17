@@ -1,48 +1,30 @@
-Create a comprehensive summary of our entire conversation that will serve as complete context for continuing this work. Structure your summary to capture both the narrative flow and technical details necessary for seamless continuation.
+Summarize the conversation so far. Your summary will REPLACE the conversation as the only remaining context, so anything you leave out is lost. Be factual and brief: state each thing once, no commentary.
 
-Your summary must include these sections in order:
+Use exactly these sections:
 
-## 1. User's Primary Goals and Intent
-Capture ALL explicit requests and objectives stated by the user throughout the conversation, preserving their exact priorities and constraints.
+## Goal
+What the user wants, in their stated priorities. Include hard constraints they gave (e.g. "don't touch X", "no commits").
 
-## 2. Conversation Timeline and Progress
-Chronologically document the key phases of our work:
-- Initial requests and how they were addressed
-- Major decisions made and their rationale
-- Problems encountered and solutions applied
-- Current state of the work
+## Done so far
+What was completed, and how each item was confirmed. Tag every claim:
+- `(verified: tests passed)`, `(verified: command output)`, `(verified: read in file)`
+- `(assumed)` or `(user said, unverified)` for anything not confirmed by tool output
 
-## 3. Technical Context and Decisions
-- Technologies, frameworks, and tools being used
-- Architectural patterns and design decisions made
-- Key technical constraints or requirements identified
-- Important code patterns or conventions established
+Example: `Renamed offset to start_line in read_file.py (verified: tests passed).`
 
-## 4. Files and Code Changes
-For each file created, modified, or examined:
-- Full file path/name
-- Purpose and importance of the file
-- Specific changes made (with key code snippets where critical)
-- Current state of the file
+## Files
+Each file created, changed, or central to the work: full path plus one line on what changed or why it matters. Include a short code snippet only if the next step needs it.
 
-## 5. Active Work and Last Actions
-CRITICAL: Detail EXACTLY what was being worked on in the most recent exchanges:
-- The specific task or problem being addressed
-- Last completed action
-- Any partial work or mid-implementation state
-- Include relevant code snippets from the most recent work
+## Ruled out
+Approaches tried and failed, hypotheses disproven — one line each on why. This prevents retrying dead ends. If nothing was ruled out, write `None.`
 
-## 6. Unresolved Issues and Pending Tasks
-- Any errors or issues still requiring attention
-- Tasks explicitly requested but not yet started
-- Decisions waiting for user input
+## Open questions
+Unknowns, unresolved errors, and decisions waiting on the user. If none, write `None.`
 
-## 7. Immediate Next Step
-State the SPECIFIC next action to take based on:
-- The user's most recent request
-- The current state of implementation
-- Any ongoing work that was interrupted
+## Next step
+The single specific next action, based on the user's most recent request and the current state. Name the exact file or command where possible.
 
-Important: Be precise with technical details, file names, and code. The next agent reading this should be able to continue exactly where we left off without asking clarifying questions. Include enough detail that no context is lost, but remain focused on actionable information.
-
-Respond with ONLY the summary text following this structure - no additional commentary or meta-discussion.
+Rules:
+- Never present an assumption as a fact. If unsure whether something was verified, tag it `(assumed)`.
+- Do not pad. An empty section is `None.`
+- Respond with ONLY the summary in the structure above.
