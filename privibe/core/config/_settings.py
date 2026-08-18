@@ -181,6 +181,12 @@ class ProviderConfig(BaseModel):
     # branch disk-cache-eviction). Leave off for stock/OpenAI-compatible
     # servers, which may reject unknown message fields.
     per_message_reasoning_effort: bool = False
+    # Upper bound on tool_call blocks the model may emit per assistant turn,
+    # enforced by the server's generation grammar (llama.cpp fork with the
+    # max_tool_calls request param; stock servers ignore unknown params).
+    # Grammar-only: never touches the rendered prompt, so it is KV-cache-safe.
+    # 0 = don't send (server default: unbounded).
+    max_tool_calls: int = 0
 
 
 class TranscribeClient(StrEnum):

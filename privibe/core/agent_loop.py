@@ -134,6 +134,30 @@ def _should_raise_rate_limit_error(e: Exception) -> bool:
     return isinstance(e, BackendError) and e.status == HTTPStatus.TOO_MANY_REQUESTS
 
 
+def _streaming_duplicate_call(message: LLMMessage) -> ToolCall | None:
+    """First COMPLETE tool call identical to an earlier one, else None.
+
+    During streaming, every call except the last is complete (a call is only
+    followed by another once its own arguments finished streaming); the last
+    may still be receiving deltas and is never judged. A duplicate therefore
+    becomes visible at the exact moment the model starts a THIRD block after
+    two identical ones - the earliest point a cut can be certain, minutes
+    before a runaway repetition loop would end on its own.
+    """
+    calls = message.tool_calls or []
+    # Two complete calls (the identical pair) plus a started third block.
+    min_calls_for_certain_cut = 3
+    if len(calls) < min_calls_for_certain_cut:
+        return None
+    seen: set[tuple[str | None, str | None]] = set()
+    for tc in calls[:-1]:
+        signature = (tc.function.name, tc.function.arguments)
+        if signature in seen:
+            return tc
+        seen.add(signature)
+    return None
+
+
 # Wall-clock budget for context-size auto-detection. A healthy /v1/models or
 # /props lookup is sub-100ms; anything slower is a configuration problem and
 # we'd rather give up once than block startup or every turn.
@@ -1575,6 +1599,7 @@ class AgentLoop:
             start_time = time.perf_counter()
             usage = LLMUsage()
             chunk_agg: LLMChunk | None = None
+            duplicate_cut = False
             async for chunk in self.backend.complete_streaming(
                 model=active_model,
                 messages=self.messages,
@@ -1598,13 +1623,43 @@ class AgentLoop:
                 )
                 usage += chunk.usage or LLMUsage()
                 yield processed_chunk
+                if _streaming_duplicate_call(chunk_agg.message) is not None:
+                    # The model is re-generating a tool call byte-identical to
+                    # one it already completed in this same message (observed
+                    # in the wild as minutes of repeated bash calls). Abort
+                    # the stream now: execution-level dedup would skip the
+                    # duplicates anyway, so the only thing further generation
+                    # can buy is more GPU time spent knocking on the same
+                    # door. Closing the generator cancels the HTTP stream and
+                    # the server aborts the slot.
+                    duplicate_cut = True
+                    logger.info(
+                        "_chat_streaming: aborting stream — identical tool "
+                        "call repeated within one assistant message "
+                        "(session_id=%s)",
+                        self.session_id,
+                    )
+                    break
             end_time = time.perf_counter()
 
-            if chunk_agg is None or chunk_agg.usage is None:
+            if chunk_agg is None or (chunk_agg.usage is None and not duplicate_cut):
                 raise AgentLoopLLMResponseError(
                     "Usage data missing in final chunk of streamed completion"
                 )
             self._update_stats(usage=usage, time_seconds=end_time - start_time)
+
+            if duplicate_cut:
+                # Drop the in-flight partial call the cut interrupted; keep
+                # the completed calls including the duplicate, whose
+                # execution-level skip reason is the model's feedback.
+                calls = chunk_agg.message.tool_calls or []
+                chunk_agg = chunk_agg.model_copy(
+                    update={
+                        "message": chunk_agg.message.model_copy(
+                            update={"tool_calls": calls[:-1] or None}
+                        )
+                    }
+                )
 
             self.messages.add(chunk_agg.message)
 
