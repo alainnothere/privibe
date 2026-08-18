@@ -267,6 +267,7 @@ class MistralBackend:
         tool_choice: StrToolChoice | AvailableTool | None,
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
+        wire_per_message_effort: bool | None = None,
     ) -> LLMChunk:
         try:
             merged_messages = merge_consecutive_user_messages(messages)
@@ -351,6 +352,7 @@ class MistralBackend:
         tool_choice: StrToolChoice | AvailableTool | None,
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
+        wire_per_message_effort: bool | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         try:
             merged_messages = merge_consecutive_user_messages(messages)
@@ -439,6 +441,7 @@ class MistralBackend:
         tool_choice: StrToolChoice | AvailableTool | None = None,
         extra_headers: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
+        wire_per_message_effort: bool | None = None,
     ) -> int:
         result = await self.complete(
             model=model,

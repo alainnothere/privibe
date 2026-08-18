@@ -114,7 +114,7 @@ Available commands:
   /replay    Reprint the whole conversation (resume shows only the tail)
   /log       Show the current session log directory
   /preview-lines  Cycle how many tool output lines are shown (3 / 5 / 10)
-  /effort    Cycle reasoning effort stamped on new messages (off / low / medium / xhigh)
+  /effort    Cycle reasoning effort stamped on new messages (low / medium / xhigh)
   /exit      Exit (also /quit, or Ctrl+D)
 
 Anything else is sent to the agent. /name runs a skill if one matches.

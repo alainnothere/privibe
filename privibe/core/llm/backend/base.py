@@ -32,6 +32,7 @@ class APIAdapter(Protocol):
         provider: ProviderConfig,
         api_key: str | None = None,
         thinking: str = "off",
+        wire_per_message_effort: bool | None = None,
     ) -> PreparedRequest: ...
 
     def parse_response(

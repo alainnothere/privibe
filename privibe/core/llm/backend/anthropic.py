@@ -477,6 +477,7 @@ class AnthropicAdapter(APIAdapter):
         provider: ProviderConfig,
         api_key: str | None = None,
         thinking: str = "off",
+        wire_per_message_effort: bool | None = None,
     ) -> PreparedRequest:
         system_prompt, converted_messages = self._mapper.prepare_messages(messages)
         converted_tools = self._mapper.prepare_tools(tools)

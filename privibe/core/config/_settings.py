@@ -481,13 +481,18 @@ def cycle_message_prune_rows(
 
 # Efforts stamped per user message for llama.cpp per-message reasoning; the
 # set Qwen3.8's chat template validates ("off" means stamp nothing).
-REASONING_EFFORT_OPTIONS: tuple[str, ...] = ("off", "low", "medium", "xhigh")
+REASONING_EFFORT_OPTIONS: tuple[str, ...] = ("low", "medium", "xhigh")
 
 
 def cycle_reasoning_effort(current: str | None) -> str:
-    """Next value in the per-message effort cycle (off -> low -> medium -> xhigh)."""
+    """Next value in the per-message effort cycle (low -> medium -> xhigh).
+
+    There is no "off": the Qwen template has no off state — an unstamped
+    message silently renders with the template's xhigh default, which is a
+    lie we do not tell anymore. The default effort is "xhigh".
+    """
     try:
-        idx = REASONING_EFFORT_OPTIONS.index(current or "off")
+        idx = REASONING_EFFORT_OPTIONS.index(current or "xhigh")
     except ValueError:
         return REASONING_EFFORT_OPTIONS[0]
     return REASONING_EFFORT_OPTIONS[(idx + 1) % len(REASONING_EFFORT_OPTIONS)]

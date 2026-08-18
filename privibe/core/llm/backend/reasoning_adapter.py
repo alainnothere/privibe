@@ -120,6 +120,7 @@ class ReasoningAdapter(APIAdapter):
         provider: ProviderConfig,
         api_key: str | None = None,
         thinking: str = "off",
+        wire_per_message_effort: bool | None = None,
     ) -> PreparedRequest:
         merged_messages = merge_consecutive_user_messages(messages)
         if thinking == "off":

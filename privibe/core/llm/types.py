@@ -36,6 +36,7 @@ class BackendLike(Protocol):
         tool_choice: StrToolChoice | AvailableTool | None,
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
+        wire_per_message_effort: bool | None = None,
     ) -> LLMChunk:
         """Complete a chat conversation using the specified model and provider.
 
@@ -71,6 +72,7 @@ class BackendLike(Protocol):
         tool_choice: StrToolChoice | AvailableTool | None,
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
+        wire_per_message_effort: bool | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         """Equivalent of the complete method, but yields LLMEvent objects
         instead of a single LLMEvent.
@@ -103,6 +105,7 @@ class BackendLike(Protocol):
         tool_choice: StrToolChoice | AvailableTool | None = None,
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
+        wire_per_message_effort: bool | None = None,
     ) -> int:
         """Count the number of tokens in the prompt without generating a real response.
 

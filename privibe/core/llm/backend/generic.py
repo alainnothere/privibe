@@ -145,12 +145,26 @@ class OpenAIAdapter(APIAdapter):
         provider: ProviderConfig,
         api_key: str | None = None,
         thinking: str = "off",
+        wire_per_message_effort: bool | None = None,
     ) -> PreparedRequest:
         merged_messages = insert_between_consecutive_assistant_messages(
             merge_consecutive_user_messages(messages)
         )
         field_name = provider.reasoning_field_name
-        per_message_effort = getattr(provider, "per_message_reasoning_effort", False)
+        # Whether effort stamps and the kwarg go on the wire. The caller
+        # passes the session-frozen value (ConversationList, stored in
+        # base.json / meta.json); the provider flag is only the fallback for
+        # callers with no session, and is then used ALONE - never combined
+        # with conversation-global state. The kwarg changes how the template
+        # renders the SYSTEM region, so its presence must be constant for the
+        # life of a conversation; the previous any(msg.reasoning_effort)
+        # derivation flipped at the first /effort stamp and reduced a
+        # 180k-token cached prefix to 19 matching characters.
+        per_message_effort = (
+            wire_per_message_effort
+            if wire_per_message_effort is not None
+            else getattr(provider, "per_message_reasoning_effort", False)
+        )
         converted_messages = [
             self._ensure_assistant_content(
                 self._reasoning_to_api(
@@ -176,17 +190,7 @@ class OpenAIAdapter(APIAdapter):
         payload = self.build_payload(
             model_name, converted_messages, temperature, tools, max_tokens, tool_choice
         )
-        if per_message_effort and any(
-            msg.reasoning_effort for msg in merged_messages
-        ):
-            # The kwarg suppresses the template's system-level effort
-            # instruction, so its presence must be a pure function of the
-            # stored conversation or the rendered prefix would change
-            # between requests and void the KV cache. Derived from "any
-            # message is stamped": false for never-stamped conversations
-            # (stock rendering, cache untouched), and once a conversation
-            # gains its first stamp it stays true on every request and
-            # every resume forever.
+        if per_message_effort:
             payload["chat_template_kwargs"] = {"per_message_reasoning_effort": True}
 
         if enable_streaming:
@@ -321,6 +325,7 @@ class GenericBackend:
         tool_choice: StrToolChoice | AvailableTool | None = None,
         extra_headers: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
+        wire_per_message_effort: bool | None = None,
     ) -> LLMChunk:
         api_key = (
             os.getenv(self._provider.api_key_env_var)
@@ -342,6 +347,7 @@ class GenericBackend:
             provider=self._provider,
             api_key=api_key,
             thinking=model.thinking,
+            wire_per_message_effort=wire_per_message_effort,
         )
 
         headers = req.headers
@@ -389,6 +395,7 @@ class GenericBackend:
         tool_choice: StrToolChoice | AvailableTool | None = None,
         extra_headers: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
+        wire_per_message_effort: bool | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         api_key = (
             os.getenv(self._provider.api_key_env_var)
@@ -410,6 +417,7 @@ class GenericBackend:
             provider=self._provider,
             api_key=api_key,
             thinking=model.thinking,
+            wire_per_message_effort=wire_per_message_effort,
         )
 
         headers = req.headers
@@ -513,6 +521,7 @@ class GenericBackend:
         tool_choice: StrToolChoice | AvailableTool | None = None,
         extra_headers: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
+        wire_per_message_effort: bool | None = None,
     ) -> int:
         probe_messages = list(messages)
         if not probe_messages or probe_messages[-1].role != Role.user:
@@ -526,6 +535,7 @@ class GenericBackend:
             max_tokens=16,  # Minimal amount for openrouter with openai models
             tool_choice=tool_choice,
             extra_headers=extra_headers,
+            wire_per_message_effort=wire_per_message_effort,
         )
         if result.usage is None:
             raise ValueError("Missing usage in non streaming completion")

@@ -77,6 +77,7 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         provider: ProviderConfig,
         api_key: str | None = None,
         thinking: str = "off",
+        wire_per_message_effort: bool | None = None,
     ) -> PreparedRequest:
         project_id = provider.project_id
         region = provider.region

@@ -19,8 +19,6 @@ def effort_cycle_notice(
         f"Reasoning effort for new messages: {new_value}. "
         "Existing messages keep the effort they were sent with."
     )
-    if new_value == "off":
-        return msg
     if not provider_sends_effort:
         return (
             f"{msg}\nStamping locally only: provider '{provider_name}' is not "

@@ -91,6 +91,7 @@ class FakeBackend:
         extra_headers,
         max_tokens,
         metadata=None,
+        wire_per_message_effort=None,
     ) -> LLMChunk:
         if self._exception_to_raise:
             raise self._exception_to_raise
@@ -119,6 +120,7 @@ class FakeBackend:
         extra_headers,
         max_tokens,
         metadata=None,
+        wire_per_message_effort=None,
     ) -> AsyncGenerator[LLMChunk]:
         if self._exception_to_raise:
             raise self._exception_to_raise
@@ -144,6 +146,7 @@ class FakeBackend:
         tool_choice=None,
         extra_headers,
         metadata=None,
+        wire_per_message_effort=None,
     ) -> int:
         self._count_tokens_calls.append(list(messages))
         return self._token_counter(messages)
