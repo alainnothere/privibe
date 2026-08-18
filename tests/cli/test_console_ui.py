@@ -150,9 +150,15 @@ async def test_plain_message_goes_to_agent(ui: ConsoleUI) -> None:
 
 @pytest.mark.asyncio
 async def test_slash_skill_sends_skill_content(ui: ConsoleUI, tmp_path) -> None:
-    skill_file = tmp_path / "greet.md"
-    skill_file.write_text("Greet the user warmly.")
-    skill_info = SimpleNamespace(skill_path=skill_file)
+    skill_dir = tmp_path / "greet"
+    skill_dir.mkdir()
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        "---\nname: greet\ndescription: Greets\n---\n\nGreet the user warmly."
+    )
+    skill_info = SimpleNamespace(
+        name="greet", skill_path=skill_file, skill_dir=skill_dir
+    )
     ui.agent_loop.skill_manager = SimpleNamespace(
         get_skill=lambda name: skill_info if name == "greet" else None
     )
@@ -163,6 +169,8 @@ async def test_slash_skill_sends_skill_content(ui: ConsoleUI, tmp_path) -> None:
     prompt = ui.agent_loop.acted_prompts[0]
     assert "Greet the user warmly." in prompt
     assert "/greet loudly" in prompt
+    assert '<skill_content name="greet">' in prompt
+    assert "description: Greets" not in prompt
 
 
 # ----------------------------------------------------------------------

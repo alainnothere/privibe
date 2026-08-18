@@ -125,7 +125,8 @@ from privibe.core.utils import (
     get_user_cancellation_message,
     is_dangerous_directory,
 )
-from privibe.core.utils.io import read_safe
+from privibe.core.skills.parser import SkillParseError
+from privibe.core.skills.render import load_skill_content
 
 
 class BottomApp(StrEnum):
@@ -762,8 +763,8 @@ class VibeApp(App):  # noqa: PLR0904
             return False
 
         try:
-            skill_content = read_safe(skill_info.skill_path)
-        except OSError as e:
+            skill_content = load_skill_content(skill_info)
+        except (OSError, SkillParseError) as e:
             await self._mount_and_scroll(
                 ErrorMessage(
                     f"Failed to read skill file: {e}", collapsed=self._tools_collapsed

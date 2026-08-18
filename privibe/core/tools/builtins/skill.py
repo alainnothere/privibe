@@ -5,7 +5,8 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from privibe.core.skills.parser import SkillParseError, parse_frontmatter
+from privibe.core.skills.parser import SkillParseError
+from privibe.core.skills.render import load_skill_content
 from privibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -21,9 +22,6 @@ from privibe.core.tools.permissions import (
 )
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.types import ToolResultEvent, ToolStreamEvent
-from privibe.core.utils.io import read_safe
-
-_MAX_LISTED_FILES = 10
 
 
 class SkillArgs(BaseModel):
@@ -49,7 +47,10 @@ class Skill(
         "When you recognize that a task matches one of the available skills listed in your system prompt, "
         "use this tool to load the full skill instructions. "
         "The skill will inject detailed instructions, workflows, and access to bundled resources "
-        "(scripts, references, templates) into the conversation context."
+        "(scripts, references, templates) into the conversation context. "
+        "If a <skill_content> block for a skill is already present in the conversation "
+        "(e.g. the user invoked it as a slash command), that skill is already loaded — "
+        "follow it directly instead of calling this tool again."
     )
 
     @classmethod
@@ -99,41 +100,10 @@ class Skill(
             )
 
         try:
-            raw = read_safe(skill_info.skill_path)
-            _, body = parse_frontmatter(raw)
+            output = load_skill_content(skill_info)
         except (OSError, SkillParseError) as e:
             raise ToolError(f"Cannot load skill file: {e}") from e
 
-        skill_dir = skill_info.skill_dir
-        files: list[str] = []
-        try:
-            for entry in sorted(skill_dir.rglob("*")):
-                if not entry.is_file():
-                    continue
-                if entry.name == "SKILL.md":
-                    continue
-                files.append(str(entry.relative_to(skill_dir)))
-                if len(files) >= _MAX_LISTED_FILES:
-                    break
-        except OSError:
-            pass
-
-        file_lines = "\n".join(f"<file>{f}</file>" for f in files)
-
-        output = "\n".join([
-            f'<skill_content name="{args.name}">',
-            f"# Skill: {args.name}",
-            "",
-            body.strip(),
-            "",
-            f"Base directory for this skill: {skill_dir}",
-            "Relative paths in this skill are relative to this base directory.",
-            "Note: file list is sampled.",
-            "",
-            "<skill_files>",
-            file_lines,
-            "</skill_files>",
-            "</skill_content>",
-        ])
-
-        yield SkillResult(name=args.name, content=output, skill_dir=str(skill_dir))
+        yield SkillResult(
+            name=args.name, content=output, skill_dir=str(skill_info.skill_dir)
+        )

@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, cast
 
 from privibe.core.config import VibeConfig, cycle_preview_lines
 from privibe.core.session.session_loader import SessionLoader
+from privibe.core.skills.parser import SkillParseError
+from privibe.core.skills.render import load_skill_content
 from privibe.core.tools.builtins.ask_user_question import (
     Answer,
     AskUserQuestionArgs,
@@ -43,7 +45,6 @@ from privibe.core.types import (
     ToolStreamEvent,
     WaitingForInputEvent,
 )
-from privibe.core.utils.io import read_safe
 from privibe.core.utils.tags import (
     CancellationReason,
     get_user_cancellation_message,
@@ -224,8 +225,8 @@ class ConsoleUI:
             return None
 
         try:
-            skill_content = read_safe(skill_info.skill_path)
-        except OSError as e:
+            skill_content = load_skill_content(skill_info)
+        except (OSError, SkillParseError) as e:
             print(f"Failed to read skill file: {e}")
             # Handled: do not fall through to "unknown command".
             return ""
