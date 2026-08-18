@@ -244,6 +244,9 @@ RENAMED_FIELD_PROVIDER = ProviderConfig(
 STREAM_TOOL_CALLS_PROVIDER = ProviderConfig(
     name="llamacpp", api_base="http://localhost:8089/v1", stream_tool_calls=True
 )
+MAX_TOOL_CALLS_PROVIDER = ProviderConfig(
+    name="llamacpp", api_base="http://localhost:8089/v1", max_tool_calls=3
+)
 
 # (name, provider, messages, tools, request_kwargs) - one entry per driver
 # branch that can alter the bytes on the wire. If you add a branch to the
@@ -302,6 +305,9 @@ GOLDEN_CASES = [
         TOOLS,
         {"enable_streaming": True},
     ),
+    # Grammar-enforced tool-call cap; sent only when tools are advertised.
+    ("max_tool_calls", MAX_TOOL_CALLS_PROVIDER, _basic(), TOOLS, {}),
+    ("max_tool_calls_no_tools", MAX_TOOL_CALLS_PROVIDER, _basic(), None, {}),
 ]
 
 
