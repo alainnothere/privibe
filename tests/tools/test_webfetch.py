@@ -4,9 +4,9 @@ import httpx
 import pytest
 import respx
 
-from tests.mock.utils import collect_result
 from privibe.core.tools.base import BaseToolState, ToolError
 from privibe.core.tools.builtins.webfetch import WebFetch, WebFetchArgs, WebFetchConfig
+from tests.mock.utils import collect_result
 
 
 @pytest.fixture
@@ -128,10 +128,24 @@ async def test_scripts_stripped_from_markdown(webfetch):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_cloudflare_retry_on_challenge(webfetch):
+async def test_default_user_agent_identifies_privibe(webfetch):
+    route = respx.get("https://example.com").mock(
+        return_value=httpx.Response(
+            200, text="ok", headers={"Content-Type": "text/plain"}
+        )
+    )
+    await collect_result(webfetch.run(WebFetchArgs(url="https://example.com")))
+    user_agent = route.calls[0].request.headers["User-Agent"]
+    assert user_agent.startswith("privibe-cli/")
+    assert "https://" in user_agent
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_403_retried_as_browser(webfetch):
     route = respx.get("https://example.com")
     route.side_effect = [
-        httpx.Response(403, headers={"cf-mitigated": "challenge"}),
+        httpx.Response(403),
         httpx.Response(200, text="success", headers={"Content-Type": "text/plain"}),
     ]
     result = await collect_result(webfetch.run(WebFetchArgs(url="https://example.com")))
@@ -139,18 +153,18 @@ async def test_cloudflare_retry_on_challenge(webfetch):
     assert route.call_count == 2
 
     second_request = route.calls[1].request
-    assert second_request.headers["User-Agent"] == "privibe-cli"
+    assert second_request.headers["User-Agent"].startswith("Mozilla/5.0")
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_regular_403_not_retried(webfetch):
+async def test_persistent_403_raises_after_retry(webfetch):
     route = respx.get("https://example.com").mock(
         return_value=httpx.Response(403, headers={"Content-Type": "text/plain"})
     )
     with pytest.raises(ToolError, match="HTTP error 403"):
         await collect_result(webfetch.run(WebFetchArgs(url="https://example.com")))
-    assert route.call_count == 1
+    assert route.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -189,6 +203,63 @@ async def test_truncates_html_with_disclaimer(webfetch_small):
     assert "## first title" in result.content
     assert "## second title" not in result.content
     assert "[Content truncated due to size limit]" in result.content
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_images_reduced_to_alt_text(webfetch):
+    html = (
+        "<html><body><p>Story</p>"
+        '<img src="https://cdn.example.com/enormous-hash.webp" alt="A cat">'
+        '<img src="https://cdn.example.com/no-alt.webp"></body></html>'
+    )
+    respx.get("https://example.com").mock(
+        return_value=httpx.Response(
+            200, text=html, headers={"Content-Type": "text/html"}
+        )
+    )
+    result = await collect_result(webfetch.run(WebFetchArgs(url="https://example.com")))
+    assert "cdn.example.com" not in result.content
+    assert "![" not in result.content
+    assert "A cat" in result.content
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_boilerplate_tags_stripped(webfetch):
+    html = (
+        "<html><body><nav><a href='/home'>Home</a></nav>"
+        "<p>Article body</p>"
+        "<aside>Related links</aside>"
+        "<form><button>Subscribe</button></form>"
+        "<footer>© 2026 MegaCorp</footer></body></html>"
+    )
+    respx.get("https://example.com").mock(
+        return_value=httpx.Response(
+            200, text=html, headers={"Content-Type": "text/html"}
+        )
+    )
+    result = await collect_result(webfetch.run(WebFetchArgs(url="https://example.com")))
+    assert "Article body" in result.content
+    for noise in ("Home", "Related links", "Subscribe", "MegaCorp"):
+        assert noise not in result.content
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_link_hover_titles_dropped(webfetch):
+    html = (
+        '<html><body><p><a href="/wiki/Main" title="Visit the main page [z]">'
+        "Main page</a></p></body></html>"
+    )
+    respx.get("https://example.com").mock(
+        return_value=httpx.Response(
+            200, text=html, headers={"Content-Type": "text/html"}
+        )
+    )
+    result = await collect_result(webfetch.run(WebFetchArgs(url="https://example.com")))
+    assert "[Main page](/wiki/Main)" in result.content
+    assert "Visit the main page" not in result.content
 
 
 @pytest.mark.asyncio
