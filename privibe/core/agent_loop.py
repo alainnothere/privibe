@@ -228,6 +228,13 @@ class AgentLoop:
             tools_provider=lambda: self.format_handler.get_available_tools(
                 self.tool_manager
             ),
+            # Same freeze-once contract as tools_provider: consulted exactly
+            # once, when the wire-effort flag freezes at the first request.
+            wire_effort_provider=lambda: getattr(
+                self.config.get_provider_for_model(self.config.get_active_model()),
+                "per_message_reasoning_effort",
+                False,
+            ),
         )
 
         self.stats = AgentStats()
@@ -246,11 +253,11 @@ class AgentLoop:
         self._current_user_message_id: str | None = None
         self._is_user_prompt_call: bool = False
         self._act_call_count: int = 0
-        # Reasoning effort chosen via /effort THIS session ("off" / "low" /
+        # Reasoning effort chosen via /effort THIS session ("low" /
         # "medium" / "xhigh"); None means no explicit choice yet, in which
-        # case the next message inherits the last stamped user message
-        # (which is how a resumed session keeps its effort without extra
-        # persistence). See current_reasoning_effort().
+        # case the next message inherits the last stamped user message,
+        # defaulting to "xhigh" (the Qwen template's own default; there is
+        # no "off" state in the template). See current_reasoning_effort().
         self._reasoning_effort_override: str | None = None
         # Cosmetic model name detected from the endpoint (display-only; never
         # written to config). Stored with the alias it was detected for so a
@@ -341,27 +348,29 @@ class AgentLoop:
         self._base_config = VibeConfig.load()
         self.agent_manager.invalidate_config()
 
-    def current_reasoning_effort(self) -> str | None:
-        """The effort value to stamp on the next user message, or None.
+    def current_reasoning_effort(self) -> str:
+        """The effort value to stamp on the next user message.
 
         An explicit /effort choice this session wins. With no choice yet the
         value is inherited from the most recent stamped user message, so a
-        resumed session continues with the effort it was using.
+        resumed session continues with the effort it was using; a fresh
+        conversation defaults to "xhigh", matching the Qwen template's own
+        default. Every user message is stamped: whether the stamp reaches
+        the wire is the session-frozen ConversationList flag, never a
+        per-request decision.
         """
         if self._reasoning_effort_override is not None:
-            if self._reasoning_effort_override == "off":
-                return None
             return self._reasoning_effort_override
         for msg in reversed(self.messages[:]):
             if msg.role == Role.user and msg.reasoning_effort:
                 return msg.reasoning_effort
-        return None
+        return "xhigh"
 
     def set_reasoning_effort(self, value: str) -> None:
         """Set the effort stamped on user messages from now on.
 
-        Accepts "off", "low", "medium", "xhigh". Existing messages keep
-        their stored efforts (they are frozen KV-prefix bytes); only future
+        Accepts "low", "medium", "xhigh". Existing messages keep their
+        stored efforts (they are frozen KV-prefix bytes); only future
         messages are affected.
         """
         self._reasoning_effort_override = value
@@ -1503,6 +1512,7 @@ class AgentLoop:
                 extra_headers=self._get_extra_headers(provider),
                 max_tokens=max_tokens,
                 metadata=self._build_metadata(),
+                wire_per_message_effort=self.messages.wire_per_message_effort_for_request(),
             )
             end_time = time.perf_counter()
 
@@ -1574,6 +1584,7 @@ class AgentLoop:
                 extra_headers=self._get_extra_headers(provider),
                 max_tokens=max_tokens,
                 metadata=self._build_metadata(),
+                wire_per_message_effort=self.messages.wire_per_message_effort_for_request(),
             ):
                 self._note_served_model(chunk.served_model)
                 processed_message = self.format_handler.process_api_response_message(
@@ -1766,6 +1777,7 @@ class AgentLoop:
                 tools=self.messages.tools_for_request(),
                 extra_headers={"user-agent": get_user_agent(provider.backend)},
                 metadata=self._build_metadata(),
+                wire_per_message_effort=self.messages.wire_per_message_effort_for_request(),
             )
 
             self.stats.context_tokens = actual_context_tokens

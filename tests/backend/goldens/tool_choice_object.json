@@ -1,0 +1,7 @@
+{
+  "endpoint": "/chat/completions",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": "{\"model\": \"m\", \"messages\": [{\"role\": \"system\", \"content\": \"sys\"}, {\"role\": \"user\", \"content\": \"q1\"}], \"temperature\": 0.2, \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a file\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}, \"required\": [\"path\"]}}}], \"tool_choice\": {\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a file\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}, \"required\": [\"path\"]}}}}"
+}

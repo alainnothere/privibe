@@ -99,20 +99,21 @@ def test_adapter_strips_effort_for_default_provider() -> None:
     assert "chat_template_kwargs" not in body
 
 
-def test_kwarg_not_sent_while_conversation_unstamped() -> None:
-    # A conversation that never used /effort must render exactly as stock,
-    # keeping its cache, even on an opted-in provider.
+def test_kwarg_sent_even_while_conversation_unstamped() -> None:
+    # Kwarg presence is a per-session CONSTANT, never derived from the
+    # conversation's contents: an opted-in provider sends it from message 1.
+    # The previous any(stamped) derivation flipped at the first /effort
+    # stamp, changed the rendered system region, and voided a 180k-token
+    # KV-cache prefix at byte ~19.
     body = _payload(
         _provider(per_message_effort=True),
         [LLMMessage(role=Role.user, content="plain")],
     )
-    assert "chat_template_kwargs" not in body
+    assert body["chat_template_kwargs"] == {"per_message_reasoning_effort": True}
 
 
-def test_kwarg_appears_with_first_stamp_and_is_replay_stable() -> None:
-    # Kwarg presence is a pure function of the stored conversation: once any
-    # message is stamped it is sent on every request, so a resumed
-    # conversation renders byte-identically.
+def test_kwarg_is_replay_stable() -> None:
+    # A resumed conversation must serialize byte-identically.
     provider = _provider(per_message_effort=True)
     stamped = [
         LLMMessage(role=Role.user, content="q1"),
@@ -131,10 +132,13 @@ def test_kwarg_appears_with_first_stamp_and_is_replay_stable() -> None:
 
 
 def test_cycle_order() -> None:
+    # No "off": the Qwen template has no off state - unstamped used to mean
+    # a silent xhigh via the template default. Default is xhigh, so the
+    # first cycle step from an unset value is low.
     seen = [cycle_reasoning_effort(None)]
     for _ in range(4):
         seen.append(cycle_reasoning_effort(seen[-1]))
-    assert seen == ["low", "medium", "xhigh", "off", "low"]
+    assert seen == ["low", "medium", "xhigh", "low", "medium"]
 
 
 def _bare_loop(messages: list[LLMMessage], override: str | None) -> AgentLoop:
@@ -149,11 +153,11 @@ def test_current_effort_inherits_last_stamped_user_message() -> None:
     assert loop.current_reasoning_effort() == "low"
 
 
-def test_current_effort_none_when_history_unstamped() -> None:
+def test_current_effort_defaults_to_xhigh_when_history_unstamped() -> None:
     loop = _bare_loop(
         [LLMMessage(role=Role.user, content="plain")], override=None
     )
-    assert loop.current_reasoning_effort() is None
+    assert loop.current_reasoning_effort() == "xhigh"
 
 
 def test_current_effort_override_beats_history() -> None:
@@ -161,20 +165,9 @@ def test_current_effort_override_beats_history() -> None:
     assert loop.current_reasoning_effort() == "xhigh"
 
 
-def test_current_effort_off_disables_stamping_despite_history() -> None:
-    loop = _bare_loop(list(CONVERSATION), override="off")
-    assert loop.current_reasoning_effort() is None
-
-
 # ---------------------------------------------------------------------------
 # /effort cycle notice
 # ---------------------------------------------------------------------------
-
-
-def test_notice_off_has_no_warnings() -> None:
-    notice = effort_cycle_notice("off", "llamacpp", False, False)
-    assert "off" in notice
-    assert "\n" not in notice
 
 
 def test_notice_warns_when_provider_not_sending() -> None:

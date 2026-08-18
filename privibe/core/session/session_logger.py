@@ -152,6 +152,22 @@ class SessionLogger:
             environment={"working_directory": str(Path.cwd())},
         )
 
+    @staticmethod
+    def _with_frozen_wire_effort(
+        messages: Sequence[LLMMessage], target: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Stamp the session-frozen wire-effort flag into a persistence dict.
+
+        The flag lives in BOTH stores: base.json for sessions created under
+        this code, meta.json as the writable home for migrated sessions
+        whose write-once base predates the key. No-op when messages is a
+        plain list or the flag has not frozen yet.
+        """
+        value = getattr(messages, "frozen_wire_per_message_effort", None)
+        if value is not None:
+            target["per_message_reasoning_effort"] = value
+        return target
+
     def _get_title(self, messages: Sequence[LLMMessage]) -> str:
         first_user_message = None
         for message in messages:
@@ -436,6 +452,8 @@ class SessionLogger:
                 "system_prompt": system_prompt,
             }
 
+            self._with_frozen_wire_effort(messages, metadata_dump)
+
             await SessionLogger.persist_metadata(metadata_dump, self.session_dir)
 
             # Persist the frozen base once per session (persist_base is a
@@ -443,7 +461,10 @@ class SessionLogger:
             # message and a frozen tools array.
             if frozen_tools is not None and system_prompt is not None:
                 await SessionLogger.persist_base(
-                    {"system_prompt": system_prompt, "tools": tools_available},
+                    self._with_frozen_wire_effort(
+                        messages,
+                        {"system_prompt": system_prompt, "tools": tools_available},
+                    ),
                     self.session_dir,
                 )
         except Exception as e:

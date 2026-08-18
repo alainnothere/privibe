@@ -1,0 +1,7 @@
+{
+  "endpoint": "/chat/completions",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": "{\"model\": \"m\", \"messages\": [{\"role\": \"system\", \"content\": \"sys\"}, {\"role\": \"user\", \"content\": \"real question\\n\\nmiddleware note\"}], \"temperature\": 0.2}"
+}

@@ -731,7 +731,7 @@ class VibeApp(App):  # noqa: PLR0904
         else:
             detect = f"every {config.context_size_redetect_every} turns"
         return {
-            "/effort": self.agent_loop.current_reasoning_effort() or "off",
+            "/effort": self.agent_loop.current_reasoning_effort(),
             "/preview-lines": str(config.tool_result_preview_lines),
             "/scrollback": str(config.message_prune_keep_rows),
             "/detect-context-size": detect,
@@ -2215,7 +2215,7 @@ class VibeApp(App):  # noqa: PLR0904
             setting="effort",
             title="Reasoning effort for new messages",
             options=[(v, v) for v in REASONING_EFFORT_OPTIONS],
-            current=self.agent_loop.current_reasoning_effort() or "off",
+            current=self.agent_loop.current_reasoning_effort(),
             error=error,
         )
 

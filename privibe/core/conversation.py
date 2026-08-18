@@ -88,16 +88,26 @@ class ConversationList:
         observer: Callable[[LLMMessage], None] | None = None,
         config_getter: Callable[[], VibeConfig] | None = None,
         tools_provider: Callable[[], list[AvailableTool]] | None = None,
+        wire_effort_provider: Callable[[], bool] | None = None,
     ) -> None:
         self._data: list[LLMMessage] = []
         self._observer = observer
         self._config_getter = config_getter
         self._tools_provider = tools_provider
+        self._wire_effort_provider = wire_effort_provider
         # The advertised tools array. Part of the llama.cpp KV-cache prefix
         # (chat templates render it before the first user message), so it is
         # session state exactly like message 0: frozen at first use, stored
         # with the session, restored verbatim. None = not frozen yet.
         self._tools: list[AvailableTool] | None = None
+        # Whether requests carry per-message reasoning_effort fields and the
+        # per_message_reasoning_effort chat_template_kwarg. The kwarg changes
+        # how the template renders the SYSTEM region, so it is prefix state
+        # exactly like the tools: frozen at first use from the provider
+        # config, stored in base.json, restored verbatim. Consulting the live
+        # config per request once reduced a 180k-token cached prefix to 19
+        # matching characters. None = not frozen yet.
+        self._wire_per_message_effort: bool | None = None
         self._save_fn: Callable[[], Awaitable[None]] | None = None
         self._reset_hooks: list[Callable[[], None]] = []
         self._silent: bool = False
@@ -155,6 +165,28 @@ class ConversationList:
         """The frozen tools array, or None if not frozen yet."""
         return list(self._tools) if self._tools is not None else None
 
+    @property
+    def frozen_wire_per_message_effort(self) -> bool | None:
+        """The frozen wire-effort flag, or None if not frozen yet."""
+        return self._wire_per_message_effort
+
+    def wire_per_message_effort_for_request(self) -> bool:
+        """Whether this session's requests carry effort stamps and the kwarg.
+
+        Freezes on first use from the provider config, exactly like
+        tools_for_request(). From then on the stored value is returned no
+        matter what the live config does: toggling the provider flag affects
+        new sessions only.
+        """
+        if self._wire_per_message_effort is None:
+            if self._wire_effort_provider is None:
+                raise RuntimeError(
+                    "wire_per_message_effort_for_request() called with no "
+                    "frozen value and no provider wired."
+                )
+            self._wire_per_message_effort = bool(self._wire_effort_provider())
+        return self._wire_per_message_effort
+
     def tools_for_request(self) -> list[AvailableTool]:
         """The tools array to advertise on an LLM request.
 
@@ -188,6 +220,11 @@ class ConversationList:
             self._tools = [
                 AvailableTool.model_validate(t) for t in base.get("tools", [])
             ]
+            # Sessions whose base predates the stored wire flag fall through
+            # to the any(stamped) backfill below, which reproduces exactly
+            # what those sessions sent under the old conditional - so their
+            # cached prefixes survive the migration.
+            self._wire_per_message_effort = base.get("per_message_reasoning_effort")
         else:
             # MIGRATION KLUDGE - READ BEFORE TOUCHING, DO NOT COPY THIS PATTERN.
             #
@@ -216,6 +253,25 @@ class ConversationList:
                 system_msg = LLMMessage.model_validate(system_prompt_data)
             else:
                 system_msg = LLMMessage(role=Role.system, content="")
+
+        if self._wire_per_message_effort is None:
+            # Sessions whose base.json predates the flag: meta.json (written
+            # every save) carries the frozen value instead, since base.json
+            # is write-once and may not gain keys after creation.
+            self._wire_per_message_effort = metadata.get(
+                "per_message_reasoning_effort"
+            )
+        if self._wire_per_message_effort is None:
+            # MIGRATION BACKFILL, first resume under this code only.
+            # any(stamped) is what the old driver's conditional evaluated on
+            # every request, so freezing it here re-renders the session
+            # byte-identically: zero cached prefixes die. The next save
+            # persists it to meta.json and this backfill never runs again -
+            # it must not, because any() over a growing conversation is the
+            # exact flip that killed a 180k-token prefix on 2026-08-18.
+            self._wire_per_message_effort = any(
+                m.reasoning_effort for m in non_system_messages
+            )
 
         messages: list[LLMMessage] = [system_msg, *non_system_messages]
         messages = _fix_dangling_tool_calls(messages)
