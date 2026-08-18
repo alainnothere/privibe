@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, ClassVar, final
 from urllib.parse import urlparse
 
+from bs4.element import Tag
 import httpx
 from markdownify import MarkdownConverter
 from pydantic import BaseModel, Field
@@ -28,14 +29,29 @@ if TYPE_CHECKING:
     from privibe.core.types import ToolCallEvent, ToolResultEvent
 
 
-_HONEST_USER_AGENT = "privibe-cli"
+# Some servers only serve mainstream browsers; used as a one-shot 403 fallback.
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 _HTTP_FORBIDDEN = 403
 
 
 class _Converter(MarkdownConverter):
     convert_script = convert_style = convert_noscript = convert_iframe = (
         convert_object
-    ) = convert_embed = lambda *_, **__: ""
+    ) = convert_embed = convert_nav = convert_footer = convert_aside = convert_form = (
+        convert_button
+    ) = convert_svg = lambda *_, **__: ""
+
+    def convert_img(self, el: Tag, text: str, parent_tags: set[str]) -> str:
+        # A text model can't see images; alt text is the only useful part.
+        return str(el.attrs.get("alt") or "")
+
+    def convert_a(self, el: Tag, text: str, parent_tags: set[str]) -> str:
+        # Hover titles are tooltip text for a mouse that doesn't exist.
+        el.attrs.pop("title", None)
+        return str(super().convert_a(el, text, parent_tags))
 
 
 class WebFetchArgs(BaseModel):
@@ -59,11 +75,11 @@ class WebFetchConfig(BaseToolConfig):
     max_content_bytes: int = Field(
         default=512_000, description="Maximum content size to fetch."
     )
+    # Robot-policy style (name/version + contact URL): Wikipedia and friends
+    # fingerprint the TLS stack, so a fake browser UA reads as a liar and gets
+    # 403'd where an identified client is served.
     user_agent: str = Field(
-        default=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
+        default="privibe-cli/0.1 (+https://github.com/alainnothere/privibe) httpx",
         description="User agent string for requests.",
     )
 
@@ -185,12 +201,9 @@ class WebFetch(
         ) as client:
             response = await client.get(url, headers=headers)
 
-            # In case we are hitting bot detection retry once honestly
-            if (
-                response.status_code == _HTTP_FORBIDDEN
-                and response.headers.get("cf-mitigated") == "challenge"
-            ):
-                headers["User-Agent"] = _HONEST_USER_AGENT
+            # Some servers 403 unfamiliar agents; retry once as a browser
+            if response.status_code == _HTTP_FORBIDDEN:
+                headers["User-Agent"] = _BROWSER_USER_AGENT
                 response = await client.get(url, headers=headers)
 
             return response
