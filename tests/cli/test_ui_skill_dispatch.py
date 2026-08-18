@@ -5,11 +5,11 @@ import time
 
 import pytest
 
-from tests.conftest import build_test_vibe_app, build_test_vibe_config
-from tests.skills.conftest import create_skill
 from privibe.cli.textual_ui.app import VibeApp
 from privibe.cli.textual_ui.widgets.chat_input.container import ChatInputContainer
 from privibe.cli.textual_ui.widgets.messages import ErrorMessage, UserMessage
+from tests.conftest import build_test_vibe_app, build_test_vibe_config
+from tests.skills.conftest import create_skill
 
 SKILL_BODY = "## Instructions\n\nDo the thing."
 
@@ -128,7 +128,24 @@ async def test_skill_without_args_does_not_prepend_invocation_line(
         message = await _wait_for_user_message_containing(
             vibe_app_with_skills, pilot, "Do the thing."
         )
-        assert "/my-skill" not in message._content
+        assert not message._content.startswith("/my-skill")
+
+
+@pytest.mark.asyncio
+async def test_skill_dispatch_sends_wrapped_block_without_frontmatter(
+    vibe_app_with_skills: VibeApp,
+) -> None:
+    async with vibe_app_with_skills.run_test() as pilot:
+        await pilot.pause(0.1)
+        chat_input = vibe_app_with_skills.query_one(ChatInputContainer)
+        chat_input.post_message(ChatInputContainer.Submitted("/my-skill"))
+        await pilot.pause(0.1)
+
+        message = await _wait_for_user_message_containing(
+            vibe_app_with_skills, pilot, "Do the thing."
+        )
+        assert '<skill_content name="my-skill">' in message._content
+        assert "description: A test skill" not in message._content
 
 
 @pytest.mark.asyncio
