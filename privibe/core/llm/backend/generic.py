@@ -193,6 +193,10 @@ class OpenAIAdapter(APIAdapter):
         if per_message_effort:
             payload["chat_template_kwargs"] = {"per_message_reasoning_effort": True}
 
+        max_tool_calls = getattr(provider, "max_tool_calls", 0)
+        if tools and max_tool_calls > 0:
+            payload["max_tool_calls"] = max_tool_calls
+
         if enable_streaming:
             payload["stream"] = True
             stream_options: dict[str, Any] = {"include_usage": True}
