@@ -20,7 +20,7 @@ import difflib
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from privibe.core.config import VibeConfig, cycle_preview_lines
+from privibe.core.config import VibeConfig, cycle_preview_lines, load_dotenv_values
 from privibe.core.session.session_loader import SessionLoader
 from privibe.core.skills.parser import SkillParseError
 from privibe.core.skills.render import load_skill_content
@@ -742,17 +742,21 @@ class ConsoleUI:
             print(f"Already using {alias}.")
             return
 
-        # Same sequence the TUI runs on model switch: persist, reload the
-        # config into the running loop, then re-detect context size.
+        # Same sequence the TUI runs on model switch: persist, re-read .env,
+        # reload the config into the running loop, then re-detect context size.
         VibeConfig.save_updates({"active_model": alias})
+        load_dotenv_values()
         base_config = VibeConfig.load()
         notice = await self.agent_loop.apply_runtime_config(base_config=base_config)
         if notice:
             print(notice)
+        fallback_notice = self.agent_loop.config.model_fallback_notice()
+        if fallback_notice:
+            print(fallback_notice)
         ctx_msg = await self.agent_loop.resolve_context_size()
         if ctx_msg:
             print(ctx_msg)
-        print(f"Active model: {alias}")
+        print(f"Active model: {self.agent_loop.config.active_model}")
 
     async def _command_compact(self) -> None:
         if len(self.agent_loop.messages) <= 1:

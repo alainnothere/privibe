@@ -67,7 +67,14 @@ class AgentProfile:
                 *merged.get("disabled_tools", []),
             })
 
-        return VC.model_validate(merged)
+        derived = VC.model_validate(merged)
+        # The fallback record lives in PrivateAttrs, which the dump/validate
+        # round-trip drops — and the dump already carries the rewritten
+        # active_model, so the derived config can never re-detect the fallback
+        # on its own. Carry the record over or the UI warning stays silent.
+        derived._fallback_from_model = base._fallback_from_model
+        derived._fallback_env_var = base._fallback_env_var
+        return derived
 
     @classmethod
     def from_toml(cls, path: Path) -> AgentProfile:

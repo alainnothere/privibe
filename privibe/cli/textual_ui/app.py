@@ -92,6 +92,7 @@ from privibe.core.config import (
     REASONING_EFFORT_OPTIONS,
     VibeConfig,
     context_size_mode_label,
+    load_dotenv_values,
 )
 from privibe.core.config.harness_files._harness_manager import get_harness_files_manager
 from privibe.core.logger import logger, stderr_logging_suspended
@@ -1197,6 +1198,9 @@ class VibeApp(App):  # noqa: PLR0904
         try:
             self._reset_ui_state()
             await self._load_more.hide()
+            # Re-read the global .env: the point of reloading is often a key
+            # the user just added there, and startup was the only other read.
+            load_dotenv_values()
             base_config = VibeConfig.load()
 
             notice = await self.agent_loop.apply_runtime_config(base_config=base_config)
@@ -2095,7 +2099,6 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def _show_model_fallback_warning(self) -> None:
         config = self.config
-        print(f"DEBUG: _fallback_from_model={config._fallback_from_model}, active_model={config.active_model}")
         try:
             config.get_active_model()
         except ValueError:
@@ -2107,14 +2110,9 @@ class VibeApp(App):  # noqa: PLR0904
             )
             return
 
-        if config._fallback_from_model is not None:
-            await self._mount_and_scroll(
-                WarningMessage(
-                    f"Active model '{config._fallback_from_model}' not found or missing API key, "
-                    f"using '{config.active_model}' instead.",
-                    show_border=False,
-                )
-            )
+        notice = config.model_fallback_notice()
+        if notice:
+            await self._mount_and_scroll(WarningMessage(notice, show_border=False))
 
     async def _show_clipboard_warning(self) -> None:
         if self.config.autocopy_to_clipboard and not is_reliable_clipboard_available():

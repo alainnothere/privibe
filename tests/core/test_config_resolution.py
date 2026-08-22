@@ -419,6 +419,80 @@ class TestActiveModelFallback:
         )
         assert cfg.get_active_model().alias == "local"
 
+    def test_fallback_notice_names_missing_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TEST_KEY_A", raising=False)
+        monkeypatch.setenv("TEST_KEY_B", "value")
+        cfg = build_test_vibe_config(
+            providers=self._providers(),
+            models=[
+                ModelConfig(name="m1", provider="with_key", alias="m1"),
+                ModelConfig(name="m2", provider="no_key", alias="m2"),
+            ],
+            active_model="m1",
+        )
+        cfg.get_active_model()
+        notice = cfg.model_fallback_notice()
+        assert notice is not None
+        assert "'m1'" in notice
+        assert "TEST_KEY_A" in notice
+        assert "'m2'" in notice
+
+    def test_fallback_notice_for_unknown_alias(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TEST_KEY_A", "value")
+        cfg = build_test_vibe_config(
+            providers=self._providers(),
+            models=[ModelConfig(name="m1", provider="with_key", alias="m1")],
+            active_model="nonexistent",
+        )
+        cfg.get_active_model()
+        notice = cfg.model_fallback_notice()
+        assert notice is not None
+        assert "'nonexistent'" in notice
+        assert "not defined" in notice
+
+    def test_fallback_notice_none_without_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TEST_KEY_A", "value")
+        cfg = build_test_vibe_config(
+            providers=self._providers(),
+            models=[ModelConfig(name="m1", provider="with_key", alias="m1")],
+            active_model="m1",
+        )
+        cfg.get_active_model()
+        assert cfg.model_fallback_notice() is None
+
+    def test_fallback_notice_survives_profile_round_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # apply_to_config rebuilds the config via model_dump()/model_validate(),
+        # which drops PrivateAttrs and bakes in the rewritten active_model; the
+        # derived config must still be able to report the fallback.
+        from privibe.core.agents.models import AgentProfile, AgentSafety
+
+        monkeypatch.delenv("TEST_KEY_A", raising=False)
+        monkeypatch.setenv("TEST_KEY_B", "value")
+        cfg = build_test_vibe_config(
+            providers=self._providers(),
+            models=[
+                ModelConfig(name="m1", provider="with_key", alias="m1"),
+                ModelConfig(name="m2", provider="no_key", alias="m2"),
+            ],
+            active_model="m1",
+        )
+        cfg.get_active_model()
+        profile = AgentProfile(
+            name="p", display_name="p", description="", safety=AgentSafety.NEUTRAL
+        )
+        derived = profile.apply_to_config(cfg)
+        notice = derived.model_fallback_notice()
+        assert notice is not None
+        assert "TEST_KEY_A" in notice
+
     def test_raises_when_no_model_has_valid_api_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

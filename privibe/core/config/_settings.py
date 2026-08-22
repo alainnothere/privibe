@@ -536,6 +536,7 @@ def context_size_mode_label(auto_detect: bool, every: int) -> str:
 class VibeConfig(BaseSettings):
     active_model: str = "local"
     _fallback_from_model: str | None = PrivateAttr(default=None)  # Stores original model before fallback
+    _fallback_env_var: str | None = PrivateAttr(default=None)  # Missing API key env var that caused it (None = alias not found)
     vim_keybindings: bool = False
     disable_welcome_banner_animation: bool = False
     autocopy_to_clipboard: bool = True
@@ -758,9 +759,10 @@ class VibeConfig(BaseSettings):
                 matched = model
                 break
 
+        matched_status: ModelApiKeyStatus | None = None
         if matched is not None:
-            status = self._is_environment_variable_set_for_model(matched)
-            if status.api_key_set:
+            matched_status = self._is_environment_variable_set_for_model(matched)
+            if matched_status.api_key_set:
                 return matched
 
         for model in self.models:
@@ -772,6 +774,9 @@ class VibeConfig(BaseSettings):
                     model.alias,
                 )
                 self._fallback_from_model = self.active_model
+                self._fallback_env_var = (
+                    matched_status.env_var_name if matched_status else None
+                )
                 self.active_model = model.alias
                 return model
 
@@ -779,6 +784,29 @@ class VibeConfig(BaseSettings):
             f"Tried to load active model '{self.active_model}' but its API key environment "
             f"variable is not set, and no other configured model has its API key environment "
             f"variable set either."
+        )
+
+    def model_fallback_notice(self) -> str | None:
+        """User-facing explanation of a silent active-model fallback, or None.
+
+        get_active_model() rewrites active_model in place when it falls back, so
+        after the fact only these breadcrumbs can tell the user their chosen
+        model was not the one actually used — and, when the cause was a missing
+        API key, which env var to set.
+        """
+        if self._fallback_from_model is None:
+            return None
+        if self._fallback_env_var:
+            return (
+                f"Model '{self._fallback_from_model}' was not used: its provider "
+                f"requires the environment variable {self._fallback_env_var}, "
+                f"which is not set — defaulting to '{self.active_model}'. "
+                f"Set {self._fallback_env_var} in {GLOBAL_ENV_FILE.path} "
+                f"(or export it) and select the model again."
+            )
+        return (
+            f"Model '{self._fallback_from_model}' is not defined in the "
+            f"configuration — defaulting to '{self.active_model}'."
         )
 
     def get_compaction_model(self) -> ModelConfig:
