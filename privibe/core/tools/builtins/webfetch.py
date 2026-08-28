@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+import mimetypes
+from pathlib import Path
+import re
 from typing import TYPE_CHECKING, ClassVar, final
 from urllib.parse import urlparse
 
@@ -9,6 +12,7 @@ import httpx
 from markdownify import MarkdownConverter
 from pydantic import BaseModel, Field
 
+from privibe.core.paths import VIBE_HOME
 from privibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -65,6 +69,9 @@ class WebFetchResult(BaseModel):
     url: str
     content: str
     content_type: str
+    # Set when the response was binary and written to disk instead of being
+    # returned as content.
+    saved_path: str | None = None
 
 
 class WebFetchConfig(BaseToolConfig):
@@ -73,7 +80,11 @@ class WebFetchConfig(BaseToolConfig):
     default_timeout: int = Field(default=30, description="Default timeout in seconds.")
     max_timeout: int = Field(default=120, description="Maximum allowed timeout.")
     max_content_bytes: int = Field(
-        default=512_000, description="Maximum content size to fetch."
+        default=512_000, description="Maximum text content size to return."
+    )
+    max_download_bytes: int = Field(
+        default=50_000_000,
+        description="Maximum size for binary responses saved to disk.",
     )
     # Robot-policy style (name/version + contact URL): Wikipedia and friends
     # fingerprint the TLS stack, so a fake browser UA reads as a liar and gets
@@ -131,12 +142,17 @@ class WebFetch(
         url = self._normalize_url(args.url)
         timeout = self._resolve_timeout(args.timeout)
 
-        content, content_type = await self._fetch_url(url, timeout)
+        content, content_type, saved_path = await self._fetch_url(url, timeout)
 
-        if "text/html" in content_type:
+        if saved_path is None and "text/html" in content_type:
             content = _html_to_markdown(content)
 
-        yield WebFetchResult(url=url, content=content, content_type=content_type)
+        yield WebFetchResult(
+            url=url,
+            content=content,
+            content_type=content_type,
+            saved_path=saved_path,
+        )
 
     def _validate_args(self, args: WebFetchArgs) -> None:
         if not args.url.strip():
@@ -161,7 +177,14 @@ class WebFetch(
             return self.config.default_timeout
         return min(timeout, self.config.max_timeout)
 
-    async def _fetch_url(self, url: str, timeout: int) -> tuple[str, str]:
+    async def _fetch_url(self, url: str, timeout: int) -> tuple[str, str, str | None]:
+        """Fetch the URL; returns (content, content_type, saved_path).
+
+        Textual responses come back as decoded content with saved_path None.
+        Binary responses are written to disk untouched, and content is a short
+        notice pointing at the file — raw bytes decoded errors="ignore" are
+        token soup that can flood the context (a 14MB PDF, famously).
+        """
         headers = {
             "User-Agent": self.config.user_agent,
             "Accept": (
@@ -184,6 +207,17 @@ class WebFetch(
             )
 
         content_type = response.headers.get("Content-Type", "text/plain")
+        mime = content_type.split(";")[0].strip().lower()
+
+        if not _is_textual(mime, response.content):
+            saved = self._save_download(url, mime, response.content)
+            notice = (
+                f"The response is not a text page ({mime}, "
+                f"{_format_size(len(response.content))}); its raw bytes were "
+                f"not added to the context. Saved to: {saved}\n"
+                f"Use local tools to inspect or convert it as needed."
+            )
+            return notice, content_type, str(saved)
 
         content_bytes = response.content[: self.config.max_content_bytes]
         content = content_bytes.decode("utf-8", errors="ignore")
@@ -191,7 +225,30 @@ class WebFetch(
         if len(response.content) > self.config.max_content_bytes:
             content += "[Content truncated due to size limit]"
 
-        return content, content_type
+        return content, content_type, None
+
+    def _save_download(self, url: str, mime: str, body: bytes) -> Path:
+        if len(body) > self.config.max_download_bytes:
+            raise ToolError(
+                f"Response is {_format_size(len(body))} of {mime}, over the "
+                f"{_format_size(self.config.max_download_bytes)} download limit."
+            )
+        downloads = VIBE_HOME.path / "downloads"
+        downloads.mkdir(parents=True, exist_ok=True)
+
+        name = Path(urlparse(url).path).name
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip("._") or "download"
+        if "." not in name:
+            name += mimetypes.guess_extension(mime) or ".bin"
+
+        target = downloads / name
+        stem, suffix = target.stem, target.suffix
+        counter = 1
+        while target.exists():
+            target = downloads / f"{stem}-{counter}{suffix}"
+            counter += 1
+        target.write_bytes(body)
+        return target
 
     async def _do_fetch(
         self, url: str, timeout: int, headers: dict[str, str]
@@ -231,13 +288,15 @@ class WebFetch(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
 
-        content_len = len(event.result.content)
         parsed = urlparse(event.result.url)
         domain = parsed.netloc or event.result.url[:50]
-        message = (
-            f"Fetched {content_len:,} chars from {domain} "
-            f"({event.result.content_type.split(';')[0]})"
-        )
+        mime = event.result.content_type.split(";")[0]
+
+        if event.result.saved_path:
+            message = f"Saved {mime} from {domain} to {event.result.saved_path}"
+        else:
+            content_len = len(event.result.content)
+            message = f"Fetched {content_len:,} chars from {domain} ({mime})"
 
         return ToolResultDisplay(success=True, message=message)
 
@@ -248,3 +307,35 @@ class WebFetch(
 
 def _html_to_markdown(html: str) -> str:
     return _Converter(heading_style="ATX", bullets="-").convert(html)
+
+
+_TEXTUAL_MIME_TYPES = {
+    "application/json",
+    "application/javascript",
+    "application/x-javascript",
+    "application/x-ndjson",
+    "application/xml",
+    "application/x-www-form-urlencoded",
+}
+
+
+def _is_textual(mime: str, body: bytes) -> bool:
+    if (
+        mime.startswith("text/")
+        or mime in _TEXTUAL_MIME_TYPES
+        or mime.endswith(("+json", "+xml"))
+    ):
+        # Servers that don't send a Content-Type land on text/plain, and some
+        # mislabel binaries as text; a null byte early in the body outranks
+        # whatever the header claims.
+        return b"\x00" not in body[:8192]
+    return False
+
+
+def _format_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KB", "MB"):
+        if value < 1024:
+            return f"{value:,.0f} {unit}" if unit == "B" else f"{value:,.1f} {unit}"
+        value /= 1024
+    return f"{value:,.1f} GB"
