@@ -322,3 +322,103 @@ async def test_over_max_timeout_rejected(webfetch):
 
 def test_get_status_text():
     assert WebFetch.get_status_text() == "Fetching URL"
+
+
+PDF_BYTES = b"%PDF-1.7\x00\x01\x02" + b"\x00garbage" * 100
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_binary_saved_to_disk_not_context(webfetch, config_dir):
+    respx.get("https://example.com/paper.pdf").mock(
+        return_value=httpx.Response(
+            200, content=PDF_BYTES, headers={"Content-Type": "application/pdf"}
+        )
+    )
+    result = await collect_result(
+        webfetch.run(WebFetchArgs(url="https://example.com/paper.pdf"))
+    )
+    assert result.saved_path is not None
+    saved = config_dir / "downloads" / "paper.pdf"
+    assert str(saved) == result.saved_path
+    assert saved.read_bytes() == PDF_BYTES
+    assert result.saved_path in result.content
+    assert len(result.content) < 500
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_mislabeled_binary_detected_by_null_bytes(webfetch, config_dir):
+    respx.get("https://example.com/sneaky").mock(
+        return_value=httpx.Response(
+            200, content=b"\x00\x01\x02binary", headers={"Content-Type": "text/plain"}
+        )
+    )
+    result = await collect_result(
+        webfetch.run(WebFetchArgs(url="https://example.com/sneaky"))
+    )
+    assert result.saved_path is not None
+    assert (config_dir / "downloads").exists()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_json_stays_inline(webfetch):
+    respx.get("https://example.com/api").mock(
+        return_value=httpx.Response(
+            200, content=b'{"a": 1}', headers={"Content-Type": "application/json"}
+        )
+    )
+    result = await collect_result(
+        webfetch.run(WebFetchArgs(url="https://example.com/api"))
+    )
+    assert result.saved_path is None
+    assert result.content == '{"a": 1}'
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_oversized_binary_rejected(config_dir):
+    tool = WebFetch(
+        config=WebFetchConfig(max_download_bytes=10), state=BaseToolState()
+    )
+    respx.get("https://example.com/big.pdf").mock(
+        return_value=httpx.Response(
+            200, content=PDF_BYTES, headers={"Content-Type": "application/pdf"}
+        )
+    )
+    with pytest.raises(ToolError, match="download limit"):
+        await collect_result(tool.run(WebFetchArgs(url="https://example.com/big.pdf")))
+    assert not (config_dir / "downloads" / "big.pdf").exists()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_download_name_collision_gets_counter(webfetch, config_dir):
+    respx.get("https://example.com/paper.pdf").mock(
+        return_value=httpx.Response(
+            200, content=PDF_BYTES, headers={"Content-Type": "application/pdf"}
+        )
+    )
+    first = await collect_result(
+        webfetch.run(WebFetchArgs(url="https://example.com/paper.pdf"))
+    )
+    second = await collect_result(
+        webfetch.run(WebFetchArgs(url="https://example.com/paper.pdf"))
+    )
+    assert first.saved_path != second.saved_path
+    assert second.saved_path.endswith("paper-1.pdf")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_download_without_extension_guesses_from_mime(webfetch, config_dir):
+    respx.get("https://example.com/dl").mock(
+        return_value=httpx.Response(
+            200, content=b"\x00\x01", headers={"Content-Type": "application/zip"}
+        )
+    )
+    result = await collect_result(
+        webfetch.run(WebFetchArgs(url="https://example.com/dl"))
+    )
+    assert result.saved_path.endswith(".zip")
