@@ -60,7 +60,18 @@ class WebSearch(
 
     @classmethod
     def is_available(cls) -> bool:
-        return get_tool_override("web_search") is not None
+        # An override that cannot run (e.g. its API key env var is unset) must
+        # not be advertised to the model: the tool set is frozen into the
+        # system prompt at session start, and a tool that can only fail wastes
+        # a turn every time the model trusts the menu. Overrides opt in by
+        # defining their own is_available(); absent that, registered = usable.
+        impl_class = get_tool_override("web_search")
+        if impl_class is None:
+            return False
+        impl_available = getattr(impl_class, "is_available", None)
+        if impl_available is None:
+            return True
+        return bool(impl_available())
 
     @final
     async def run(
