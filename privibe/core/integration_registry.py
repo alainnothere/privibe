@@ -28,6 +28,15 @@ def register_backend(key: str, backend_class: Any) -> None:
 
 
 def register_tool_override(tool_name: str, tool_class: Any) -> None:
+    """Register an implementation for a pluggable builtin tool.
+
+    Registration means "I exist", not "I can run". An implementation that
+    depends on external state (an API key env var, a reachable service) should
+    also define a classmethod ``is_available() -> bool``; the builtin consults
+    it when the tool set is built, and hides the tool from the model when it
+    returns False. Without it, a registered tool is advertised unconditionally
+    and can only fail at call time.
+    """
     if tool_name in _tool_overrides:
         existing_module = getattr(_tool_overrides[tool_name], "__module__", "<unknown>")
         new_module = getattr(tool_class, "__module__", "<unknown>")

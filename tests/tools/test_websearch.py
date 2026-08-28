@@ -43,6 +43,28 @@ def test_is_available_returns_true_with_integration(isolated_overrides):
     assert WebSearch.is_available() is True
 
 
+def test_is_available_delegates_to_override_check(isolated_overrides):
+    class UnusableImpl:
+        def __init__(self, config, ctx): pass
+        async def search(self, args): pass
+        @classmethod
+        def is_available(cls) -> bool:
+            return False
+    register_tool_override("web_search", UnusableImpl)
+    assert WebSearch.is_available() is False
+
+
+def test_is_available_true_when_override_check_passes(isolated_overrides):
+    class UsableImpl:
+        def __init__(self, config, ctx): pass
+        async def search(self, args): pass
+        @classmethod
+        def is_available(cls) -> bool:
+            return True
+    register_tool_override("web_search", UsableImpl)
+    assert WebSearch.is_available() is True
+
+
 def test_get_status_text():
     assert WebSearch.get_status_text() == "Searching the web"
 

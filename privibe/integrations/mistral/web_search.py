@@ -32,6 +32,12 @@ class MistralWebSearchImpl:
         self.config = config
         self.ctx = ctx
 
+    @classmethod
+    def is_available(cls) -> bool:
+        # Consulted when the tool set is built at session start; without the
+        # key, web_search is hidden from the model entirely.
+        return bool(os.getenv("MISTRAL_API_KEY"))
+
     async def search(
         self, args: WebSearchArgs
     ) -> AsyncGenerator[ToolStreamEvent | WebSearchResult, None]:

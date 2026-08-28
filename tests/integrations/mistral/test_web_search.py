@@ -211,3 +211,13 @@ def test_resolve_server_url_no_mistral_provider():
     ctx = InvokeContext(tool_call_id="t1", agent_manager=agent_manager)
     impl = MistralWebSearchImpl(WebSearchConfig(), ctx=ctx)
     assert impl._resolve_server_url() is None
+
+
+def test_is_available_false_without_api_key(monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    assert MistralWebSearchImpl.is_available() is False
+
+
+def test_is_available_true_with_api_key(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+    assert MistralWebSearchImpl.is_available() is True
