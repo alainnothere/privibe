@@ -111,6 +111,14 @@ class BaseToolConfig(BaseModel):
         allowlist: Patterns that automatically allow tool execution.
         denylist: Patterns that automatically deny tool execution.
         sensitive_patterns: Patterns that trigger ASK even when permission is ALWAYS.
+        protected_paths: Paths the tool must never touch (hard deny). The
+            global config's protected_paths list is merged in by ToolManager.
+        protect_outside_workdir: When true, any path outside the current
+            working directory is a hard deny instead of an ASK — it survives
+            auto_approve. Propagated from the global config by ToolManager.
+        outside_workdir_exempt: Paths outside the workdir that
+            protect_outside_workdir does not deny (same entry syntax as
+            protected_paths).
     """
 
     model_config = ConfigDict(extra="allow")
@@ -119,6 +127,11 @@ class BaseToolConfig(BaseModel):
     allowlist: list[str] = Field(default_factory=list)
     denylist: list[str] = Field(default_factory=list)
     sensitive_patterns: list[str] = Field(default_factory=list)
+    protected_paths: list[str] = Field(default_factory=list)
+    protect_outside_workdir: bool = False
+    outside_workdir_exempt: list[str] = Field(
+        default_factory=lambda: ["/dev/*", "/tmp/*"]
+    )
 
 
 class BaseToolState(BaseModel):
@@ -140,6 +153,11 @@ class BaseTool[
     )
 
     prompt_path: ClassVar[Path] | None = None
+
+    # Tools sharing a permission group share session approval/denial rules:
+    # approving a directory for one file tool covers the others. None means
+    # the tool is its own group (rules stay per-tool, e.g. bash).
+    permission_group: ClassVar[str | None] = None
 
     # When True, the scheduler runs this tool serially in the order the model
     # emitted it, instead of concurrently, because it mutates files on disk.

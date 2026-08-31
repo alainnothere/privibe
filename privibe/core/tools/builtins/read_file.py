@@ -148,6 +148,8 @@ class ReadFile(
             advisory=advisory,
         )
 
+    permission_group: ClassVar[str] = "file"
+
     def resolve_permission(self, args: ReadFileArgs) -> PermissionContext | None:
         return resolve_file_tool_permission(
             args.path,
@@ -156,6 +158,9 @@ class ReadFile(
             denylist=self.config.denylist,
             config_permission=self.config.permission,
             sensitive_patterns=self.config.sensitive_patterns,
+            protected_paths=self.config.protected_paths,
+            protect_outside_workdir=self.config.protect_outside_workdir,
+            outside_workdir_exempt=self.config.outside_workdir_exempt,
         )
 
     def get_result_extra(self, result: ReadFileResult) -> str | None:

@@ -68,6 +68,7 @@ from privibe.core.tools.mcp import MCPRegistry
 from privibe.core.tools.mcp_sampling import MCPSamplingHandler
 from privibe.core.tools.permissions import (
     ApprovedRule,
+    DeniedRule,
     PermissionContext,
     RequiredPermission,
 )
@@ -308,6 +309,7 @@ class AgentLoop:
         self._prefix_fingerprint: str | None = None
 
         self._session_rules: list[ApprovedRule] = []
+        self._session_denials: list[DeniedRule] = []
 
         self.session_logger = SessionLogger(config.session_logging, self.session_id)
         self.rewind_manager = RewindManager(
@@ -422,12 +424,32 @@ class AgentLoop:
     def add_session_rule(self, rule: ApprovedRule) -> None:
         self._session_rules.append(rule)
 
+    def add_session_denial(self, rule: DeniedRule) -> None:
+        self._session_denials.append(rule)
+
+    def _permission_group(self, tool_name: str) -> str:
+        """Tools sharing a permission_group share session approval/denial
+        rules; a tool without one is its own group."""
+        cls = self.tool_manager.available_tools.get(tool_name)
+        group = getattr(cls, "permission_group", None) if cls else None
+        return group or tool_name
+
     def _is_permission_covered(self, tool_name: str, rp: RequiredPermission) -> bool:
+        group = self._permission_group(tool_name)
         return any(
-            rule.tool_name == tool_name
+            self._permission_group(rule.tool_name) == group
             and rule.scope == rp.scope
             and wildcard_match(rp.invocation_pattern, rule.session_pattern)
             for rule in self._session_rules
+        )
+
+    def _is_permission_denied(self, tool_name: str, rp: RequiredPermission) -> bool:
+        group = self._permission_group(tool_name)
+        return any(
+            self._permission_group(rule.tool_name) == group
+            and rule.scope == rp.scope
+            and wildcard_match(rp.invocation_pattern, rule.session_pattern)
+            for rule in self._session_denials
         )
 
     def approve_always(
@@ -450,6 +472,24 @@ class AgentLoop:
             self.set_tool_permission(
                 tool_name, ToolPermission.ALWAYS, save_permanently=save_permanently
             )
+
+    def deny_always(
+        self,
+        tool_name: str,
+        required_permissions: list[RequiredPermission] | None,
+    ) -> None:
+        """Handle 'Deny for session': add denial rules or set tool-level NEVER."""
+        if required_permissions:
+            for rp in required_permissions:
+                self.add_session_denial(
+                    DeniedRule(
+                        tool_name=tool_name,
+                        scope=rp.scope,
+                        session_pattern=rp.session_pattern,
+                    )
+                )
+        else:
+            self.set_tool_permission(tool_name, ToolPermission.NEVER)
 
     def _select_backend(self) -> BackendLike:
         active_model = self.config.get_active_model()
@@ -1717,12 +1757,29 @@ class AgentLoop:
                     verdict=ToolExecutionResponse.EXECUTE,
                     approval_type=ToolPermission.ALWAYS,
                 )
-            case _ if self.auto_approve:
+            case _ if self.auto_approve and not any(
+                rp.escalated for rp in ctx.required_permissions
+            ):
                 return ToolDecision(
                     verdict=ToolExecutionResponse.EXECUTE,
                     approval_type=ToolPermission.ALWAYS,
                 )
             case _:
+                denied = [
+                    rp
+                    for rp in ctx.required_permissions
+                    if self._is_permission_denied(tool_name, rp)
+                ]
+                if denied:
+                    labels = ", ".join(rp.label for rp in denied)
+                    return ToolDecision(
+                        verdict=ToolExecutionResponse.SKIP,
+                        approval_type=ToolPermission.NEVER,
+                        feedback=(
+                            f"Denied for this session: {labels}. "
+                            f"Do not attempt this again."
+                        ),
+                    )
                 uncovered = [
                     rp
                     for rp in ctx.required_permissions

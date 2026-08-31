@@ -65,6 +65,8 @@ class HashedReplace(
     def get_file_snapshot(self, args: HashedReplaceArgs) -> FileSnapshot | None:
         return self.get_file_snapshot_for_path(args.path)
 
+    permission_group: ClassVar[str] = "file"
+
     def resolve_permission(self, args: HashedReplaceArgs) -> PermissionContext | None:
         return resolve_file_tool_permission(
             args.path,
@@ -73,6 +75,9 @@ class HashedReplace(
             denylist=self.config.denylist,
             config_permission=self.config.permission,
             sensitive_patterns=self.config.sensitive_patterns,
+            protected_paths=self.config.protected_paths,
+            protect_outside_workdir=self.config.protect_outside_workdir,
+            outside_workdir_exempt=self.config.outside_workdir_exempt,
         )
 
     @final

@@ -615,6 +615,37 @@ class VibeConfig(BaseSettings):
     session_logging: SessionLoggingConfig = Field(default_factory=SessionLoggingConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
     tools: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    protected_paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Files or directories the model must never touch, enforced as a "
+            "hard deny by every file tool and by path scanning in the bash "
+            "tool. Plain entries protect the path and its whole subtree "
+            "(~ is expanded); entries containing glob characters are matched "
+            "with fnmatch against the resolved absolute path. Merged into "
+            "every tool's own protected_paths list."
+        ),
+    )
+    protect_outside_workdir: bool = Field(
+        default=False,
+        description=(
+            "When true, every path outside the current working directory is a "
+            "hard deny for file tools and for path scanning in the bash tool "
+            "— a NEVER that survives auto_approve, unlike the default ASK. "
+            "Combine with auto_approve to give the model free rein inside the "
+            "workdir and nothing outside it. Exemptions come from "
+            "outside_workdir_exempt."
+        ),
+    )
+    outside_workdir_exempt: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional paths outside the workdir that protect_outside_workdir "
+            "does not deny (same entry syntax as protected_paths). Merged into "
+            "every tool's own outside_workdir_exempt list, which defaults to "
+            "/dev/* and /tmp/*."
+        ),
+    )
     tool_paths: list[Path] = Field(
         default_factory=list,
         description=(

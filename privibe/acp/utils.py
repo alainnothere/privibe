@@ -53,6 +53,11 @@ TOOL_OPTIONS = [
         name="Reject once",
         kind=cast(Literal["reject_once"], ToolOption.REJECT_ONCE),
     ),
+    PermissionOption(
+        option_id=ToolOption.REJECT_ALWAYS,
+        name="Reject for this session",
+        kind=cast(Literal["reject_always"], ToolOption.REJECT_ALWAYS),
+    ),
 ]
 
 
@@ -90,6 +95,12 @@ def build_permission_options(
             option_id=ToolOption.REJECT_ONCE,
             name="Reject once",
             kind=cast(Literal["reject_once"], ToolOption.REJECT_ONCE),
+        ),
+        PermissionOption(
+            option_id=ToolOption.REJECT_ALWAYS,
+            name=f"Reject for this session: {labels}",
+            kind=cast(Literal["reject_always"], ToolOption.REJECT_ALWAYS),
+            field_meta={"required_permissions": permissions_meta},
         ),
     ]
 

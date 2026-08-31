@@ -524,6 +524,22 @@ class VibeApp(App):  # noqa: PLR0904
         if self._pending_approval and not self._pending_approval.done():
             self._pending_approval.set_result((ApprovalResponse.YES, None))
 
+    async def on_approval_app_approval_rejected_always_tool(
+        self, message: ApprovalApp.ApprovalRejectedAlwaysTool
+    ) -> None:
+        self.agent_loop.deny_always(message.tool_name, message.required_permissions)
+
+        if self._pending_approval and not self._pending_approval.done():
+            self._pending_approval.set_result(
+                (
+                    ApprovalResponse.NO,
+                    "Denied for this session. Do not attempt this again.",
+                )
+            )
+
+        if self._loading_widget and self._loading_widget.parent:
+            await self._remove_loading_widget()
+
     async def on_approval_app_approval_rejected(
         self, message: ApprovalApp.ApprovalRejected
     ) -> None:
@@ -914,9 +930,12 @@ class VibeApp(App):  # noqa: PLR0904
         required_permissions: list[RequiredPermission] | None,
     ) -> tuple[ApprovalResponse, str | None]:
         # Auto-approve only if parent is in auto-approve mode AND tool is enabled
-        # This ensures subagents respect the main agent's tool restrictions
+        # This ensures subagents respect the main agent's tool restrictions.
+        # Escalated permissions always reach the human.
         if self.agent_loop and self.agent_loop.config.auto_approve:
-            if self._is_tool_enabled_in_main_agent(tool):
+            if self._is_tool_enabled_in_main_agent(tool) and not any(
+                rp.escalated for rp in required_permissions or []
+            ):
                 return (ApprovalResponse.YES, None)
 
         async with self._user_interaction_lock:

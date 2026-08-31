@@ -111,6 +111,7 @@ class GrepResult(BaseModel):
     # Echoed back for the user-facing result line; excluded from the model result.
     pattern: str = Field(default="", exclude=True)
     path: str = Field(default="", exclude=True)
+    used_gnu_grep: bool = Field(default=False, exclude=True)
 
 
 class Grep(
@@ -122,6 +123,8 @@ class Grep(
         "Respects .gitignore and .codeignore files by default when using ripgrep."
     )
 
+    permission_group: ClassVar[str] = "file"
+
     def resolve_permission(self, args: GrepArgs) -> PermissionContext | None:
         return resolve_file_tool_permission(
             args.path,
@@ -130,6 +133,9 @@ class Grep(
             denylist=self.config.denylist,
             config_permission=self.config.permission,
             sensitive_patterns=self.config.sensitive_patterns,
+            protected_paths=self.config.protected_paths,
+            protect_outside_workdir=self.config.protect_outside_workdir,
+            outside_workdir_exempt=self.config.outside_workdir_exempt,
         )
 
     def _detect_backend(self) -> GrepBackend:
@@ -158,6 +164,7 @@ class Grep(
         result.path_note = normalization_note(args.path, resolved_path)
         result.pattern = args.pattern
         result.path = args.path
+        result.used_gnu_grep = backend is GrepBackend.GNU_GREP
         yield result
 
     def _validate_args(self, args: GrepArgs) -> Path:
@@ -331,6 +338,11 @@ class Grep(
         warnings = []
         if r.was_truncated:
             warnings.append("Output was truncated due to size/match limits")
+        if r.used_gnu_grep:
+            warnings.append(
+                "ripgrep (rg) not found; fell back to grep "
+                "(slower, does not respect .gitignore)"
+            )
 
         return ToolResultDisplay(success=True, message=message, warnings=warnings)
 

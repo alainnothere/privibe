@@ -566,7 +566,7 @@ async def start_session_with_request_permission(
 
     assert isinstance(last_response, RequestPermissionJsonRpcRequest)
     assert last_response.params is not None
-    assert len(last_response.params.options) == 3
+    assert len(last_response.params.options) == 4
     return last_response
 
 

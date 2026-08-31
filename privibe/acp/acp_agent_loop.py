@@ -258,8 +258,9 @@ class VibeAcpAgentLoop(AcpAgent):
         session = AcpSessionLoop(id=session_id, agent_loop=agent_loop)
         self.sessions[session.id] = session
 
-        if not agent_loop.auto_approve:
-            agent_loop.set_approval_callback(self._create_approval_callback(session.id))
+        # The callback is always installed: even in auto-approve mode,
+        # escalated permissions must reach the client for a real decision.
+        agent_loop.set_approval_callback(self._create_approval_callback(session.id))
 
         asyncio.create_task(self._send_available_commands(session.id))
 
@@ -346,6 +347,12 @@ class VibeAcpAgentLoop(AcpAgent):
                         ApprovalResponse.NO,
                         "User rejected the tool call, provide an alternative plan",
                     )
+                case ToolOption.REJECT_ALWAYS:
+                    session.agent_loop.deny_always(tool_name, required_permissions)
+                    return (
+                        ApprovalResponse.NO,
+                        "Denied for this session. Do not attempt this again.",
+                    )
                 case _:
                     return (ApprovalResponse.NO, f"Unknown option: {option_id}")
 
@@ -364,6 +371,12 @@ class VibeAcpAgentLoop(AcpAgent):
                 if required_permissions
                 else None
             )
+
+            # Escalated permissions always reach the client, auto-approve or not.
+            if session.agent_loop.auto_approve and not any(
+                rp.escalated for rp in typed_permissions or []
+            ):
+                return (ApprovalResponse.YES, None)
 
             tool_call = ToolCallUpdate(tool_call_id=tool_call_id)
             options = build_permission_options(typed_permissions)

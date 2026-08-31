@@ -63,6 +63,21 @@ def test_grep_display_fields_excluded_from_model_result():
     dumped = r.model_dump()
     assert "pattern" not in dumped
     assert "path" not in dumped
+    assert "used_gnu_grep" not in dumped
+
+
+def test_grep_display_warns_on_gnu_grep_fallback():
+    r = GrepResult(
+        matches="", match_count=1, was_truncated=False, pattern="x", used_gnu_grep=True
+    )
+    d = Grep.get_result_display(_evt(Grep, r))
+    assert any("ripgrep (rg) not found" in w for w in d.warnings)
+
+
+def test_grep_display_no_fallback_warning_on_ripgrep():
+    r = GrepResult(matches="", match_count=1, was_truncated=False, pattern="x")
+    d = Grep.get_result_display(_evt(Grep, r))
+    assert d.warnings == []
 
 
 # ---------------------------------------------------------------------------

@@ -224,10 +224,29 @@ class ToolManager:
 
         user_overrides = self._config.tools.get(tool_name)
         if user_overrides is None:
-            return config_class()
+            config = config_class()
+        else:
+            merged_dict = {**default_config.model_dump(), **user_overrides}
+            config = config_class.model_validate(merged_dict)
 
-        merged_dict = {**default_config.model_dump(), **user_overrides}
-        return config_class.model_validate(merged_dict)
+        if self._config.protected_paths:
+            config.protected_paths = list(
+                dict.fromkeys(
+                    [*self._config.protected_paths, *config.protected_paths]
+                )
+            )
+        if self._config.protect_outside_workdir:
+            config.protect_outside_workdir = True
+        if self._config.outside_workdir_exempt:
+            config.outside_workdir_exempt = list(
+                dict.fromkeys(
+                    [
+                        *config.outside_workdir_exempt,
+                        *self._config.outside_workdir_exempt,
+                    ]
+                )
+            )
+        return config
 
     def get(self, tool_name: str) -> BaseTool:
         """Get a tool instance, creating it lazily on first call.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from functools import lru_cache
 import os
 from pathlib import Path
@@ -28,7 +28,11 @@ from privibe.core.tools.permissions import (
     RequiredPermission,
 )
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from privibe.core.tools.utils import is_path_within_workdir, normalize_tool_path
+from privibe.core.tools.utils import (
+    is_path_within_workdir,
+    is_protected_path,
+    normalize_tool_path,
+)
 from privibe.core.types import ToolResultEvent, ToolStreamEvent
 from privibe.core.utils import (
     DEFAULT_BASH_SEARCH_PATHS,
@@ -232,6 +236,11 @@ def _collect_outside_dirs(command_parts: list[str]) -> set[str]:
             # Skip chmod mode strings like +x, +rwx — they are not file paths
             if command == "chmod" and token.startswith("+"):
                 continue
+            # Expand env vars with privibe's own environment (the same one the
+            # spawned shell inherits) so `$HOME/...` is judged by where it
+            # actually points instead of resolving as a relative path under
+            # the workdir.
+            token = os.path.expandvars(token)
             # Only consider tokens that look like paths
             if not (
                 token.startswith(os.sep)
@@ -247,6 +256,70 @@ def _collect_outside_dirs(command_parts: list[str]) -> set[str]:
             # For a directory target use the dir itself; for a file use its parent
             parent = str(resolved) if resolved.is_dir() else str(resolved.parent)
             dirs.add(parent)
+    return dirs
+
+
+def _iter_candidate_tokens(command_parts: list[str]) -> Iterator[tuple[str, str]]:
+    """Yield (raw, expanded) candidate path tokens from every command.
+
+    Every non-flag token is a candidate (env vars expanded with privibe's own
+    environment, which the spawned shell inherits); for `--flag=value` tokens
+    the value is the candidate.
+    """
+    for part in command_parts:
+        for raw in part.split():
+            token = raw.strip("'\"`;|&()")
+            if token.startswith("-"):
+                if "=" not in token:
+                    continue
+                token = token.split("=", 1)[1]
+            if not token:
+                continue
+            yield raw, os.path.expandvars(token)
+
+
+def _find_protected_token(
+    command_parts: list[str], protected_paths: list[str]
+) -> str | None:
+    """Return the first token in any command that resolves into a protected path.
+
+    Deliberately liberal — a stray word that happens to name a protected entry
+    costs a refusal, a missed one costs the file.
+    """
+    if not protected_paths:
+        return None
+    for raw, expanded in _iter_candidate_tokens(command_parts):
+        if is_protected_path(expanded, protected_paths):
+            return raw
+    return None
+
+
+def _collect_escalated_outside_dirs(
+    command_parts: list[str], exempt: list[str]
+) -> set[str]:
+    """Collect parent dirs of path-shaped tokens resolving outside the workdir.
+
+    Only tokens that look like paths are judged — a bare word resolves under
+    cwd and cannot escape it. Tokens matching an exempt entry are skipped
+    (they fall back to the ordinary outside-workdir ASK handling). The result
+    feeds escalated OUTSIDE_DIRECTORY permissions: asks that must reach a
+    human even under auto_approve.
+    """
+    dirs: set[str] = set()
+    for _raw, expanded in _iter_candidate_tokens(command_parts):
+        if not (
+            expanded.startswith(("~", ".."))
+            or "/" in expanded
+            or "\\" in expanded
+        ):
+            continue
+        if is_path_within_workdir(expanded):
+            continue
+        if is_protected_path(expanded, exempt):
+            continue
+        resolved = normalize_tool_path(expanded).resolve()
+        parent = str(resolved) if resolved.is_dir() else str(resolved.parent)
+        dirs.add(parent)
     return dirs
 
 
@@ -395,8 +468,21 @@ class Bash(
                     reason=f"Command denied: '{part}' is not allowed as a standalone command. Do not attempt to run this command.",
                 )
 
-        if self.config.permission == ToolPermission.ALWAYS:
-            return PermissionContext(permission=ToolPermission.ALWAYS)
+        if hit := _find_protected_token(command_parts, self.config.protected_paths):
+            return PermissionContext(
+                permission=ToolPermission.NEVER,
+                reason=f"Command denied: '{hit}' refers to a protected path. Do not attempt to access it.",
+            )
+
+        escalated_dirs: set[str] = set()
+        if self.config.protect_outside_workdir:
+            escalated_dirs = _collect_escalated_outside_dirs(
+                command_parts, self.config.outside_workdir_exempt
+            )
+
+        if not escalated_dirs:
+            if self.config.permission == ToolPermission.ALWAYS:
+                return PermissionContext(permission=ToolPermission.ALWAYS)
 
         has_sensitive = any(is_sensitive(part) for part in command_parts)
         all_allowlisted = not has_sensitive and all(
@@ -404,7 +490,7 @@ class Bash(
         )
         outside_dirs = _collect_outside_dirs(command_parts)
 
-        if all_allowlisted and not outside_dirs:
+        if all_allowlisted and not outside_dirs and not escalated_dirs:
             return PermissionContext(permission=ToolPermission.ALWAYS)
 
         required: list[RequiredPermission] = []
@@ -441,8 +527,11 @@ class Bash(
                         )
                     )
 
-        if outside_dirs:
-            globs = sorted(str(Path(d) / "*") for d in outside_dirs)
+        if outside_dirs or escalated_dirs:
+            escalated_globs = {str(Path(d) / "*") for d in escalated_dirs}
+            globs = sorted(
+                {str(Path(d) / "*") for d in outside_dirs} | escalated_globs
+            )
             for glob in globs:
                 required.append(
                     RequiredPermission(
@@ -450,6 +539,7 @@ class Bash(
                         invocation_pattern=glob,
                         session_pattern=glob,
                         label=f"outside workdir ({glob})",
+                        escalated=glob in escalated_globs,
                     )
                 )
 
