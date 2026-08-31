@@ -470,9 +470,11 @@ class ConsoleUI:
     ) -> tuple[ApprovalResponse, str | None]:
         # Mirror the TUI: auto-approve only when configured AND the tool is
         # enabled in the main agent, so subagents respect tool restrictions.
+        # Escalated permissions always reach the human.
         if (
             self.agent_loop.config.auto_approve
             and tool_name in self.agent_loop.tool_manager.available_tools
+            and not any(rp.escalated for rp in required_permissions or [])
         ):
             return (ApprovalResponse.YES, None)
 
@@ -483,7 +485,9 @@ class ConsoleUI:
         while True:
             try:
                 reply = (
-                    await self._read_reply("Allow? [y]es once / [a]lways / [n]o: ")
+                    await self._read_reply(
+                        "Allow? [y]es once / [a]lways / [n]o / [d]eny for session: "
+                    )
                 ).lower()
             except (KeyboardInterrupt, EOFError):
                 feedback = str(
@@ -502,8 +506,14 @@ class ConsoleUI:
                 case "n" | "no":
                     feedback = await self._deny_feedback()
                     return (ApprovalResponse.NO, feedback)
+                case "d" | "deny":
+                    self.agent_loop.deny_always(tool_name, required_permissions)
+                    return (
+                        ApprovalResponse.NO,
+                        "Denied for this session. Do not attempt this again.",
+                    )
                 case _:
-                    print("Please answer y, a, or n.")
+                    print("Please answer y, a, n, or d.")
 
     def _print_approval_details(
         self,

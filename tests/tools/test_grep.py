@@ -211,6 +211,17 @@ class TestGnuGrepBackend:
         assert "test.py" in result.matches
 
     @pytest.mark.asyncio
+    async def test_flags_gnu_grep_fallback(self, grep_gnu_only, grep, tmp_path):
+        (tmp_path / "test.py").write_text("def hello():\n    pass\n")
+
+        result = await collect_result(grep_gnu_only.run(GrepArgs(pattern="hello")))
+        assert result.used_gnu_grep
+
+        if shutil.which("rg"):
+            result = await collect_result(grep.run(GrepArgs(pattern="hello")))
+            assert not result.used_gnu_grep
+
+    @pytest.mark.asyncio
     async def test_finds_multiple_matches(self, grep_gnu_only, tmp_path):
         (tmp_path / "test.py").write_text("foo\nbar\nfoo\nbaz\nfoo\n")
 

@@ -81,7 +81,7 @@ class TestBuildPermissionOptions:
         ]
         result = build_permission_options(permissions)
 
-        assert len(result) == 3
+        assert len(result) == 4
         allow_always = next(o for o in result if o.option_id == ToolOption.ALLOW_ALWAYS)
         assert "npm install *" in allow_always.name
         assert "session" in allow_always.name.lower()

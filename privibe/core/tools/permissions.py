@@ -19,6 +19,9 @@ class RequiredPermission(BaseModel):
     invocation_pattern: str
     session_pattern: str
     label: str
+    # An escalated permission must reach a human even under auto_approve —
+    # both the agent loop and the UI-side auto-approve shortcuts honor it.
+    escalated: bool = False
 
 
 class PermissionContext(BaseModel):
@@ -28,6 +31,12 @@ class PermissionContext(BaseModel):
 
 
 class ApprovedRule(BaseModel):
+    tool_name: str
+    scope: PermissionScope
+    session_pattern: str
+
+
+class DeniedRule(BaseModel):
     tool_name: str
     scope: PermissionScope
     session_pattern: str

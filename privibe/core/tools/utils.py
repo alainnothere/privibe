@@ -77,6 +77,30 @@ def normalization_note(original: str, resolved: Path) -> str | None:
     )
 
 
+def is_protected_path(path_str: str, protected_paths: list[str]) -> bool:
+    """Return True when the path is a protected entry or lives inside one.
+
+    Plain entries protect the path itself and its whole subtree; entries
+    containing glob characters are matched with fnmatch against the resolved
+    absolute path. Entries may use ~ and cross-dialect drive forms.
+    """
+    if not protected_paths:
+        return False
+
+    resolved = _make_absolute(path_str).resolve()
+    resolved_str = str(resolved)
+
+    for entry in protected_paths:
+        if any(ch in entry for ch in "*?["):
+            if fnmatch.fnmatch(resolved_str, os.path.expanduser(entry)):
+                return True
+            continue
+        entry_resolved = _make_absolute(entry).resolve()
+        if resolved == entry_resolved or entry_resolved in resolved.parents:
+            return True
+    return False
+
+
 def resolve_path_permission(
     path_str: str, *, allowlist: list[str], denylist: list[str]
 ) -> PermissionContext | None:
@@ -118,12 +142,25 @@ def resolve_file_tool_permission(
     denylist: list[str],
     config_permission: ToolPermission,
     sensitive_patterns: list[str],
+    protected_paths: list[str] | None = None,
+    protect_outside_workdir: bool = False,
+    outside_workdir_exempt: list[str] | None = None,
 ) -> PermissionContext | None:
     """Resolve permission for a file-based tool invocation.
 
-    Checks allowlist/denylist, then sensitive patterns, then workdir boundary.
-    Returns PermissionContext with granular required_permissions when applicable.
+    Checks protected paths, then allowlist/denylist, then sensitive patterns,
+    then workdir boundary. Returns PermissionContext with granular
+    required_permissions when applicable.
     """
+    if protected_paths and is_protected_path(path_str, protected_paths):
+        return PermissionContext(
+            permission=ToolPermission.NEVER,
+            reason=(
+                f"Access denied: the path is protected by configuration "
+                f"({tool_name}). Do not attempt to access it."
+            ),
+        )
+
     if (
         result := resolve_path_permission(
             path_str, allowlist=allowlist, denylist=denylist
@@ -152,15 +189,25 @@ def resolve_file_tool_permission(
     if not is_path_within_workdir(path_str):
         if config_permission == ToolPermission.NEVER:
             return PermissionContext(permission=ToolPermission.NEVER)
+        # With protect_outside_workdir on, a non-exempt outside path escalates:
+        # the ask must reach a human even under auto_approve. Exempt entries
+        # share is_protected_path's matching semantics: plain entries cover
+        # their subtree, glob entries go through fnmatch.
+        escalated = protect_outside_workdir and not is_protected_path(
+            path_str, outside_workdir_exempt or []
+        )
         resolved = file_path.resolve()
-        parent_dir = str(resolved.parent)
-        glob = str(Path(parent_dir) / "*")
+        # A directory target globs its own subtree, not its parent's — so an
+        # approval for reading a file in a dir also covers grepping the dir.
+        base_dir = resolved if resolved.is_dir() else resolved.parent
+        glob = str(Path(base_dir) / "*")
         required.append(
             RequiredPermission(
                 scope=PermissionScope.OUTSIDE_DIRECTORY,
                 invocation_pattern=glob,
                 session_pattern=glob,
                 label=f"outside workdir ({glob})",
+                escalated=escalated,
             )
         )
 
