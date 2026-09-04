@@ -751,6 +751,7 @@ class VibeApp(App):  # noqa: PLR0904
             "/effort": self.agent_loop.current_reasoning_effort(),
             "/preview-lines": str(config.tool_result_preview_lines),
             "/scrollback": str(config.message_prune_keep_rows),
+            "/llm-calls-per-turn": str(config.max_llm_calls_per_turn),
             "/detect-context-size": detect,
         }
 
@@ -2203,6 +2204,8 @@ class VibeApp(App):  # noqa: PLR0904
                 await self._apply_preview_lines(int(event.value))
             case "scrollback":
                 await self._apply_scrollback(int(event.value))
+            case "llm_calls_per_turn":
+                await self._apply_llm_calls_per_turn(int(event.value))
             case "detect_context_size":
                 match event.value:
                     case "off":
@@ -2298,6 +2301,32 @@ class VibeApp(App):  # noqa: PLR0904
         await self._try_prune()
         await self._mount_and_scroll(
             UserCommandMessage(f"Message scrollback set to {new_value} rows.")
+        )
+
+    async def _select_llm_calls_per_turn(self, args: str = "") -> None:
+        error: str | None = None
+        if args:
+            if args.isdigit() and int(args) > 0:
+                await self._apply_llm_calls_per_turn(int(args))
+                return
+            error = f"'{args}' is not a valid LLM-call budget (use a positive number)."
+        current = self.config.max_llm_calls_per_turn
+        options = _options_with_current(self.config.llm_calls_per_turn_options, current)
+        await self._open_option_picker(
+            setting="llm_calls_per_turn",
+            title="LLM calls per turn before the model must write up",
+            options=[(str(o), f"{o} calls") for o in options],
+            current=str(current),
+            error=error,
+        )
+
+    async def _apply_llm_calls_per_turn(self, new_value: int) -> None:
+        # StepBudgetMiddleware reads the limit from config on every call, so a
+        # config refresh is all it takes for the running turn to see it.
+        VibeConfig.save_updates({"max_llm_calls_per_turn": new_value})
+        self.agent_loop.refresh_config()
+        await self._mount_and_scroll(
+            UserCommandMessage(f"LLM-call budget set to {new_value} calls per turn.")
         )
 
     # Cadence presets shown in the /detect-context-size picker; the typed

@@ -12,7 +12,14 @@ from privibe.core.skills.manager import SkillManager
 from privibe.core.system_prompt import get_universal_system_prompt
 from privibe.core.tools.base import ToolPermission
 from privibe.core.tools.manager import ToolManager
-from privibe.core.types import BaseEvent, FunctionCall, Role, ToolCall, ToolResultEvent
+from privibe.core.types import (
+    AssistantEvent,
+    BaseEvent,
+    FunctionCall,
+    Role,
+    ToolCall,
+    ToolResultEvent,
+)
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
@@ -135,10 +142,11 @@ async def test_same_round_duplicates_execute_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_same_call_in_different_rounds_runs_both_times() -> None:
-    # Identical calls in separate assistant messages are unaffected by dedup.
+async def test_same_call_in_consecutive_rounds_second_is_refused() -> None:
+    # The identical call in the very next assistant message is not run again:
+    # its result is already in the context. The model is told so.
     round_one = make_todo_tool_call("call_r1", index=0, arguments='{"action": "read"}')
-    round_two = make_todo_tool_call("call_r2", index=0, arguments='{"action": "read"}')
+    round_two = make_todo_tool_call("call_r2", index=0, arguments='{"action":"read"}')
     agent_loop = make_agent_loop(
         backend=FakeBackend([
             [mock_llm_chunk(content="First read.", tool_calls=[round_one])],
@@ -150,9 +158,96 @@ async def test_same_call_in_different_rounds_runs_both_times() -> None:
     events = await act_and_collect_events(agent_loop, "Read twice")
 
     result_events = [e for e in events if isinstance(e, ToolResultEvent)]
-    assert len(result_events) == 2
+    assert [e.tool_call_id for e in result_events] == ["call_r1", "call_r2"]
+    assert not result_events[0].skipped
+    assert result_events[1].skipped
+    assert "identical to one in your previous message" in (
+        result_events[1].skip_reason or ""
+    )
+    assert agent_loop.stats.tool_calls_succeeded == 1
+    assert agent_loop.stats.tool_calls_rejected == 1
+    # The refusal reached the model as the tool response, and the turn went on
+    # to the final text answer without being stopped.
+    r2_msg = next(m for m in agent_loop.messages if m.tool_call_id == "call_r2")
+    assert "identical to one in your previous message" in (r2_msg.content or "")
+    assert agent_loop.messages[-1].content == "Done."
+    assert not any(
+        isinstance(e, AssistantEvent) and e.stopped_by_middleware for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_call_in_three_consecutive_rounds_stops_turn() -> None:
+    # Refused once, repeated anyway: the turn ends and the prompt goes back to
+    # the user. The fourth response is never requested.
+    calls = [
+        make_todo_tool_call(f"call_r{i}", index=0, arguments='{"action": "read"}')
+        for i in range(1, 4)
+    ]
+    backend = FakeBackend([
+        [mock_llm_chunk(content=f"Read {i}.", tool_calls=[tc])]
+        for i, tc in enumerate(calls, start=1)
+    ] + [[mock_llm_chunk(content="Never requested.")]])
+    agent_loop = make_agent_loop(backend=backend)
+
+    events = await act_and_collect_events(agent_loop, "Loop")
+
+    result_events = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert [e.skipped for e in result_events] == [False, True, True]
+    stops = [e for e in events if isinstance(e, AssistantEvent) and e.stopped_by_middleware]
+    assert len(stops) == 1
+    assert "identical `todo` call in 3 consecutive messages" in stops[0].content
+    assert len(backend.requests_messages) == 3
+    assert agent_loop.messages[-1].role == Role.tool
+
+
+@pytest.mark.asyncio
+async def test_same_call_with_another_call_between_runs_both_times() -> None:
+    # Only the immediately previous assistant message counts as a repeat.
+    read_one = make_todo_tool_call("call_r1", index=0, arguments='{"action": "read"}')
+    write = make_todo_tool_call(
+        "call_w", index=0, arguments='{"action": "write", "todos": []}'
+    )
+    read_two = make_todo_tool_call("call_r2", index=0, arguments='{"action": "read"}')
+    agent_loop = make_agent_loop(
+        backend=FakeBackend([
+            [mock_llm_chunk(content="Read.", tool_calls=[read_one])],
+            [mock_llm_chunk(content="Write.", tool_calls=[write])],
+            [mock_llm_chunk(content="Read again.", tool_calls=[read_two])],
+            [mock_llm_chunk(content="Done.")],
+        ])
+    )
+
+    events = await act_and_collect_events(agent_loop, "Read, write, read")
+
+    result_events = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(result_events) == 3
     assert all(not e.skipped for e in result_events)
-    assert {e.tool_call_id for e in result_events} == {"call_r1", "call_r2"}
+    assert agent_loop.stats.tool_calls_succeeded == 3
+    assert agent_loop.stats.tool_calls_rejected == 0
+
+
+@pytest.mark.asyncio
+async def test_same_call_after_new_user_message_runs_again() -> None:
+    # A repeat across turns is the user asking again, not the model looping.
+    round_one = make_todo_tool_call("call_r1", index=0, arguments='{"action": "read"}')
+    round_two = make_todo_tool_call("call_r2", index=0, arguments='{"action": "read"}')
+    agent_loop = make_agent_loop(
+        backend=FakeBackend([
+            [mock_llm_chunk(content="Read.", tool_calls=[round_one])],
+            [mock_llm_chunk(content="Done.")],
+            [mock_llm_chunk(content="Read.", tool_calls=[round_two])],
+            [mock_llm_chunk(content="Done again.")],
+        ])
+    )
+
+    first = await act_and_collect_events(agent_loop, "Read")
+    second = await act_and_collect_events(agent_loop, "Read again")
+
+    for events in (first, second):
+        result_events = [e for e in events if isinstance(e, ToolResultEvent)]
+        assert len(result_events) == 1
+        assert not result_events[0].skipped
     assert agent_loop.stats.tool_calls_succeeded == 2
     assert agent_loop.stats.tool_calls_rejected == 0
 

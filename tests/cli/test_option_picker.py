@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from textual.widgets import OptionList
 
 from privibe.cli.commands import CommandRegistry
 from privibe.cli.textual_ui.app import BottomApp, _options_with_current
@@ -184,6 +185,53 @@ async def test_negative_number_shows_error_and_picker() -> None:
             mock_save.assert_not_called()
 
         assert app._current_bottom_app == BottomApp.OptionPicker
+
+
+@pytest.mark.asyncio
+async def test_bare_llm_calls_per_turn_opens_picker_with_presets() -> None:
+    app = build_test_vibe_app()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        assert await app._handle_command("/llm-calls-per-turn")
+        await pilot.pause(0.2)
+
+        assert app._current_bottom_app == BottomApp.OptionPicker
+        option_list = app.query_one(OptionPickerApp).query_one(OptionList)
+        ids = [
+            option_list.get_option_at_index(i).id
+            for i in range(option_list.option_count)
+        ]
+        assert ids == ["30", "60", "90"]
+
+
+@pytest.mark.asyncio
+async def test_llm_calls_per_turn_accepts_arbitrary_positive_number() -> None:
+    app = build_test_vibe_app()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        with patch("privibe.cli.textual_ui.app.VibeConfig.save_updates") as mock_save:
+            assert await app._handle_command("/llm-calls-per-turn 45")
+            await pilot.pause(0.2)
+
+            mock_save.assert_called_once_with({"max_llm_calls_per_turn": 45})
+
+        assert len(app.query(OptionPickerApp)) == 0
+
+
+@pytest.mark.asyncio
+async def test_llm_calls_per_turn_bad_value_shows_error_and_picker() -> None:
+    app = build_test_vibe_app()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        with patch("privibe.cli.textual_ui.app.VibeConfig.save_updates") as mock_save:
+            assert await app._handle_command("/llm-calls-per-turn 0")
+            await pilot.pause(0.2)
+
+            mock_save.assert_not_called()
+
+        assert app._current_bottom_app == BottomApp.OptionPicker
+        picker = app.query_one(OptionPickerApp)
+        assert "0" in str(picker.query_one(".optionpicker-error").render())
 
 
 def test_options_with_current_inserts_custom_value_sorted() -> None:

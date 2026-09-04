@@ -20,7 +20,12 @@ import difflib
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from privibe.core.config import VibeConfig, cycle_preview_lines, load_dotenv_values
+from privibe.core.config import (
+    VibeConfig,
+    cycle_llm_calls_per_turn,
+    cycle_preview_lines,
+    load_dotenv_values,
+)
 from privibe.core.session.session_loader import SessionLoader
 from privibe.core.skills.parser import SkillParseError
 from privibe.core.skills.render import load_skill_content
@@ -114,6 +119,7 @@ Available commands:
   /replay    Reprint the whole conversation (resume shows only the tail)
   /log       Show the current session log directory
   /preview-lines  Cycle how many tool output lines are shown (3 / 5 / 10)
+  /llm-calls-per-turn  Cycle the LLM-call budget per message (30 / 60 / 90)
   /effort    Cycle reasoning effort stamped on new messages (low / medium / xhigh)
   /exit      Exit (also /quit, or Ctrl+D)
 
@@ -681,6 +687,8 @@ class ConsoleUI:
                 self._command_log()
             case "/preview-lines":
                 self._command_preview_lines()
+            case "/llm-calls-per-turn":
+                self._command_llm_calls_per_turn()
             case "/effort":
                 self._command_effort()
             case "/replay":
@@ -722,6 +730,16 @@ class ConsoleUI:
         VibeConfig.save_updates({"tool_result_preview_lines": new_value})
         self.agent_loop.refresh_config()
         print(f"Tool result preview set to {new_value} lines.")
+
+    def _command_llm_calls_per_turn(self) -> None:
+        config = self.agent_loop.config
+        new_value = cycle_llm_calls_per_turn(
+            config.max_llm_calls_per_turn,
+            config.llm_calls_per_turn_options,
+        )
+        VibeConfig.save_updates({"max_llm_calls_per_turn": new_value})
+        self.agent_loop.refresh_config()
+        print(f"LLM-call budget set to {new_value} calls per turn.")
 
     async def _command_model(self) -> None:
         config = self.agent_loop.config

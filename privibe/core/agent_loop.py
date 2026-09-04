@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 from collections.abc import AsyncGenerator, Callable, Generator
 import contextlib
 from enum import StrEnum, auto
+import hashlib
 from http import HTTPStatus
+import json
 from pathlib import Path
 from threading import Thread
 import time
@@ -21,7 +21,6 @@ from privibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from privibe.core.conversation import ConversationList
 from privibe.core.llm.backend.factory import BACKEND_FACTORY
 from privibe.core.llm.backend.generic import GenericBackend
-from privibe.core.logger import logger
 from privibe.core.llm.exceptions import BackendError
 from privibe.core.llm.format import (
     APIToolFormatHandler,
@@ -30,7 +29,9 @@ from privibe.core.llm.format import (
     ResolvedToolCall,
 )
 from privibe.core.llm.types import BackendLike
+from privibe.core.logger import logger
 from privibe.core.middleware import (
+    SUSPEND_TOOLS_METADATA_KEY,
     AutoCompactMiddleware,
     ContextWarningMiddleware,
     ConversationContext,
@@ -39,12 +40,17 @@ from privibe.core.middleware import (
     MiddlewareResult,
     PriceLimitMiddleware,
     ReadOnlyAgentMiddleware,
+    RepeatedToolCallMiddleware,
     ResetReason,
+    StepBudgetMiddleware,
     TurnLimitMiddleware,
+    assistant_messages_this_turn,
     chat_agent_exit,
     chat_agent_reminder,
     make_plan_agent_reminder,
+    message_tool_call_keys,
     plan_agent_exit,
+    tool_call_key,
 )
 from privibe.core.plan_session import PlanSession
 from privibe.core.prompts import UtilityPrompt
@@ -107,6 +113,7 @@ from privibe.core.utils import (
     get_user_cancellation_message,
     is_user_cancellation_event,
 )
+
 
 class ToolExecutionResponse(StrEnum):
     SKIP = auto()
@@ -278,6 +285,9 @@ class AgentLoop:
         self._current_user_message_id: str | None = None
         self._is_user_prompt_call: bool = False
         self._act_call_count: int = 0
+        # Set by StepBudgetMiddleware's write-up request: the model's next reply
+        # is answer-only, and any tool call in it is refused, not executed.
+        self._tools_suspended_for_step: bool = False
         # Reasoning effort chosen via /effort THIS session ("low" /
         # "medium" / "xhigh"); None means no explicit choice yet, in which
         # case the next message inherits the last stamped user message,
@@ -842,6 +852,11 @@ class AgentLoop:
             self.middleware_pipeline.add(PriceLimitMiddleware(self._max_price))
 
         self.middleware_pipeline.add(AutoCompactMiddleware())
+        # Loop breakers. RepeatedToolCall ends a turn whose model keeps issuing
+        # the identical call; StepBudget ends one that keeps calling tools
+        # without ever answering. Both hand the prompt back to the user.
+        self.middleware_pipeline.add(RepeatedToolCallMiddleware())
+        self.middleware_pipeline.add(StepBudgetMiddleware())
         if self.config.context_warnings:
             self.middleware_pipeline.add(ContextWarningMiddleware(0.5))
 
@@ -878,6 +893,8 @@ class AgentLoop:
                         role=Role.user, content=result.message, injected=True
                     )
                     self.messages.add(injected_message)
+                if result.metadata.get(SUSPEND_TOOLS_METADATA_KEY):
+                    self._tools_suspended_for_step = True
 
             case MiddlewareAction.COMPACT:
                 old_tokens = result.metadata.get(
@@ -907,7 +924,10 @@ class AgentLoop:
 
     def _get_context(self) -> ConversationContext:
         return ConversationContext(
-            messages=self.messages, stats=self.stats, config=self.config
+            messages=self.messages,
+            stats=self.stats,
+            config=self.config,
+            turn_id=self._current_user_message_id,
         )
 
     def _build_metadata(self) -> dict[str, str]:
@@ -942,6 +962,9 @@ class AgentLoop:
         self.messages.add(user_message)
         self.stats.steps += 1
         self._current_user_message_id = user_message.message_id
+        # A suspension left over from a cancelled write-up call must not
+        # bleed into the user's fresh turn.
+        self._tools_suspended_for_step = False
 
         if user_message.message_id is None:
             raise AgentLoopError("User message must have a message_id")
@@ -998,6 +1021,13 @@ class AgentLoop:
         resolved = self.format_handler.resolve_tool_calls(parsed, self.tool_manager)
 
         if not resolved.tool_calls and not resolved.failed_calls:
+            self._tools_suspended_for_step = False
+            return
+
+        if self._tools_suspended_for_step:
+            self._tools_suspended_for_step = False
+            async for event in self._refuse_tool_calls(resolved):
+                yield event
             return
 
         profile_before = self.agent_profile.name
@@ -1267,6 +1297,62 @@ class AgentLoop:
         async for event in self._run_tools_concurrently(resolved.tool_calls):
             yield event
 
+    async def _refuse_tool_calls(
+        self, resolved: ResolvedMessage
+    ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent]:
+        """Answer every call in a tools-suspended reply with a refusal, run none.
+
+        Used for the reply to StepBudgetMiddleware's write-up request. Each
+        call still gets a tool response so the transcript stays well-formed;
+        the next before_turn then stops the turn.
+        """
+        async for event in self._emit_failed_tool_events(resolved.failed_calls):
+            yield event
+        for tc in resolved.tool_calls:
+            tool_config = self.tool_manager.get_tool_config(tc.tool_name)
+            yield ToolCallEvent(
+                tool_name=tc.tool_name,
+                tool_class=tc.tool_class,
+                args=tc.validated_args,
+                tool_call_id=tc.call_id,
+                timeout=getattr(tool_config, "default_timeout", None),
+            )
+            self.stats.tool_calls_rejected += 1
+            skip_reason = (
+                f"Not executed: the step budget for this message is spent and "
+                f"this reply was supposed to be your written answer, not a "
+                f"{tc.tool_name} call. The turn ends here."
+            )
+            yield ToolResultEvent(
+                tool_name=tc.tool_name,
+                tool_class=tc.tool_class,
+                skipped=True,
+                skip_reason=skip_reason,
+                tool_call_id=tc.call_id,
+            )
+            self._handle_tool_response(tc, skip_reason, "skipped")
+
+    def _call_ids_repeating_previous_message(self) -> set[str]:
+        """Ids of calls in the executing assistant message that repeat the previous one.
+
+        The message whose calls are executing is the newest assistant message
+        of this turn; the one before it is what a repeat is measured against,
+        by raw tool name and canonical arguments. A real user message in
+        between resets the comparison.
+        """
+        current_and_previous = 2
+        recent = assistant_messages_this_turn(self.messages, current_and_previous)
+        if len(recent) < current_and_previous:
+            return set()
+        previous_keys = message_tool_call_keys(recent[1])
+        return {
+            tc.id
+            for tc in recent[0].tool_calls or []
+            if tc.id is not None
+            and tc.function is not None
+            and tool_call_key(tc.function.name, tc.function.arguments) in previous_keys
+        }
+
     async def _execute_tool_to_queue(
         self,
         tc: ResolvedToolCall,
@@ -1302,8 +1388,12 @@ class AgentLoop:
         Before partitioning, identical tool calls within this one batch (same
         tool name and same arguments) are deduplicated: only the first is
         executed, and each later duplicate gets a tool response saying it was a
-        duplicate of the executed call. Identical calls in separate assistant
-        messages are unaffected.
+        duplicate of the executed call.
+
+        A call identical to one in the *previous* assistant message of this
+        turn is not executed either: its result is already in the context, and
+        re-running it is what a looping model does. The model is told so; a
+        third identical call in a row ends the turn (RepeatedToolCallMiddleware).
 
         On top of that, bash calls are collapsed by keyword: if several bash
         commands in one batch share a configured single_call_keyword (a
@@ -1317,9 +1407,29 @@ class AgentLoop:
         # whose command contained it.
         keyword_first_call: dict[str, str] = {}
 
+        repeating_previous = self._call_ids_repeating_previous_message()
+
         deduped: list[ResolvedToolCall] = []
         seen: dict[tuple[str, str], str] = {}
         for tc in tool_calls:
+            if tc.call_id in repeating_previous:
+                self.stats.tool_calls_rejected += 1
+                skip_reason = (
+                    f"Not executed: this {tc.tool_name} call is identical to one "
+                    "in your previous message, which ran; its result is above and "
+                    "will not change by running it again. Say what you learned "
+                    "from it and move on. Issuing this same call once more will "
+                    "end the turn."
+                )
+                yield ToolResultEvent(
+                    tool_name=tc.tool_name,
+                    tool_class=tc.tool_class,
+                    skipped=True,
+                    skip_reason=skip_reason,
+                    tool_call_id=tc.call_id,
+                )
+                self._handle_tool_response(tc, skip_reason, "skipped")
+                continue
             key = (tc.tool_name, json.dumps(tc.args_dict, sort_keys=True, default=str))
             first_id = seen.get(key)
             if first_id is None:

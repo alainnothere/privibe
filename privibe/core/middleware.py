@@ -1,19 +1,26 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
+import json
 from string import Template
 from typing import TYPE_CHECKING, Any, Protocol
 
 from privibe.core.agents import AgentProfile
 from privibe.core.prompts import UtilityPrompt
+from privibe.core.types import LLMMessage, Role
 from privibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
     from privibe.core.config import VibeConfig
     from privibe.core.conversation import ConversationList
     from privibe.core.types import AgentStats
+
+# Metadata key on an INJECT_MESSAGE result: the agent loop must not execute any
+# tool call the model makes in its very next reply. Set by StepBudgetMiddleware
+# when it asks the model to write up instead of calling tools.
+SUSPEND_TOOLS_METADATA_KEY = "suspend_tools"
 
 
 class MiddlewareAction(StrEnum):
@@ -33,6 +40,10 @@ class ConversationContext:
     messages: ConversationList
     stats: AgentStats
     config: VibeConfig
+    # Id of the user message that started the current turn. Changes exactly
+    # when the user sends something; compaction and injected reminders leave
+    # it alone, so per-turn middleware state keys off it.
+    turn_id: str | None = None
 
 
 @dataclass
@@ -60,6 +71,142 @@ class TurnLimitMiddleware:
                 reason=f"Turn limit of {self.max_turns} reached",
             )
         return MiddlewareResult()
+
+    def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
+        pass
+
+
+def tool_call_key(name: str | None, arguments: str | None) -> tuple[str, str]:
+    """(tool name, canonical arguments) for comparing tool calls across messages.
+
+    Arguments are the raw JSON string the model emitted. Parsing and re-dumping
+    with sorted keys makes `{"a":1,"b":2}` and `{"b": 2, "a": 1}` the same call;
+    unparseable arguments compare as the raw string.
+    """
+    raw = arguments or ""
+    try:
+        canonical = json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":"))
+    except (ValueError, TypeError):
+        canonical = raw
+    return (name or "", canonical)
+
+
+def message_tool_call_keys(message: LLMMessage) -> set[tuple[str, str]]:
+    return {
+        tool_call_key(tc.function.name, tc.function.arguments)
+        for tc in message.tool_calls or []
+        if tc.function is not None
+    }
+
+
+def assistant_messages_this_turn(
+    messages: Sequence[LLMMessage], limit: int
+) -> list[LLMMessage]:
+    """The last `limit` assistant messages of the current turn, newest first.
+
+    Walks back from the tail and stops at the first real (non-injected) user
+    message: once the user has spoken, earlier repeats are their business.
+    """
+    found: list[LLMMessage] = []
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if msg.role == Role.user and not msg.injected:
+            break
+        if msg.role == Role.assistant:
+            found.append(msg)
+            if len(found) >= limit:
+                break
+    return found
+
+
+class StepBudgetMiddleware:
+    """Cap the LLM calls one user message may trigger.
+
+    before_turn runs once per LLM call. Calls 1..max_llm_calls proceed. On the
+    next one the model is told, via an injected message, to stop calling tools
+    and write up what it has; the result carries SUSPEND_TOOLS_METADATA_KEY so
+    the agent loop refuses to execute any tool call in that reply. If the loop
+    comes back for yet another call (the model called tools anyway), the turn
+    is stopped and the prompt returns to the user. A new user message resets
+    the count; compaction does not.
+
+    The limit is read from config on every call, so /llm-calls-per-turn takes
+    effect mid-session without rebuilding the pipeline.
+    """
+
+    def __init__(self) -> None:
+        self._turn_id: str | None = None
+        self._calls = 0
+        self._summary_requested = False
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+        max_llm_calls = context.config.max_llm_calls_per_turn
+        if max_llm_calls <= 0:
+            return MiddlewareResult()
+        if context.turn_id != self._turn_id:
+            self._turn_id = context.turn_id
+            self._calls = 0
+            self._summary_requested = False
+
+        self._calls += 1
+        if self._calls <= max_llm_calls:
+            return MiddlewareResult()
+
+        if not self._summary_requested:
+            self._summary_requested = True
+            return MiddlewareResult(
+                action=MiddlewareAction.INJECT_MESSAGE,
+                message=step_budget_summary_request(max_llm_calls),
+                metadata={SUSPEND_TOOLS_METADATA_KEY: True},
+            )
+
+        return MiddlewareResult(
+            action=MiddlewareAction.STOP,
+            reason=(
+                f"Step budget spent: {max_llm_calls} LLM calls on this message, "
+                "and when asked to write up its findings the model called tools "
+                "instead. Send a message to grant it another "
+                f"{max_llm_calls}."
+            ),
+        )
+
+    def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
+        # Compaction mid-turn is plumbing, not a new turn: the count survives it.
+        if reset_reason == ResetReason.COMPACT:
+            return
+        self._turn_id = None
+        self._calls = 0
+        self._summary_requested = False
+
+
+class RepeatedToolCallMiddleware:
+    """Stop the turn when the model issues the same tool call `streak` messages in a row.
+
+    The agent loop already refuses to execute a call identical to one in the
+    previous assistant message and tells the model so. A model that repeats it
+    anyway is looping, not thinking; this middleware ends the turn before the
+    next LLM call so the user gets the prompt back. Only assistant messages of
+    the current turn count, so a user re-asking never trips it.
+    """
+
+    def __init__(self, streak: int = 3) -> None:
+        self.streak = streak
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+        recent = assistant_messages_this_turn(context.messages, self.streak)
+        if len(recent) < self.streak:
+            return MiddlewareResult()
+        repeated = set.intersection(*(message_tool_call_keys(m) for m in recent))
+        if not repeated:
+            return MiddlewareResult()
+        name, _args = sorted(repeated)[0]
+        return MiddlewareResult(
+            action=MiddlewareAction.STOP,
+            reason=(
+                f"Stopped: the model issued the identical `{name}` call in "
+                f"{self.streak} consecutive messages. Send a message to continue."
+            ),
+        )
 
     def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
         pass
@@ -155,6 +302,13 @@ def chat_agent_exit() -> str:
     return _wrap_warning(UtilityPrompt.CHAT_EXIT.read())
 
 
+def step_budget_summary_request(max_llm_calls: int) -> str:
+    template = UtilityPrompt.STEP_BUDGET.read()
+    return _wrap_warning(
+        Template(template).safe_substitute(max_llm_calls=str(max_llm_calls))
+    )
+
+
 class ReadOnlyAgentMiddleware:
     def __init__(
         self,
@@ -224,17 +378,23 @@ class MiddlewarePipeline:
 
     async def run_before_turn(self, context: ConversationContext) -> MiddlewareResult:
         messages_to_inject = []
+        # Injected results are merged into one message; their metadata merges
+        # too, so a flag like SUSPEND_TOOLS_METADATA_KEY survives the merge.
+        merged_metadata: dict[str, Any] = {}
 
         for mw in self.middlewares:
             result = await mw.before_turn(context)
             if result.action == MiddlewareAction.INJECT_MESSAGE and result.message:
                 messages_to_inject.append(result.message)
+                merged_metadata.update(result.metadata)
             elif result.action in {MiddlewareAction.STOP, MiddlewareAction.COMPACT}:
                 return result
         if messages_to_inject:
             combined_message = "\n\n".join(messages_to_inject)
             return MiddlewareResult(
-                action=MiddlewareAction.INJECT_MESSAGE, message=combined_message
+                action=MiddlewareAction.INJECT_MESSAGE,
+                message=combined_message,
+                metadata=merged_metadata,
             )
 
         return MiddlewareResult()
