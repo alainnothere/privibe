@@ -19,7 +19,7 @@ from privibe.core.tools.base import (
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import (
-    display_path,
+    line_range,
     large_file_advisory,
     normalization_note,
     normalize_tool_path,
@@ -58,6 +58,8 @@ class ReadFileResult(BaseModel):
         description="True if the read stopped before end of file, whether due "
         "to the max_read_bytes cap or the line limit."
     )
+    # For the user-facing result line only; the model already knows it.
+    start_line: int = Field(default=1, exclude=True)
     path_note: str | None = Field(
         default=None,
         description="Set when the input path was rewritten across path dialects "
@@ -141,6 +143,7 @@ class ReadFile(
 
         yield ReadFileResult(
             path=str(file_path),
+            start_line=args.start_line,
             content="".join(read_result.lines),
             lines_read=len(read_result.lines),
             was_truncated=read_result.was_truncated,
@@ -279,7 +282,7 @@ class ReadFile(
 
     @classmethod
     def format_call_display(cls, args: ReadFileArgs) -> ToolCallDisplay:
-        summary = f"Reading {args.path}"
+        summary = f"read_file {args.path}"
         if args.start_line > 1 or args.limit is not None:
             parts = []
             if args.start_line > 1:
@@ -296,7 +299,8 @@ class ReadFile(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
 
-        message = f"Read {event.result.lines_read} line{'' if event.result.lines_read <= 1 else 's'} from {display_path(event.result.path)}"
+        r = event.result
+        message = f"{r.path} {line_range(r.start_line, r.lines_read)}"
         if event.result.was_truncated:
             message += " (truncated)"
 
@@ -305,11 +309,7 @@ class ReadFile(
             warnings.append("Large file: head preview only (see advisory)")
         elif event.result.was_truncated:
             warnings.append("File was truncated due to size limit")
-        return ToolResultDisplay(
-            success=True,
-            message=message,
-            warnings=warnings,
-        )
+        return ToolResultDisplay(success=True, message=message, warnings=warnings)
 
     @classmethod
     def get_status_text(cls) -> str:

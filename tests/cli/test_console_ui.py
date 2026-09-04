@@ -111,7 +111,7 @@ def test_tool_result_lines(ui: ConsoleUI) -> None:
         ToolResultEvent(**base, skipped=True, skip_reason="nope")
     )
     assert "cancelled" in ui._result_line(ToolResultEvent(**base, cancelled=True))
-    assert ui._result_line(ToolResultEvent(**base)) == "[tool] bash: done"
+    assert ui._result_line(ToolResultEvent(**base)) == "[tool] bash done"
 
 
 # ----------------------------------------------------------------------

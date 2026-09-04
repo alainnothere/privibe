@@ -7,6 +7,7 @@ from privibe import __version__
 from privibe.core.agent_loop import AgentLoop
 from privibe.core.agents.models import BuiltinAgentName
 from privibe.core.config import VibeConfig
+from privibe.core.conversation import is_step_budget_warning
 from privibe.core.logger import logger
 from privibe.core.output_formatters import create_formatter
 from privibe.core.types import (
@@ -75,6 +76,10 @@ def run_programmatic(
                 agent_loop.messages.add(msg)
             last = agent_loop.messages[-1] if agent_loop.messages else None
             if last and f"<{CONTEXT_REFRESH_TAG}>" in (last.content or ""):
+                agent_loop.messages.rewind(1)
+            if agent_loop.messages and is_step_budget_warning(agent_loop.messages[-1]):
+                # A write-up request whose call never happened; see
+                # conversation._drop_dangling_step_budget_warning.
                 agent_loop.messages.rewind(1)
             content = build_context_refresh_content(agent_loop.config)
             agent_loop.messages.add(

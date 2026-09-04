@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from privibe.core.agents.manager import AgentManager
 from privibe.core.agents.models import AgentProfile, BuiltinAgentName
 from privibe.core.config import ModelConfig, ProviderConfig, VibeConfig
-from privibe.core.conversation import ConversationList
+from privibe.core.conversation import ConversationList, is_step_budget_warning
 from privibe.core.llm.backend.factory import BACKEND_FACTORY
 from privibe.core.llm.backend.generic import GenericBackend
 from privibe.core.llm.exceptions import BackendError
@@ -213,6 +213,10 @@ def reset_context_size_detection_state(alias: str | None = None) -> None:
 
 
 class AgentLoop:
+    # time.time() of the most recent LLM request; stamped on ToolCallEvents so
+    # the UI can show when the call was asked for.
+    _llm_requested_at: float | None = None
+
     def __init__(
         self,
         config: VibeConfig,
@@ -788,6 +792,7 @@ class AgentLoop:
         self, msg: str, client_message_id: str | None = None
     ) -> AsyncGenerator[BaseEvent, None]:
         self._cancel_preflight_warmup()
+        self._drop_dangling_step_budget_warning()
         self.rewind_manager.create_checkpoint()
         self._act_call_count += 1
         # Auto-detect context size (and the cosmetic model name) every turn. The
@@ -805,6 +810,18 @@ class AgentLoop:
             msg, client_message_id=client_message_id
         ):
             yield event
+
+    def _drop_dangling_step_budget_warning(self) -> None:
+        """Remove a step-budget write-up request left as the tail by an
+        interrupted write-up call, so the new user message does not land
+        right after "do not call any tool now". Reset hooks stay quiet: this
+        is not a rewind, the undo stack and checkpoints must survive. The
+        prefix fingerprint only covers the system message and tools, so a
+        tail pop is cache-safe.
+        """
+        if self.messages and is_step_budget_warning(self.messages[-1]):
+            with self.messages.no_reset_hooks():
+                self.messages.rewind(1)
 
     def _append_shims_for_dangling_tool_calls(self) -> None:
         """Append placeholder tool responses for unanswered calls at the conversation tail.
@@ -1056,6 +1073,7 @@ class AgentLoop:
                 tool_name=tc.function.name,
                 tool_class=tool_class,
                 timeout=getattr(tool_config, "default_timeout", None),
+                requested_at=self._llm_requested_at,
             )
 
     async def _stream_assistant_events(
@@ -1292,6 +1310,7 @@ class AgentLoop:
                 args=tool_call.validated_args,
                 tool_call_id=tool_call.call_id,
                 timeout=getattr(tool_config, "default_timeout", None),
+                requested_at=self._llm_requested_at,
             )
 
         async for event in self._run_tools_concurrently(resolved.tool_calls):
@@ -1316,6 +1335,7 @@ class AgentLoop:
                 args=tc.validated_args,
                 tool_call_id=tc.call_id,
                 timeout=getattr(tool_config, "default_timeout", None),
+                requested_at=self._llm_requested_at,
             )
             self.stats.tool_calls_rejected += 1
             skip_reason = (
@@ -1677,6 +1697,7 @@ class AgentLoop:
         )
         try:
             start_time = time.perf_counter()
+            self._llm_requested_at = time.time()
             result = await self.backend.complete(
                 model=active_model,
                 messages=self.messages,
@@ -1747,6 +1768,7 @@ class AgentLoop:
         )
         try:
             start_time = time.perf_counter()
+            self._llm_requested_at = time.time()
             usage = LLMUsage()
             chunk_agg: LLMChunk | None = None
             duplicate_cut = False

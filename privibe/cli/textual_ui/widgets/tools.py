@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from time import time
 
 from textual.app import ComposeResult
@@ -119,6 +120,19 @@ class ToolCallMessage(StatusMessage):
         if self._text_widget:
             self._text_widget.update(text)
 
+    def set_finished_hint(self, duration: float | None) -> None:
+        """Replace the frozen elapsed counter with the measured duration and
+        the wall-clock time the LLM request behind this call went out."""
+        if self._hint_widget is None:
+            return
+        parts: list[str] = []
+        if duration is not None:
+            parts.append(f"{duration:.1f}s")
+        requested_at = self._event.requested_at if self._event else None
+        if requested_at is not None:
+            parts.append(datetime.fromtimestamp(requested_at).strftime("%H:%M:%S"))
+        self._hint_widget.update(f"({' · '.join(parts)})" if parts else "")
+
 
 class ToolResultMessage(Static):
     def __init__(
@@ -178,6 +192,9 @@ class ToolResultMessage(Static):
             self._call_widget.stop_spinning(success=success)
             result_text = self._get_result_text()
             self._call_widget.set_result_text(result_text)
+            self._call_widget.set_finished_hint(
+                self._event.duration if self._event else None
+            )
         await self._render_result()
 
     def _determine_success(self) -> bool:
@@ -196,10 +213,10 @@ class ToolResultMessage(Static):
             return f"{self._tool_name} completed"
 
         if self._event.error:
-            return f"{self._tool_name}: error"
+            return f"{self._tool_name} error"
 
         if self._event.skipped:
-            return f"{self._tool_name}: skipped"
+            return f"{self._tool_name} skipped"
 
         if self._event.tool_class:
             adapter = ToolUIDataAdapter(self._event.tool_class)

@@ -92,7 +92,7 @@ class WebSearch(
             return ToolCallDisplay(summary="websearch")
         if not isinstance(event.args, WebSearchArgs):
             return ToolCallDisplay(summary="websearch")
-        return ToolCallDisplay(summary=f"Searching the web: '{event.args.query}'")
+        return ToolCallDisplay(summary=f'{cls.get_name()} "{event.args.query}"')
 
     @classmethod
     def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
@@ -101,9 +101,9 @@ class WebSearch(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
         r = event.result
-        suffix = f' for "{r.query}"' if r.query else ""
+        n = len(r.sources)
         return ToolResultDisplay(
-            success=True, message=f"{len(r.sources)} sources found{suffix}"
+            success=True, message=f'"{r.query}": {n} source{"s" if n != 1 else ""}'
         )
 
     @classmethod

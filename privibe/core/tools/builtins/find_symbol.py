@@ -203,7 +203,7 @@ class FindSymbol(
         yield FindSymbolResult(
             symbol=args.symbol,
             kind=args.kind,
-            path=args.path,
+            path=str(Path(args.path).resolve()),
             total_found=total_found,
             showing=showing,
             output=output,
@@ -218,9 +218,7 @@ class FindSymbol(
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             try:
                 stdout_bytes, _ = await asyncio.wait_for(
@@ -229,7 +227,9 @@ class FindSymbol(
             except TimeoutError:
                 proc.kill()
                 await proc.wait()
-                raise ToolError(f"Search timed out after {self.config.default_timeout}s")
+                raise ToolError(
+                    f"Search timed out after {self.config.default_timeout}s"
+                )
         except ToolError:
             raise
         except Exception as exc:
@@ -241,8 +241,9 @@ class FindSymbol(
     @classmethod
     def format_call_display(cls, args: FindSymbolArgs) -> ToolCallDisplay:
         kind_str = f" ({args.kind})" if args.kind else ""
-        path_str = f" in {args.path}" if args.path != "." else ""
-        return ToolCallDisplay(summary=f"Finding '{args.symbol}'{kind_str}{path_str}")
+        return ToolCallDisplay(
+            summary=f"find_symbol '{args.symbol}'{kind_str} in {args.path}"
+        )
 
     @classmethod
     def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
@@ -251,15 +252,11 @@ class FindSymbol(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
         r = event.result
-        kind_str = f" {r.kind}" if r.kind else ""
-        path_str = f" in {r.path}" if r.path != "." else ""
-        if r.total_found == 0:
-            return ToolResultDisplay(
-                success=False,
-                message=f"No{kind_str} matches for '{r.symbol}'{path_str}",
-            )
+        kind_str = f" ({r.kind})" if r.kind else ""
         count = r.total_found
-        msg = f"Found {count}{kind_str} match{'es' if count != 1 else ''} for '{r.symbol}'{path_str}"
+        msg = f"'{r.symbol}'{kind_str} in {r.path}: {count} match{'es' if count != 1 else ''}"
+        if count == 0:
+            return ToolResultDisplay(success=False, message=msg)
         if r.total_found > r.showing:
             msg += f" (showing {r.showing})"
         return ToolResultDisplay(success=True, message=msg)
@@ -373,7 +370,11 @@ def _format_match(file_path: str, line_num: int, ext: str) -> str:
     formatted = format_hashed_lines(lines[ctx_start : end_idx + 1], ctx_start + 1)
 
     header = f"=== {file_path}:{line_num} ==="
-    suffix = f"\n[body truncated at {MAX_BODY_LINES} lines — use hashed_read with start_line/limit for more]" if truncated else ""
+    suffix = (
+        f"\n[body truncated at {MAX_BODY_LINES} lines — use hashed_read with start_line/limit for more]"
+        if truncated
+        else ""
+    )
     return f"{header}\n{formatted}{suffix}"
 
 

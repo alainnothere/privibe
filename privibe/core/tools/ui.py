@@ -10,6 +10,16 @@ if TYPE_CHECKING:
     from privibe.core.types import ToolCallEvent, ToolResultEvent
 
 
+def prefix_tool_name(tool_name: str, message: str) -> str:
+    """`grep "x" in /p: 3 matches`, never `grep grep "x" ...` when a tool
+    already names itself."""
+    if not message:
+        return tool_name
+    if message == tool_name or message.startswith(tool_name + " "):
+        return message
+    return f"{tool_name} {message}"
+
+
 class ToolCallDisplay(BaseModel):
     summary: str  # Brief description: "Writing file.txt", "Patching code.py"
     content: str | None = None  # Optional content preview
@@ -89,7 +99,10 @@ class ToolUIDataAdapter:
 
     def get_call_display(self, event: ToolCallEvent) -> ToolCallDisplay:
         if self.ui_data_class:
-            return self.ui_data_class.get_call_display(event)
+            display = self.ui_data_class.get_call_display(event)
+            return display.model_copy(
+                update={"summary": prefix_tool_name(event.tool_name, display.summary)}
+            )
 
         args_dict = (
             event.args.model_dump()
@@ -100,18 +113,22 @@ class ToolUIDataAdapter:
         return ToolCallDisplay(summary=f"{event.tool_name}({args_str})")
 
     def get_result_display(self, event: ToolResultEvent) -> ToolResultDisplay:
+        """The one-line result every UI shows. Always starts with the tool
+        name so a finished call still says who ran and on what, since the TUI
+        replaces the call line with this one."""
         if event.error:
-            return ToolResultDisplay(success=False, message=event.error)
-
-        if event.skipped:
-            return ToolResultDisplay(
-                success=False, message=event.skip_reason or "Skipped"
+            display = ToolResultDisplay(success=False, message=f"error: {event.error}")
+        elif event.skipped:
+            display = ToolResultDisplay(
+                success=False, message=f"skipped: {event.skip_reason or 'Skipped'}"
             )
-
-        if self.ui_data_class:
-            return self.ui_data_class.get_result_display(event)
-
-        return ToolResultDisplay(success=True, message="Success")
+        elif self.ui_data_class:
+            display = self.ui_data_class.get_result_display(event)
+        else:
+            display = ToolResultDisplay(success=True, message="done")
+        return display.model_copy(
+            update={"message": prefix_tool_name(event.tool_name, display.message)}
+        )
 
     def get_status_text(self) -> str:
         if self.ui_data_class:

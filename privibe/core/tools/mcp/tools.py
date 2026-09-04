@@ -262,7 +262,7 @@ def create_mcp_http_proxy_tool_class(
                     message=event.error or event.skip_reason or "No result",
                 )
 
-            message = f"MCP tool {event.result.tool} completed"
+            message = "completed" if event.result.ok else "failed"
             return ToolResultDisplay(success=event.result.ok, message=message)
 
         @classmethod
@@ -401,7 +401,7 @@ def create_mcp_stdio_proxy_tool_class(
                     message=event.error or event.skip_reason or "No result",
                 )
 
-            message = f"MCP tool {event.result.tool} completed"
+            message = "completed" if event.result.ok else "failed"
             return ToolResultDisplay(success=event.result.ok, message=message)
 
         @classmethod

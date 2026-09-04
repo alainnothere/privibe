@@ -26,7 +26,12 @@ if TYPE_CHECKING:
     from privibe.core.types import ToolResultEvent
 
 # Re-export LineReplacement so existing imports from this module keep working.
-__all__ = ["HashedReplace", "HashedReplaceArgs", "HashedReplaceResult", "LineReplacement"]
+__all__ = [
+    "HashedReplace",
+    "HashedReplaceArgs",
+    "HashedReplaceResult",
+    "LineReplacement",
+]
 
 
 class HashedReplaceArgs(BaseModel):
@@ -96,7 +101,7 @@ class HashedReplace(
     @classmethod
     def format_call_display(cls, args: HashedReplaceArgs) -> ToolCallDisplay:
         n = len(args.replacements)
-        summary = f"Replacing {n} region{'s' if n != 1 else ''} in {args.path}"
+        summary = f"{cls.get_name()} {args.path} ({n} region{'s' if n != 1 else ''})"
         content = "\n---\n".join(
             (f"line {r.line}–{r.end_line}" if r.end_line else f"line {r.line}")
             + f":\n{r.new_content}"
@@ -114,9 +119,8 @@ class HashedReplace(
         return ToolResultDisplay(
             success=True,
             message=(
-                f"Applied {r.total_replacements} replacement{'s' if r.total_replacements != 1 else ''} "
-                f"({r.total_lines_replaced} line{'s' if r.total_lines_replaced != 1 else ''} replaced) "
-                f"in {Path(r.path).name}"
+                f"{r.path}: {r.total_replacements} replacement{'s' if r.total_replacements != 1 else ''} "
+                f"({r.total_lines_replaced} line{'s' if r.total_lines_replaced != 1 else ''}) applied"
             ),
         )
 

@@ -148,10 +148,7 @@ class WebFetch(
             content = _html_to_markdown(content)
 
         yield WebFetchResult(
-            url=url,
-            content=content,
-            content_type=content_type,
-            saved_path=saved_path,
+            url=url, content=content, content_type=content_type, saved_path=saved_path
         )
 
     def _validate_args(self, args: WebFetchArgs) -> None:
@@ -272,9 +269,7 @@ class WebFetch(
         if not isinstance(event.args, WebFetchArgs):
             return ToolCallDisplay(summary="webfetch")
 
-        parsed = urlparse(event.args.url)
-        domain = parsed.netloc or event.args.url[:50]
-        summary = f"Fetching: {domain}"
+        summary = f"{cls.get_name()} {event.args.url}"
 
         if event.args.timeout:
             summary += f" (timeout {event.args.timeout}s)"
@@ -288,15 +283,13 @@ class WebFetch(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
 
-        parsed = urlparse(event.result.url)
-        domain = parsed.netloc or event.result.url[:50]
         mime = event.result.content_type.split(";")[0]
 
         if event.result.saved_path:
-            message = f"Saved {mime} from {domain} to {event.result.saved_path}"
+            message = f"{event.result.url}: saved {mime} to {event.result.saved_path}"
         else:
             content_len = len(event.result.content)
-            message = f"Fetched {content_len:,} chars from {domain} ({mime})"
+            message = f"{event.result.url}: {content_len:,} chars ({mime})"
 
         return ToolResultDisplay(success=True, message=message)
 

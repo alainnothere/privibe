@@ -19,7 +19,6 @@ from privibe.core.tools.base import (
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import (
-    display_path,
     normalization_note,
     normalize_tool_path,
     resolve_file_tool_permission,
@@ -69,16 +68,16 @@ class WriteFile(
     @classmethod
     def format_call_display(cls, args: WriteFileArgs) -> ToolCallDisplay:
         return ToolCallDisplay(
-            summary=f"Writing {args.path}{' (overwrite)' if args.overwrite else ''}",
+            summary=f"write_file {args.path}{' (overwrite)' if args.overwrite else ''}",
             content=args.content,
         )
 
     @classmethod
     def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
         if isinstance(event.result, WriteFileResult):
-            action = "Overwritten" if event.result.file_existed else "Created"
+            action = "overwrote" if event.result.file_existed else "created"
             return ToolResultDisplay(
-                success=True, message=f"{action} {display_path(event.result.path)}"
+                success=True, message=f"{action} {event.result.path}"
             )
 
         return ToolResultDisplay(success=True, message="File written")
