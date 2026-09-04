@@ -19,6 +19,7 @@ from privibe.core.tools.base import (
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import (
+    line_range,
     large_file_advisory,
     normalization_note,
     normalize_tool_path,
@@ -193,7 +194,9 @@ class HashedRead(
             lines: list[str] = []
             bytes_read = 0
             was_truncated = False
-            async with await anyio.Path(file_path).open(encoding="utf-8", errors="replace") as f:
+            async with await anyio.Path(file_path).open(
+                encoding="utf-8", errors="replace"
+            ) as f:
                 line_index = 0
                 async for line in f:
                     if line_index < args.start_line - 1:
@@ -219,7 +222,7 @@ class HashedRead(
 
     @classmethod
     def format_call_display(cls, args: HashedReadArgs) -> ToolCallDisplay:
-        summary = f"Reading {args.path} (hashed)"
+        summary = f"hashed_read {args.path}"
         if args.start_line > 1 or args.limit is not None:
             parts = []
             if args.start_line > 1:
@@ -236,17 +239,13 @@ class HashedRead(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
         r = event.result
-        msg = f"Read {r.lines_read} line{'s' if r.lines_read != 1 else ''} from {Path(r.path).name} (hashed)"
+        msg = f"{r.path} {line_range(r.start_line, r.lines_read)}"
         warnings = []
         if r.advisory:
             warnings.append("Large file: head preview only (see advisory)")
         elif r.was_truncated:
             warnings.append("File was truncated due to size limit")
-        return ToolResultDisplay(
-            success=True,
-            message=msg,
-            warnings=warnings,
-        )
+        return ToolResultDisplay(success=True, message=msg, warnings=warnings)
 
     @classmethod
     def get_status_text(cls) -> str:

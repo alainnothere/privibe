@@ -21,7 +21,6 @@ from privibe.core.tools.base import (
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import (
-    display_path,
     normalization_note,
     normalize_tool_path,
     resolve_file_tool_permission,
@@ -103,7 +102,7 @@ class SearchReplace(
     def format_call_display(cls, args: SearchReplaceArgs) -> ToolCallDisplay:
         blocks = cls._parse_search_replace_blocks(args.content)
         return ToolCallDisplay(
-            summary=f"Patching {args.file_path} ({len(blocks)} blocks)",
+            summary=f"search_replace {args.file_path} ({len(blocks)} blocks)",
             content=args.content,
         )
 
@@ -112,7 +111,7 @@ class SearchReplace(
         if isinstance(event.result, SearchReplaceResult):
             return ToolResultDisplay(
                 success=True,
-                message=f"Applied {event.result.blocks_applied} block{'' if event.result.blocks_applied == 1 else 's'} in {display_path(event.result.file)}",
+                message=f"{event.result.file}: {event.result.blocks_applied} block{'' if event.result.blocks_applied == 1 else 's'} applied",
                 warnings=event.result.warnings,
             )
 

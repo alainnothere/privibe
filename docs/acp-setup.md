@@ -7,7 +7,7 @@ Once you have set up `privibe` with the API keys, you are ready to use `privibe-
 
 For usage in Zed, you can set up a local install as follows:
 
-1. Go to `~/.config/zed/settings.json` and, under the `agent_servers` JSON object, add the following key-value pair to invoke the `vibe-acp` command. Here is the snippet:
+1. Go to `~/.config/zed/settings.json` and, under the `agent_servers` JSON object, add the following key-value pair to invoke the `privibe-acp` command. Here is the snippet:
 
 ```json
 {
@@ -16,6 +16,21 @@ For usage in Zed, you can set up a local install as follows:
          "type": "custom",
          "command": "privibe-acp",
          "args": [],
+         "env": {}
+      }
+   }
+}
+```
+
+Running from a source checkout without installing? Point Zed at `uv` instead — same shape, no PATH entry needed:
+
+```json
+{
+   "agent_servers": {
+        "Privibe": {
+         "type": "custom",
+         "command": "uv",
+         "args": ["run", "--project", "/path/to/privibe", "privibe-acp"],
          "env": {}
       }
    }

@@ -18,7 +18,7 @@ from privibe.core.tools.builtins._hashed_core import (
 )
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from privibe.core.tools.utils import display_path, resolve_file_tool_permission
+from privibe.core.tools.utils import resolve_file_tool_permission
 from privibe.core.types import ToolStreamEvent
 
 if TYPE_CHECKING:
@@ -96,7 +96,9 @@ class HashedReplaceLineResult(BaseModel):
 
 
 class HashedReplaceLine(
-    BaseTool[HashedReplaceLineArgs, HashedReplaceLineResult, BaseToolConfig, BaseToolState],
+    BaseTool[
+        HashedReplaceLineArgs, HashedReplaceLineResult, BaseToolConfig, BaseToolState
+    ],
     ToolUIData[HashedReplaceLineArgs, HashedReplaceLineResult],
 ):
     description: ClassVar[str] = (
@@ -112,7 +114,9 @@ class HashedReplaceLine(
 
     permission_group: ClassVar[str] = "file"
 
-    def resolve_permission(self, args: HashedReplaceLineArgs) -> PermissionContext | None:
+    def resolve_permission(
+        self, args: HashedReplaceLineArgs
+    ) -> PermissionContext | None:
         return resolve_file_tool_permission(
             args.path,
             tool_name=self.get_name(),
@@ -152,7 +156,7 @@ class HashedReplaceLine(
     @classmethod
     def format_call_display(cls, args: HashedReplaceLineArgs) -> ToolCallDisplay:
         n = len(args.replacements)
-        summary = f"Replacing {n} line{'s' if n != 1 else ''} in {args.path}"
+        summary = f"hashed_replace_line {args.path} ({n} line{'s' if n != 1 else ''})"
         content = "\n---\n".join(
             f"line {r.line}:\n{r.new_content}" for r in args.replacements
         )
@@ -167,10 +171,7 @@ class HashedReplaceLine(
         r = event.result
         return ToolResultDisplay(
             success=True,
-            message=(
-                f"Replaced {r.total_replacements} line{'s' if r.total_replacements != 1 else ''} "
-                f"in {display_path(r.path)}"
-            ),
+            message=f"{r.path}: {r.total_replacements} line{'s' if r.total_replacements != 1 else ''} replaced",
             warnings=[r.content_note] if r.content_note else [],
         )
 

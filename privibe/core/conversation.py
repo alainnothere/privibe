@@ -7,7 +7,38 @@ from typing import TYPE_CHECKING, overload
 
 from privibe.core.session.session_loader import SessionLoader
 from privibe.core.types import AvailableTool, LLMMessage, Role
+from privibe.core.utils import VIBE_WARNING_TAG
 from privibe.core.utils.tags import CONTEXT_REFRESH_TAG
+
+# Opening words of the step-budget write-up request (prompts/step_budget.md).
+# The prompt file is editable; if its first words change, this must follow or
+# is_step_budget_warning() stops recognising the message and a cancelled
+# write-up's warning survives as the tail, reading as a live order.
+STEP_BUDGET_MARKER = "Step budget spent"
+
+
+def is_step_budget_warning(msg: LLMMessage) -> bool:
+    return (
+        msg.role == Role.user
+        and msg.injected
+        and (msg.content or "").startswith(f"<{VIBE_WARNING_TAG}>{STEP_BUDGET_MARKER}")
+    )
+
+
+def _drop_dangling_step_budget_warning(messages: list[LLMMessage]) -> list[LLMMessage]:
+    """Drop a step-budget write-up request sitting at the tail.
+
+    The warning is injected right before the write-up call. If that call was
+    cancelled (Esc, or the session ended), no assistant reply follows it and
+    the next user message would land directly after "do not call any tool
+    now". The model reads that as a live instruction for the new turn, even
+    though the budget has reset. Session e29828fd, 2026-09-04: the model
+    answered a fresh instruction with a plan and asked for more steps.
+    """
+    if messages and is_step_budget_warning(messages[-1]):
+        return messages[:-1]
+    return messages
+
 
 if TYPE_CHECKING:
     from privibe.core.config import VibeConfig
@@ -31,9 +62,7 @@ def _fix_dangling_tool_calls(messages: list[LLMMessage]) -> list[LLMMessage]:
         return result
 
     responded_ids = {
-        m.tool_call_id
-        for m in result
-        if m.role == Role.tool and m.tool_call_id
+        m.tool_call_id for m in result if m.role == Role.tool and m.tool_call_id
     }
 
     for tc in last.tool_calls:
@@ -44,7 +73,9 @@ def _fix_dangling_tool_calls(messages: list[LLMMessage]) -> list[LLMMessage]:
                     tool_call_id=tc.id or "",
                     name=(tc.function.name or "") if tc.function else "",
                     content=str(
-                        get_user_cancellation_message(CancellationReason.TOOL_NO_RESPONSE)
+                        get_user_cancellation_message(
+                            CancellationReason.TOOL_NO_RESPONSE
+                        )
                     ),
                 )
             )
@@ -258,9 +289,7 @@ class ConversationList:
             # Sessions whose base.json predates the flag: meta.json (written
             # every save) carries the frozen value instead, since base.json
             # is write-once and may not gain keys after creation.
-            self._wire_per_message_effort = metadata.get(
-                "per_message_reasoning_effort"
-            )
+            self._wire_per_message_effort = metadata.get("per_message_reasoning_effort")
         if self._wire_per_message_effort is None:
             # MIGRATION BACKFILL, first resume under this code only.
             # any(stamped) is what the old driver's conditional evaluated on
@@ -275,6 +304,7 @@ class ConversationList:
 
         messages: list[LLMMessage] = [system_msg, *non_system_messages]
         messages = _fix_dangling_tool_calls(messages)
+        messages = _drop_dangling_step_budget_warning(messages)
 
         config = self._config_getter() if self._config_getter is not None else None
         if config is not None:

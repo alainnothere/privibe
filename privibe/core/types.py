@@ -408,6 +408,9 @@ class ToolCallEvent(BaseEvent):
     tool_call_index: int | None = None
     args: BaseModel | None = None
     timeout: int | None = None
+    # Wall-clock time.time() when the LLM request that produced this call was
+    # sent. Display only; not persisted, so resumed history has none.
+    requested_at: float | None = None
 
 
 class FileDiff(BaseModel):

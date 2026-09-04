@@ -36,6 +36,7 @@ from privibe.core.tools.builtins.ask_user_question import (
     Question,
 )
 from privibe.core.tools.builtins.search_replace import SEARCH_REPLACE_BLOCK_RE
+from privibe.core.tools.ui import ToolUIDataAdapter
 from privibe.core.types import (
     AgentProfileChangedEvent,
     ApprovalResponse,
@@ -146,9 +147,7 @@ class ConsoleUI:
         self._prompt_session = None  # created lazily; needs a terminal
 
     async def run(
-        self,
-        initial_prompt: str | None = None,
-        show_resume_picker: bool = False,
+        self, initial_prompt: str | None = None, show_resume_picker: bool = False
     ) -> None:
         self.agent_loop.set_approval_callback(self._approval_callback)
         self.agent_loop.set_user_input_callback(self._user_input_callback)
@@ -345,15 +344,14 @@ class ConsoleUI:
             reason = f" ({event.skip_reason})" if event.skip_reason else ""
             return f"[tool] {event.tool_name}: skipped{reason}"
 
-        message = "done"
+        message = f"{event.tool_name} done"
         if event.tool_class is not None:
-            get_display = getattr(event.tool_class, "get_result_display", None)
-            if get_display is not None:
-                try:
-                    message = get_display(event).message
-                except Exception:
-                    message = "done"
-        return f"[tool] {event.tool_name}: {message}"
+            try:
+                adapter = ToolUIDataAdapter(event.tool_class)
+                message = adapter.get_result_display(event).message
+            except Exception:
+                pass
+        return f"[tool] {message}"
 
     def _print_result_body(self, event: ToolResultEvent) -> None:
         """Print the tool result content below the status line.
@@ -410,9 +408,7 @@ class ConsoleUI:
             lines.append(f"({remaining} more {label} not shown)")
         return lines
 
-    def _tool_body_lines(
-        self, event: ToolResultEvent, preview_lines: int
-    ) -> list[str]:
+    def _tool_body_lines(self, event: ToolResultEvent, preview_lines: int) -> list[str]:
         """Per-tool collapsed preview, matching the TUI result widgets."""
         result = event.result
         if result is None:
@@ -422,9 +418,7 @@ class ConsoleUI:
             case "bash":
                 stdout = getattr(result, "stdout", "")
                 lines = (
-                    self._preview(stdout, preview_lines)
-                    if stdout
-                    else ["(no content)"]
+                    self._preview(stdout, preview_lines) if stdout else ["(no content)"]
                 )
             case "grep":
                 lines = self._preview(getattr(result, "matches", ""), preview_lines)
@@ -618,9 +612,7 @@ class ConsoleUI:
             if reply.lower() == "c":
                 return None
             picks = self._parse_picks(
-                reply,
-                max_index=other_index or len(labels),
-                multi=question.multi_select,
+                reply, max_index=other_index or len(labels), multi=question.multi_select
             )
             if picks is None:
                 print("Invalid selection, try again.")
@@ -724,8 +716,7 @@ class ConsoleUI:
     def _command_preview_lines(self) -> None:
         config = self.agent_loop.config
         new_value = cycle_preview_lines(
-            config.tool_result_preview_lines,
-            config.tool_result_preview_options,
+            config.tool_result_preview_lines, config.tool_result_preview_options
         )
         VibeConfig.save_updates({"tool_result_preview_lines": new_value})
         self.agent_loop.refresh_config()
@@ -734,8 +725,7 @@ class ConsoleUI:
     def _command_llm_calls_per_turn(self) -> None:
         config = self.agent_loop.config
         new_value = cycle_llm_calls_per_turn(
-            config.max_llm_calls_per_turn,
-            config.llm_calls_per_turn_options,
+            config.max_llm_calls_per_turn, config.llm_calls_per_turn_options
         )
         VibeConfig.save_updates({"max_llm_calls_per_turn": new_value})
         self.agent_loop.refresh_config()
@@ -902,13 +892,9 @@ class ConsoleUI:
             return
 
         # Same steps as cli._resume_previous_session.
-        session_id = cast(
-            str, metadata.get("session_id", self.agent_loop.session_id)
-        )
+        session_id = cast(str, metadata.get("session_id", self.agent_loop.session_id))
         self.agent_loop.session_id = session_id
-        self.agent_loop.session_logger.resume_existing_session(
-            session_id, session_path
-        )
+        self.agent_loop.session_logger.resume_existing_session(session_id, session_path)
         self.agent_loop.messages.restore(session_path)
         print(
             f"Resumed session {session_id} "

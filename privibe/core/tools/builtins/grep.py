@@ -20,7 +20,6 @@ from privibe.core.tools.base import (
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import (
-    display_path,
     normalization_note,
     normalize_tool_path,
     resolve_file_tool_permission,
@@ -163,7 +162,7 @@ class Grep(
         )
         result.path_note = normalization_note(args.path, resolved_path)
         result.pattern = args.pattern
-        result.path = args.path
+        result.path = str(resolved_path)
         result.used_gnu_grep = backend is GrepBackend.GNU_GREP
         yield result
 
@@ -313,9 +312,7 @@ class Grep(
 
     @classmethod
     def format_call_display(cls, args: GrepArgs) -> ToolCallDisplay:
-        summary = f"Grepping '{args.pattern}'"
-        if args.path != ".":
-            summary += f" in {args.path}"
+        summary = f'grep "{args.pattern}" in {args.path}'
         if args.max_matches:
             summary += f" (max {args.max_matches} matches)"
         if not args.use_default_ignore:
@@ -330,8 +327,8 @@ class Grep(
             )
 
         r = event.result
-        where = f" in {display_path(r.path)}" if r.path and r.path != "." else ""
-        message = f'Found {r.match_count} matches for "{r.pattern}"{where}'
+        where = f" in {r.path}" if r.path else ""
+        message = f'"{r.pattern}"{where}: {r.match_count} match{"es" if r.match_count != 1 else ""}'
         if r.was_truncated:
             message += " (truncated)"
 

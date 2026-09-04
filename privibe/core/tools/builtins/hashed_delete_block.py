@@ -18,7 +18,7 @@ from privibe.core.tools.builtins._hashed_core import (
 )
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from privibe.core.tools.utils import display_path, resolve_file_tool_permission
+from privibe.core.tools.utils import resolve_file_tool_permission
 from privibe.core.types import ToolStreamEvent
 
 if TYPE_CHECKING:
@@ -26,9 +26,13 @@ if TYPE_CHECKING:
 
 
 class DeleteBlockItem(BaseModel):
-    line: int = Field(description="1-based line number of the first line to delete (from hashed_read).")
+    line: int = Field(
+        description="1-based line number of the first line to delete (from hashed_read)."
+    )
     hash: str = Field(description="4-char hash of line from hashed_read.")
-    end_line: int = Field(description="1-based line number of the last line to delete (inclusive, from hashed_read).")
+    end_line: int = Field(
+        description="1-based line number of the last line to delete (inclusive, from hashed_read)."
+    )
     end_hash: str = Field(description="4-char hash of end_line from hashed_read.")
 
 
@@ -63,7 +67,9 @@ class HashedDeleteBlockResult(BaseModel):
 
 
 class HashedDeleteBlock(
-    BaseTool[HashedDeleteBlockArgs, HashedDeleteBlockResult, BaseToolConfig, BaseToolState],
+    BaseTool[
+        HashedDeleteBlockArgs, HashedDeleteBlockResult, BaseToolConfig, BaseToolState
+    ],
     ToolUIData[HashedDeleteBlockArgs, HashedDeleteBlockResult],
 ):
     description: ClassVar[str] = (
@@ -79,7 +85,9 @@ class HashedDeleteBlock(
 
     permission_group: ClassVar[str] = "file"
 
-    def resolve_permission(self, args: HashedDeleteBlockArgs) -> PermissionContext | None:
+    def resolve_permission(
+        self, args: HashedDeleteBlockArgs
+    ) -> PermissionContext | None:
         return resolve_file_tool_permission(
             args.path,
             tool_name=self.get_name(),
@@ -119,7 +127,7 @@ class HashedDeleteBlock(
     @classmethod
     def format_call_display(cls, args: HashedDeleteBlockArgs) -> ToolCallDisplay:
         n = len(args.deletions)
-        summary = f"Deleting {n} block{'s' if n != 1 else ''} from {args.path}"
+        summary = f"hashed_delete_block {args.path} ({n} block{'s' if n != 1 else ''})"
         content = ", ".join(f"lines {d.line}–{d.end_line}" for d in args.deletions)
         return ToolCallDisplay(summary=summary, content=content)
 
@@ -133,9 +141,8 @@ class HashedDeleteBlock(
         return ToolResultDisplay(
             success=True,
             message=(
-                f"Deleted {r.total_deletions} block{'s' if r.total_deletions != 1 else ''} "
-                f"({r.total_lines_deleted} line{'s' if r.total_lines_deleted != 1 else ''} deleted) "
-                f"from {display_path(r.path)}"
+                f"{r.path}: {r.total_deletions} block{'s' if r.total_deletions != 1 else ''} "
+                f"({r.total_lines_deleted} line{'s' if r.total_lines_deleted != 1 else ''}) deleted"
             ),
             warnings=[r.content_note] if r.content_note else [],
         )

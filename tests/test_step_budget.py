@@ -13,6 +13,7 @@ from privibe.cli.commands import CommandRegistry
 from privibe.core.agent_loop import AgentLoop
 from privibe.core.agents.models import BuiltinAgentName
 from privibe.core.config import cycle_llm_calls_per_turn
+from privibe.core.conversation import is_step_budget_warning
 from privibe.core.tools.base import ToolPermission
 from privibe.core.types import (
     AssistantEvent,
@@ -39,7 +40,9 @@ def _write_call(call_id: str) -> ToolCall:
     return ToolCall(
         id=call_id,
         index=0,
-        function=FunctionCall(name="todo", arguments='{"action": "write", "todos": []}'),
+        function=FunctionCall(
+            name="todo", arguments='{"action": "write", "todos": []}'
+        ),
     )
 
 
@@ -75,7 +78,9 @@ async def _collect(agent_loop: AgentLoop, prompt: str) -> list[BaseEvent]:
 
 
 def _stops(events: list[BaseEvent]) -> list[AssistantEvent]:
-    return [e for e in events if isinstance(e, AssistantEvent) and e.stopped_by_middleware]
+    return [
+        e for e in events if isinstance(e, AssistantEvent) and e.stopped_by_middleware
+    ]
 
 
 @pytest.mark.asyncio
@@ -196,3 +201,105 @@ def test_options_default_and_sanitized() -> None:
     assert build_test_vibe_config(
         llm_calls_per_turn_options=[]
     ).llm_calls_per_turn_options == [30, 60, 90]
+
+
+# ---------------------------------------------------------------------------
+# A cancelled write-up must not haunt the next turn (session e29828fd)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_interrupted_writeup_warning_is_dropped_before_the_next_turn() -> None:
+    """Esc during the write-up leaves the warning as the tail. The next user
+    message must not land right after "do not call any tool now".
+    """
+    backend = FakeBackend(
+        _alternating_calls(2)
+        + [[mock_llm_chunk(content="Round one.")]]
+        + _alternating_calls(1)
+        + [[mock_llm_chunk(content="Round two.")]]
+    )
+    agent_loop = _loop(backend, budget=2)
+
+    await _collect(agent_loop, "Go")
+    # Simulate the interrupt: drop the write-up reply so the warning is the tail.
+    agent_loop.messages.rewind(1)
+    assert is_step_budget_warning(agent_loop.messages[-1])
+
+    second = await _collect(agent_loop, "Do it")
+
+    assert _stops(second) == []
+    assert agent_loop.stats.tool_calls_succeeded == 3
+    assert not any(is_step_budget_warning(m) for m in agent_loop.messages)
+    # The new user message follows the last tool response directly, and the
+    # turn's checkpoint points at it (the drop happened before the checkpoint).
+    do_it = next(i for i, m in enumerate(agent_loop.messages) if m.content == "Do it")
+    assert agent_loop.messages[do_it - 1].role == Role.tool
+    assert agent_loop.rewind_manager._checkpoints[-1].message_index == do_it
+    # What the model saw on the second turn: no warning anywhere near "Do it".
+    sent = backend.requests_messages[-2]
+    sent_do_it = next(i for i, m in enumerate(sent) if m.content == "Do it")
+    assert not is_step_budget_warning(sent[sent_do_it - 1])
+
+
+@pytest.mark.asyncio
+async def test_resumed_session_drops_a_dangling_writeup_warning(tmp_path) -> None:
+    """Quit while the warning is the tail, resume: restore() pops it before
+    pushing the context refresh, so the model never sees it as a live order.
+    """
+    from unittest.mock import MagicMock
+
+    from privibe.core.agents.models import AgentProfile, AgentSafety
+    from privibe.core.config import SessionLoggingConfig
+    from privibe.core.conversation import ConversationList
+    from privibe.core.middleware import step_budget_summary_request
+    from privibe.core.session.session_logger import SessionLogger
+    from privibe.core.tools.manager import ToolManager
+    from privibe.core.types import AgentStats, LLMMessage
+
+    conv = ConversationList(tools_provider=list)
+    conv.add(LLMMessage(role=Role.system, content="SYSTEM"))
+    conv.add(LLMMessage(role=Role.user, content="Go"))
+    conv.add(LLMMessage(role=Role.assistant, content="Working."))
+    conv.add(
+        LLMMessage(
+            role=Role.user, content=step_budget_summary_request(2), injected=True
+        )
+    )
+    assert is_step_budget_warning(conv[-1])
+
+    logger = SessionLogger(
+        SessionLoggingConfig(
+            save_dir=str(tmp_path / "s"), session_prefix="t", enabled=True
+        ),
+        "resume-ghost",
+    )
+    profile = AgentProfile(
+        name="t",
+        display_name="T",
+        description="t",
+        safety=AgentSafety.NEUTRAL,
+        overrides={},
+    )
+    tool_manager = MagicMock(spec=ToolManager)
+    tool_manager.available_tools = {}
+    await logger.save_interaction(
+        conv, AgentStats(), build_test_vibe_config(), tool_manager, profile
+    )
+
+    resumed = ConversationList(tools_provider=list)
+    resumed.restore(logger.session_dir)
+
+    assert resumed[-1].role == Role.assistant
+    assert not any(is_step_budget_warning(m) for m in resumed)
+
+
+def test_step_budget_prompt_opens_with_the_marker() -> None:
+    """The prompt file is editable; the drop keys off its first words."""
+    from privibe.core.conversation import STEP_BUDGET_MARKER
+    from privibe.core.middleware import step_budget_summary_request
+    from privibe.core.utils import VIBE_WARNING_TAG
+
+    text = step_budget_summary_request(30)
+    assert text.startswith(f"<{VIBE_WARNING_TAG}>{STEP_BUDGET_MARKER}")
+    assert "do not ask to be granted steps" in text

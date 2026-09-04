@@ -46,6 +46,9 @@ class TaskResult(BaseModel):
     response: str = Field(description="The accumulated response from the subagent")
     turns_used: int = Field(description="Number of turns the subagent used")
     completed: bool = Field(description="Whether the task completed normally")
+    # Echoed for the user-facing result line; excluded from the model result.
+    agent: str = Field(default="", exclude=True)
+    task: str = Field(default="", exclude=True)
 
 
 class TaskToolConfig(BaseToolConfig):
@@ -68,24 +71,25 @@ class Task(
     def get_call_display(cls, event: ToolCallEvent) -> ToolCallDisplay:
         args = event.args
         if isinstance(args, TaskArgs):
-            return ToolCallDisplay(summary=f"Running {args.agent} agent: {args.task}")
-        return ToolCallDisplay(summary="Running subagent")
+            return ToolCallDisplay(summary=f'{args.agent}: "{args.task}"')
+        return ToolCallDisplay(summary="subagent")
 
     @classmethod
     def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
         result = event.result
         if isinstance(result, TaskResult):
             turn_word = "turn" if result.turns_used == 1 else "turns"
+            who = f'{result.agent}: "{result.task}"' if result.agent else "subagent"
             if not result.completed:
                 return ToolResultDisplay(
                     success=False,
-                    message=f"Agent interrupted after {result.turns_used} {turn_word}",
+                    message=f"{who} interrupted after {result.turns_used} {turn_word}",
                 )
             return ToolResultDisplay(
                 success=True,
-                message=f"Agent completed in {result.turns_used} {turn_word}",
+                message=f"{who} completed in {result.turns_used} {turn_word}",
             )
-        return ToolResultDisplay(success=True, message="Agent completed")
+        return ToolResultDisplay(success=True, message="subagent completed")
 
     @classmethod
     def get_status_text(cls) -> str:
@@ -161,10 +165,9 @@ class Task(
                     elif event.result and event.tool_class:
                         adapter = ToolUIDataAdapter(event.tool_class)
                         display = adapter.get_result_display(event)
-                        message = f"{event.tool_name}: {display.message}"
                         yield ToolStreamEvent(
                             tool_name=self.get_name(),
-                            message=message,
+                            message=display.message,
                             tool_call_id=ctx.tool_call_id,
                         )
 
@@ -178,6 +181,8 @@ class Task(
                 msg.role == Role.assistant for msg in subagent_loop.messages
             )
             yield TaskResult(
+                agent=args.agent,
+                task=args.task,
                 response="".join(accumulated_response),
                 turns_used=turns_used,
                 completed=False,
@@ -192,6 +197,8 @@ class Task(
             )
 
         yield TaskResult(
+            agent=args.agent,
+            task=args.task,
             response="".join(accumulated_response),
             turns_used=turns_used,
             completed=completed,

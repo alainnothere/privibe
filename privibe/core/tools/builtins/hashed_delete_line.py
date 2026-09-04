@@ -18,7 +18,7 @@ from privibe.core.tools.builtins._hashed_core import (
 )
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from privibe.core.tools.utils import display_path, resolve_file_tool_permission
+from privibe.core.tools.utils import resolve_file_tool_permission
 from privibe.core.types import ToolStreamEvent
 
 if TYPE_CHECKING:
@@ -60,7 +60,9 @@ class HashedDeleteLineResult(BaseModel):
 
 
 class HashedDeleteLine(
-    BaseTool[HashedDeleteLineArgs, HashedDeleteLineResult, BaseToolConfig, BaseToolState],
+    BaseTool[
+        HashedDeleteLineArgs, HashedDeleteLineResult, BaseToolConfig, BaseToolState
+    ],
     ToolUIData[HashedDeleteLineArgs, HashedDeleteLineResult],
 ):
     description: ClassVar[str] = (
@@ -75,7 +77,9 @@ class HashedDeleteLine(
 
     permission_group: ClassVar[str] = "file"
 
-    def resolve_permission(self, args: HashedDeleteLineArgs) -> PermissionContext | None:
+    def resolve_permission(
+        self, args: HashedDeleteLineArgs
+    ) -> PermissionContext | None:
         return resolve_file_tool_permission(
             args.path,
             tool_name=self.get_name(),
@@ -109,7 +113,7 @@ class HashedDeleteLine(
     @classmethod
     def format_call_display(cls, args: HashedDeleteLineArgs) -> ToolCallDisplay:
         n = len(args.deletions)
-        summary = f"Deleting {n} line{'s' if n != 1 else ''} from {args.path}"
+        summary = f"hashed_delete_line {args.path} ({n} line{'s' if n != 1 else ''})"
         content = ", ".join(f"line {d.line}" for d in args.deletions)
         return ToolCallDisplay(summary=summary, content=content)
 
@@ -122,10 +126,7 @@ class HashedDeleteLine(
         r = event.result
         return ToolResultDisplay(
             success=True,
-            message=(
-                f"Deleted {r.total_deletions} line{'s' if r.total_deletions != 1 else ''} "
-                f"from {display_path(r.path)}"
-            ),
+            message=f"{r.path}: {r.total_deletions} line{'s' if r.total_deletions != 1 else ''} deleted",
             warnings=[r.content_note] if r.content_note else [],
         )
 

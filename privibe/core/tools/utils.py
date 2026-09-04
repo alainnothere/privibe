@@ -44,18 +44,14 @@ def normalize_tool_path(path_str: str) -> Path:
     return _make_absolute(path_str)
 
 
-def display_path(path_str: str) -> str:
-    """A short, readable form of a path for tool result messages.
-
-    Relative to the current working directory when the file lives under it,
-    otherwise the path as given. Keeps result lines from showing long absolute
-    paths while still identifying where the file is.
-    """
-    try:
-        rel = os.path.relpath(path_str)
-    except ValueError:
-        return path_str
-    return path_str if rel.startswith("..") else rel
+def line_range(start_line: int, lines_read: int) -> str:
+    """`lines 100 to 120 (21 lines)` for a read's result line; `0 lines` when
+    nothing came back so the range never lies about a line that isn't there."""
+    if lines_read <= 0:
+        return "0 lines"
+    if lines_read == 1:
+        return f"line {start_line}"
+    return f"lines {start_line} to {start_line + lines_read - 1} ({lines_read} lines)"
 
 
 def normalization_note(original: str, resolved: Path) -> str | None:
@@ -220,10 +216,7 @@ def resolve_file_tool_permission(
 
 
 def large_file_advisory(
-    size_bytes: int,
-    preview_bytes: int,
-    preview_lines: int,
-    threshold_kb: int,
+    size_bytes: int, preview_bytes: int, preview_lines: int, threshold_kb: int
 ) -> str:
     """Message returned with the head preview of an over-threshold naive read.
 

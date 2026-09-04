@@ -142,18 +142,7 @@ async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
 
 def _get_default_allowlist() -> list[str]:
     common = ["cd", "echo", "git diff", "git log", "git status", "tree", "whoami"]
-    unix = [
-        "cat",
-        "file",
-        "head",
-        "ls",
-        "pwd",
-        "stat",
-        "tail",
-        "uname",
-        "wc",
-        "which",
-    ]
+    unix = ["cat", "file", "head", "ls", "pwd", "stat", "tail", "uname", "wc", "which"]
 
     if is_windows():
         return common + unix + ["dir", "findstr", "more", "type", "ver", "where"]
@@ -177,12 +166,9 @@ def _get_default_denylist() -> list[str]:
     ]
 
     if is_windows():
-        return common + unix + [
-            "cmd /k",
-            "powershell -NoExit",
-            "pwsh -NoExit",
-            "notepad",
-        ]
+        return (
+            common + unix + ["cmd /k", "powershell -NoExit", "pwsh -NoExit", "notepad"]
+        )
     return common + unix
 
 
@@ -308,9 +294,7 @@ def _collect_escalated_outside_dirs(
     dirs: set[str] = set()
     for _raw, expanded in _iter_candidate_tokens(command_parts):
         if not (
-            expanded.startswith(("~", ".."))
-            or "/" in expanded
-            or "\\" in expanded
+            expanded.startswith(("~", "..")) or "/" in expanded or "\\" in expanded
         ):
             continue
         if is_path_within_workdir(expanded):
@@ -392,7 +376,7 @@ class Bash(
 
     @classmethod
     def format_call_display(cls, args: BashArgs) -> ToolCallDisplay:
-        return ToolCallDisplay(summary=f"bash: {args.command}")
+        return ToolCallDisplay(summary=f"bash $ {args.command}")
 
     @classmethod
     def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
@@ -401,7 +385,7 @@ class Bash(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
 
-        return ToolResultDisplay(success=True, message=f"Ran {event.result.command}")
+        return ToolResultDisplay(success=True, message=f"$ {event.result.command}")
 
     @classmethod
     def get_status_text(cls) -> str:
@@ -529,9 +513,7 @@ class Bash(
 
         if outside_dirs or escalated_dirs:
             escalated_globs = {str(Path(d) / "*") for d in escalated_dirs}
-            globs = sorted(
-                {str(Path(d) / "*") for d in outside_dirs} | escalated_globs
-            )
+            globs = sorted({str(Path(d) / "*") for d in outside_dirs} | escalated_globs)
             for glob in globs:
                 required.append(
                     RequiredPermission(

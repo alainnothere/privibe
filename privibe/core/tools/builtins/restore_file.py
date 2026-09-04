@@ -17,7 +17,6 @@ from privibe.core.tools.base import (
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import (
-    display_path,
     normalization_note,
     normalize_tool_path,
     resolve_file_tool_permission,
@@ -123,10 +122,7 @@ class RestoreFile(
 
     @classmethod
     def format_call_display(cls, args: RestoreFileArgs) -> ToolCallDisplay:
-        return ToolCallDisplay(
-            summary=f"Restoring previous version of {args.path}",
-            content="",
-        )
+        return ToolCallDisplay(summary=f"restore_file {args.path}", content="")
 
     @classmethod
     def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
@@ -135,13 +131,14 @@ class RestoreFile(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
         r = event.result
-        name = display_path(r.path)
         if r.action == "deleted":
-            message = f"Reverted {name}: the edit had created it, so it was removed"
+            message = f"{r.path}: removed (the reverted edit had created it)"
         else:
-            message = f"Restored {name} to its previous content"
+            message = f"{r.path}: restored previous content"
         if r.remaining:
-            message += f" ({r.remaining} more restore point{'s' if r.remaining != 1 else ''})"
+            message += (
+                f" ({r.remaining} more restore point{'s' if r.remaining != 1 else ''})"
+            )
         return ToolResultDisplay(success=True, message=message)
 
     @classmethod
