@@ -517,6 +517,29 @@ async def test_replay_command_without_history(ui: ConsoleUI, capsys) -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_calls_per_turn_command_cycles_and_persists(
+    ui: ConsoleUI, capsys, monkeypatch
+) -> None:
+    import privibe.cli.console_ui.app as console_app
+
+    saved: dict = {}
+    monkeypatch.setattr(
+        console_app.VibeConfig,
+        "save_updates",
+        classmethod(lambda cls, updates: saved.update(updates)),
+    )
+    ui.agent_loop.config.max_llm_calls_per_turn = 30
+    ui.agent_loop.config.llm_calls_per_turn_options = [30, 60, 90]
+    ui.agent_loop.refresh_config = lambda: None
+
+    handled = await ui._handle_command("/llm-calls-per-turn")
+
+    assert handled is True
+    assert saved == {"max_llm_calls_per_turn": 60}
+    assert "60 calls" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
 async def test_preview_lines_command_cycles_and_persists(
     ui: ConsoleUI, capsys, monkeypatch
 ) -> None:

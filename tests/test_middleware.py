@@ -6,6 +6,7 @@ from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from privibe.core.agents.models import BUILTIN_AGENTS, CHAT, AgentProfile, BuiltinAgentName
 from privibe.core.config import VibeConfig
 from privibe.core.middleware import (
+    SUSPEND_TOOLS_METADATA_KEY,
     chat_agent_exit,
     chat_agent_reminder,
     plan_agent_exit,
@@ -13,11 +14,13 @@ from privibe.core.middleware import (
     MiddlewareAction,
     MiddlewarePipeline,
     ReadOnlyAgentMiddleware,
+    RepeatedToolCallMiddleware,
     ResetReason,
+    StepBudgetMiddleware,
     make_plan_agent_reminder,
 )
 from privibe.core.conversation import ConversationList
-from privibe.core.types import AgentStats
+from privibe.core.types import AgentStats, FunctionCall, LLMMessage, Role, ToolCall
 
 REMINDER = "test reminder"
 EXIT_MSG = "test exit"
@@ -606,3 +609,220 @@ class TestReadOnlyAgentMiddlewareIntegration:
         # 8. Stay in default: no injection
         r = await plan_middleware.before_turn(_ctx())
         assert r.action == MiddlewareAction.CONTINUE
+
+
+# --- Loop breakers -----------------------------------------------------------
+
+
+def _assistant_with_call(name: str, arguments: str, call_id: str = "c") -> LLMMessage:
+    return LLMMessage(
+        role=Role.assistant,
+        content="",
+        tool_calls=[
+            ToolCall(id=call_id, index=0, function=FunctionCall(name=name, arguments=arguments))
+        ],
+    )
+
+
+def _tool_response(call_id: str = "c") -> LLMMessage:
+    return LLMMessage(role=Role.tool, tool_call_id=call_id, name="todo", content="ok")
+
+
+def _conversation(*messages: LLMMessage) -> ConversationList:
+    conv = ConversationList()
+    for m in messages:
+        conv.add(m)
+    return conv
+
+
+def _ctx(vibe_config: VibeConfig, conv: ConversationList, turn_id: str | None = "t1") -> ConversationContext:
+    return ConversationContext(
+        messages=conv, stats=AgentStats(), config=vibe_config, turn_id=turn_id
+    )
+
+
+def _budget_ctx(
+    budget: int, conv: ConversationList | None = None, turn_id: str | None = "t1"
+) -> ConversationContext:
+    return _ctx(
+        build_test_vibe_config(max_llm_calls_per_turn=budget),
+        conv if conv is not None else _conversation(),
+        turn_id,
+    )
+
+
+class TestStepBudgetMiddleware:
+    @pytest.mark.asyncio
+    async def test_first_n_calls_continue(self) -> None:
+        mw = StepBudgetMiddleware()
+        ctx = _budget_ctx(3)
+        for _ in range(3):
+            assert (await mw.before_turn(ctx)).action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_call_after_budget_requests_writeup_with_tools_suspended(self) -> None:
+        mw = StepBudgetMiddleware()
+        ctx = _budget_ctx(2)
+        await mw.before_turn(ctx)
+        await mw.before_turn(ctx)
+
+        result = await mw.before_turn(ctx)
+
+        assert result.action == MiddlewareAction.INJECT_MESSAGE
+        assert result.message is not None
+        assert "Step budget spent" in result.message
+        assert "2 tool-calling steps" in result.message
+        assert result.metadata[SUSPEND_TOOLS_METADATA_KEY] is True
+
+    @pytest.mark.asyncio
+    async def test_call_after_writeup_request_stops(self) -> None:
+        mw = StepBudgetMiddleware()
+        ctx = _budget_ctx(1)
+        await mw.before_turn(ctx)
+        assert (await mw.before_turn(ctx)).action == MiddlewareAction.INJECT_MESSAGE
+
+        result = await mw.before_turn(ctx)
+
+        assert result.action == MiddlewareAction.STOP
+        assert result.reason is not None
+        assert "Step budget spent" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_new_turn_id_resets_count(self) -> None:
+        mw = StepBudgetMiddleware()
+        conv = _conversation()
+        await mw.before_turn(_budget_ctx(1, conv, turn_id="t1"))
+        assert (await mw.before_turn(_budget_ctx(1, conv, turn_id="t1"))).action == MiddlewareAction.INJECT_MESSAGE
+
+        result = await mw.before_turn(_budget_ctx(1, conv, turn_id="t2"))
+
+        assert result.action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_compact_reset_keeps_count_stop_reset_clears_it(self) -> None:
+        mw = StepBudgetMiddleware()
+        ctx = _budget_ctx(1)
+        await mw.before_turn(ctx)
+
+        mw.reset(ResetReason.COMPACT)
+        assert (await mw.before_turn(ctx)).action == MiddlewareAction.INJECT_MESSAGE
+
+        mw.reset(ResetReason.STOP)
+        assert (await mw.before_turn(ctx)).action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_zero_disables_budget(self) -> None:
+        mw = StepBudgetMiddleware()
+        ctx = _budget_ctx(0)
+        for _ in range(50):
+            assert (await mw.before_turn(ctx)).action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_limit_is_read_live_from_config(self) -> None:
+        # /llm-calls-per-turn mid-turn: a raised limit lets the turn continue.
+        mw = StepBudgetMiddleware()
+        conv = _conversation()
+        await mw.before_turn(_budget_ctx(1, conv))
+
+        result = await mw.before_turn(_budget_ctx(5, conv))
+
+        assert result.action == MiddlewareAction.CONTINUE
+
+
+class TestRepeatedToolCallMiddleware:
+    @pytest.mark.asyncio
+    async def test_three_identical_calls_in_a_row_stop(self, vibe_config: VibeConfig) -> None:
+        conv = _conversation(
+            LLMMessage(role=Role.user, content="go"),
+            _assistant_with_call("todo", '{"action": "read"}', "c1"),
+            _tool_response("c1"),
+            _assistant_with_call("todo", '{"action":"read"}', "c2"),
+            _tool_response("c2"),
+            _assistant_with_call("todo", '{ "action" : "read" }', "c3"),
+            _tool_response("c3"),
+        )
+
+        result = await RepeatedToolCallMiddleware().before_turn(_ctx(vibe_config, conv))
+
+        assert result.action == MiddlewareAction.STOP
+        assert "identical `todo` call in 3 consecutive messages" in (result.reason or "")
+
+    @pytest.mark.asyncio
+    async def test_two_identical_calls_continue(self, vibe_config: VibeConfig) -> None:
+        conv = _conversation(
+            LLMMessage(role=Role.user, content="go"),
+            _assistant_with_call("todo", '{"action": "read"}', "c1"),
+            _tool_response("c1"),
+            _assistant_with_call("todo", '{"action": "read"}', "c2"),
+            _tool_response("c2"),
+        )
+
+        result = await RepeatedToolCallMiddleware().before_turn(_ctx(vibe_config, conv))
+
+        assert result.action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_different_arguments_continue(self, vibe_config: VibeConfig) -> None:
+        conv = _conversation(
+            LLMMessage(role=Role.user, content="go"),
+            _assistant_with_call("todo", '{"action": "read"}', "c1"),
+            _tool_response("c1"),
+            _assistant_with_call("todo", '{"action": "write", "todos": []}', "c2"),
+            _tool_response("c2"),
+            _assistant_with_call("todo", '{"action": "read"}', "c3"),
+            _tool_response("c3"),
+        )
+
+        result = await RepeatedToolCallMiddleware().before_turn(_ctx(vibe_config, conv))
+
+        assert result.action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_real_user_message_breaks_the_streak(self, vibe_config: VibeConfig) -> None:
+        conv = _conversation(
+            LLMMessage(role=Role.user, content="go"),
+            _assistant_with_call("todo", '{"action": "read"}', "c1"),
+            _tool_response("c1"),
+            _assistant_with_call("todo", '{"action": "read"}', "c2"),
+            _tool_response("c2"),
+            LLMMessage(role=Role.user, content="again please"),
+            _assistant_with_call("todo", '{"action": "read"}', "c3"),
+            _tool_response("c3"),
+        )
+
+        result = await RepeatedToolCallMiddleware().before_turn(_ctx(vibe_config, conv))
+
+        assert result.action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_injected_user_message_does_not_break_the_streak(
+        self, vibe_config: VibeConfig
+    ) -> None:
+        conv = _conversation(
+            LLMMessage(role=Role.user, content="go"),
+            _assistant_with_call("todo", '{"action": "read"}', "c1"),
+            _tool_response("c1"),
+            LLMMessage(role=Role.user, content="reminder", injected=True),
+            _assistant_with_call("todo", '{"action": "read"}', "c2"),
+            _tool_response("c2"),
+            _assistant_with_call("todo", '{"action": "read"}', "c3"),
+            _tool_response("c3"),
+        )
+
+        result = await RepeatedToolCallMiddleware().before_turn(_ctx(vibe_config, conv))
+
+        assert result.action == MiddlewareAction.STOP
+
+
+class TestPipelineMetadataMerge:
+    @pytest.mark.asyncio
+    async def test_injected_results_keep_their_metadata(self) -> None:
+        mw = StepBudgetMiddleware()
+        pipeline = MiddlewarePipeline().add(mw)
+        ctx = _budget_ctx(1)
+        await pipeline.run_before_turn(ctx)
+
+        result = await pipeline.run_before_turn(ctx)
+
+        assert result.action == MiddlewareAction.INJECT_MESSAGE
+        assert result.metadata.get(SUSPEND_TOOLS_METADATA_KEY) is True

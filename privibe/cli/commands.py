@@ -149,6 +149,12 @@ class CommandRegistry:
                 handler="_select_scrollback",
                 takes_args=True,
             ),
+            "llm_calls_per_turn": Command(
+                aliases=frozenset(["/llm-calls-per-turn"]),
+                description="Set how many LLM calls one message may trigger before the model must write up and stop; /llm-calls-per-turn <n> or pick from a menu",
+                handler="_select_llm_calls_per_turn",
+                takes_args=True,
+            ),
             "list_tools": Command(
                 aliases=frozenset(["/list-tools"]),
                 description="Show active tools for the current session",

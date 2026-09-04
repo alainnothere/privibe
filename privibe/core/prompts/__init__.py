@@ -85,6 +85,7 @@ class UtilityPrompt(Prompt):
     PLAN_EXIT = auto()
     PLAN_REMINDER = auto()
     PROJECT_CONTEXT = auto()
+    STEP_BUDGET = auto()
     TURN_SUMMARY = auto()
 
 

@@ -134,7 +134,8 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
 - File edits show a diff in the TUI.
 - Model name + tokens/sec in the context footer.
 - Configurable tool-result preview length (`/preview-lines`), scrollback
-  (`/scrollback`), and an `/llm-debug` dump toggle.
+  (`/scrollback`), a per-message LLM-call budget that makes a looping model
+  write up and stop (`/llm-calls-per-turn`), and an `/llm-debug` dump toggle.
 - Subagent work is preserved when you cancel mid-execution.
 
 ### Skills, config, packaging

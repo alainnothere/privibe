@@ -427,6 +427,8 @@ DEFAULT_TTS_MODELS = [
 
 TOOL_RESULT_PREVIEW_OPTIONS = (3, 5, 10)
 MESSAGE_PRUNE_KEEP_OPTIONS = (50, 100, 250, 500, 1000)
+LLM_CALLS_PER_TURN_OPTIONS = (30, 60, 90)
+DEFAULT_MAX_LLM_CALLS_PER_TURN = 30
 # The single /detect-context-size control cycles through poll cadences. 0 here
 # means "auto" (detect on model change + retry, no polling); 1/2/5/10 also force
 # a re-detect every N turns. "off" is a separate state held by
@@ -482,6 +484,13 @@ def cycle_message_prune_rows(
     current: int, options: Sequence[int] = MESSAGE_PRUNE_KEEP_OPTIONS
 ) -> int:
     """Next value in the kept-message-rows cycle (default 50 -> ... -> 1000)."""
+    return _next_in_cycle(current, tuple(options))
+
+
+def cycle_llm_calls_per_turn(
+    current: int, options: Sequence[int] = LLM_CALLS_PER_TURN_OPTIONS
+) -> int:
+    """Next value in the per-turn LLM-call budget cycle (default 30 -> 60 -> 90)."""
     return _next_in_cycle(current, tuple(options))
 
 
@@ -582,6 +591,21 @@ class VibeConfig(BaseSettings):
     enable_notifications: bool = True
     api_timeout: float = 720.0
     auto_compact_threshold: int = 200_000
+    max_llm_calls_per_turn: int = Field(
+        default=DEFAULT_MAX_LLM_CALLS_PER_TURN,
+        ge=0,
+        description=(
+            "How many LLM calls one user message may trigger before privibe takes "
+            "the tools away and makes the model write up what it found. After that "
+            "write-up the turn ends and the prompt returns to the user; the next "
+            "user message grants a fresh budget. 0 disables the budget. "
+            "Set from the TUI with /llm-calls-per-turn."
+        ),
+    )
+    llm_calls_per_turn_options: list[int] = Field(
+        default_factory=lambda: list(LLM_CALLS_PER_TURN_OPTIONS),
+        description="Values /llm-calls-per-turn offers (positive ints).",
+    )
 
     project_scan_depth: int = Field(
         default=0,
@@ -739,7 +763,10 @@ class VibeConfig(BaseSettings):
     )
 
     @field_validator(
-        "tool_result_preview_options", "message_prune_keep_options", mode="before"
+        "tool_result_preview_options",
+        "message_prune_keep_options",
+        "llm_calls_per_turn_options",
+        mode="before",
     )
     @classmethod
     def _sanitize_cycle_option_lists(
@@ -748,6 +775,7 @@ class VibeConfig(BaseSettings):
         defaults = {
             "tool_result_preview_options": TOOL_RESULT_PREVIEW_OPTIONS,
             "message_prune_keep_options": MESSAGE_PRUNE_KEEP_OPTIONS,
+            "llm_calls_per_turn_options": LLM_CALLS_PER_TURN_OPTIONS,
         }
         return sanitize_cycle_options(value, defaults[info.field_name])
 
