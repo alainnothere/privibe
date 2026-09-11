@@ -33,6 +33,15 @@ class Completer:
 
 
 class CommandCompleter(Completer):
+    """Completes ``/commands`` and ``/skills``.
+
+    Ranking: aliases that start with the typed text come first, in the order
+    the registry lists them. Everything else goes through the same fuzzy
+    matcher the ``@`` path completer uses, best score first, so typing
+    ``/thing`` still surfaces ``/i-do-something``: a prefix-only match hid any
+    command whose name you only remembered the middle of.
+    """
+
     def __init__(self, entries: Callable[[], list[tuple[str, str]]]) -> None:
         self._get_entries = entries
 
@@ -42,26 +51,45 @@ class CommandCompleter(Completer):
             descriptions[alias] = description
         return list(descriptions.keys()), descriptions
 
+    def _rank_aliases(self, aliases: list[str], word: str) -> list[str]:
+        if not word:
+            return list(aliases)
+
+        prefix_matches: list[str] = []
+        fuzzy_matches: list[tuple[float, str]] = []
+        for alias in aliases:
+            name = alias[1:] if alias.startswith("/") else alias
+            name_lower = name.lower()
+            if name_lower.startswith(word):
+                prefix_matches.append(alias)
+                continue
+            result = fuzzy_match(word, name, name_lower)
+            if result.matched:
+                fuzzy_matches.append((result.score, alias))
+
+        fuzzy_matches.sort(key=lambda item: (-item[0], item[1]))
+        return prefix_matches + [alias for _, alias in fuzzy_matches]
+
     def get_completions(self, text: str, cursor_pos: int) -> list[str]:
         if not text.startswith("/"):
             return []
 
-        aliases, _ = self._build_lookup()
         word = text[1:cursor_pos].lower()
-        search_str = "/" + word
-        return [alias for alias in aliases if alias.lower().startswith(search_str)]
+        if any(char.isspace() for char in word):
+            # Past the command name: arguments are not ours to complete.
+            return []
+
+        aliases, _ = self._build_lookup()
+        return self._rank_aliases(aliases, word)
 
     def get_completion_items(self, text: str, cursor_pos: int) -> list[tuple[str, str]]:
         if not text.startswith("/"):
             return []
 
-        aliases, descriptions = self._build_lookup()
-        word = text[1:cursor_pos].lower()
-        search_str = "/" + word
+        _, descriptions = self._build_lookup()
         return [
             (alias, descriptions.get(alias, ""))
-            for alias in aliases
-            if alias.lower().startswith(search_str)
+            for alias in self.get_completions(text, cursor_pos)
         ]
 
     def get_replacement_range(

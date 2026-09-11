@@ -322,3 +322,63 @@ def test_wraparound_from_top_jumps_window_to_the_bottom_and_back() -> None:
     suggestions, selected = view.suggestion_events[-1]
     assert suggestions[selected].alias == "/cmd00"
     assert selected == 0
+
+
+def make_fuzzy_controller() -> tuple[SlashCommandController, StubView]:
+    commands = [
+        ("/compact", "Compact history"),
+        ("/config", "Show current configuration"),
+        ("/help", "Display help"),
+        ("/i-do-something", "A skill with a long hyphenated name"),
+        ("/llm-calls-per-turn", "Cap LLM calls per turn"),
+        ("/thinking", "Toggle reasoning display"),
+    ]
+    view = StubView()
+    return SlashCommandController(CommandCompleter(lambda: commands), view), view
+
+
+def _aliases(view: StubView) -> list[str]:
+    return [suggestion.alias for suggestion in view.suggestion_events[-1].suggestions]
+
+
+def test_substring_of_the_name_still_finds_the_command() -> None:
+    controller, view = make_fuzzy_controller()
+
+    controller.on_text_changed("/some", cursor_index=5)
+
+    assert _aliases(view) == ["/i-do-something"]
+
+
+def test_prefix_matches_rank_above_fuzzy_matches() -> None:
+    controller, view = make_fuzzy_controller()
+
+    controller.on_text_changed("/thin", cursor_index=5)
+
+    aliases = _aliases(view)
+    assert aliases[0] == "/thinking"
+    assert "/i-do-something" in aliases
+
+
+def test_word_initials_across_hyphens_match() -> None:
+    controller, view = make_fuzzy_controller()
+
+    controller.on_text_changed("/ids", cursor_index=4)
+
+    assert "/i-do-something" in _aliases(view)
+
+
+def test_fuzzy_selection_replaces_the_whole_typed_command() -> None:
+    controller, view = make_fuzzy_controller()
+
+    controller.on_text_changed("/thing", cursor_index=6)
+    assert controller.on_key(key_event("tab"), "/thing", 6) == CompletionResult.HANDLED
+
+    assert view.replacements == [Replacement(0, 6, "/i-do-something")]
+
+
+def test_arguments_after_the_command_name_are_not_completed() -> None:
+    controller, view = make_fuzzy_controller()
+
+    controller.on_text_changed("/config foo", cursor_index=11)
+
+    assert view.suggestion_events == []
