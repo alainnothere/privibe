@@ -10,7 +10,6 @@ import signal
 import time
 from typing import Any, ClassVar, assert_never, cast
 from weakref import WeakKeyDictionary
-import webbrowser
 
 from pydantic import BaseModel
 from rich import print as rprint
@@ -22,8 +21,10 @@ from textual.events import AppBlur, AppFocus, MouseUp, Resize
 from textual.widget import Widget
 from textual.widgets import Static
 
-from privibe import __version__ as CORE_VERSION
-from privibe.cli.clipboard import copy_selection_to_clipboard, is_reliable_clipboard_available
+from privibe.cli.clipboard import (
+    copy_selection_to_clipboard,
+    is_reliable_clipboard_available,
+)
 from privibe.cli.commands import CommandRegistry, effort_cycle_notice
 from privibe.cli.narrator_manager import (
     NarratorManager,
@@ -59,9 +60,9 @@ from privibe.cli.textual_ui.widgets.messages import (
     WarningMessage,
 )
 from privibe.cli.textual_ui.widgets.model_picker import ModelPickerApp
-from privibe.cli.textual_ui.widgets.option_picker import OptionPickerApp
 from privibe.cli.textual_ui.widgets.narrator_status import NarratorStatus
 from privibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
+from privibe.cli.textual_ui.widgets.option_picker import OptionPickerApp
 from privibe.cli.textual_ui.widgets.path_display import PathDisplay
 from privibe.cli.textual_ui.widgets.proxy_setup_app import ProxySetupApp
 from privibe.cli.textual_ui.widgets.question_app import QuestionApp
@@ -104,21 +105,19 @@ from privibe.core.session.resume_sessions import (
     short_session_id,
 )
 from privibe.core.session.session_loader import SessionLoader
+from privibe.core.skills.parser import SkillParseError
+from privibe.core.skills.render import load_skill_content
 from privibe.core.tools.builtins.ask_user_question import (
     AskUserQuestionArgs,
     AskUserQuestionResult,
-    Choice,
-    Question,
 )
 from privibe.core.tools.permissions import RequiredPermission
 from privibe.core.transcribe import make_transcribe_client
 from privibe.core.types import (
     AgentStats,
     ApprovalResponse,
-    BaseEvent,
     LLMMessage,
     RateLimitError,
-    Role,
     WaitingForInputEvent,
 )
 from privibe.core.utils import (
@@ -126,8 +125,6 @@ from privibe.core.utils import (
     get_user_cancellation_message,
     is_dangerous_directory,
 )
-from privibe.core.skills.parser import SkillParseError
-from privibe.core.skills.render import load_skill_content
 
 
 class BottomApp(StrEnum):
@@ -152,7 +149,8 @@ class BottomApp(StrEnum):
 
 def _options_with_current(options: list[int], current: int) -> list[int]:
     """Preset picker options plus the current value, kept sorted, so the picker
-    can always preselect what is active even if it was typed in by hand."""
+    can always preselect what is active even if it was typed in by hand.
+    """
     if current in options:
         return list(options)
     return sorted([*options, current])
@@ -499,8 +497,8 @@ class VibeApp(App):  # noqa: PLR0904
             self.agent_loop.queue_steering(value)
             await self._mount_and_scroll(
                 UserCommandMessage(
-                    f"Message queued — will steer the conversation at the next tool call. "
-                    f"Press Esc or Ctrl+C to cancel immediately."
+                    "Message queued — will steer the conversation at the next tool call. "
+                    "Press Esc or Ctrl+C to cancel immediately."
                 )
             )
             return
@@ -907,6 +905,7 @@ class VibeApp(App):  # noqa: PLR0904
             start_index=start_index,
             tools_collapsed=self._tools_collapsed,
             history_widget_indices=self._history_widget_indices,
+            tool_classes=self.agent_loop.tool_manager.available_tools,
         )
 
         with self.batch_update():
@@ -1969,7 +1968,8 @@ class VibeApp(App):  # noqa: PLR0904
     def _active_model_label(self) -> str:
         """Display label for the active model: the alias, plus the server-reported
         name when auto-detection found one that differs (e.g. "Max (local) -
-        Qwen3.6-..."). Purely cosmetic — never changes config or matching."""
+        Qwen3.6-..."). Purely cosmetic — never changes config or matching.
+        """
         label = str(self.config.active_model)
         # Already reduced to a bare model name (no path, no .gguf extension).
         detected = self.agent_loop.detected_model_display_name()
@@ -2377,7 +2377,8 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def _apply_context_size_detection(self, auto: bool, every: int) -> None:
         """Drives both the master enable and the poll cadence so there is never
-        a master-off/cadence-set mismatch."""
+        a master-off/cadence-set mismatch.
+        """
         VibeConfig.save_updates(
             {"auto_detect_context_size": auto, "context_size_redetect_every": every}
         )

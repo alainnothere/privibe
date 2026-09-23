@@ -184,7 +184,7 @@ class AnthropicMapper:
                 content="".join(text_parts) or None,
                 reasoning_content="".join(thinking_parts) or None,
                 reasoning_signature="".join(signature_parts) or None,
-                tool_calls=tool_calls if tool_calls else None,
+                tool_calls=tuple(tool_calls) if tool_calls else None,
             ),
             usage=usage,
         )
@@ -213,15 +213,15 @@ class AnthropicMapper:
                 chunk = LLMChunk(
                     message=LLMMessage(
                         role=Role.assistant,
-                        tool_calls=[
+                        tool_calls=(
                             ToolCall(
                                 id=block.get("id"),
                                 index=idx,
                                 function=FunctionCall(
                                     name=block.get("name"), arguments=""
                                 ),
-                            )
-                        ],
+                            ),
+                        ),
                     )
                 )
                 return chunk, idx
@@ -265,14 +265,14 @@ class AnthropicMapper:
                 chunk = LLMChunk(
                     message=LLMMessage(
                         role=Role.assistant,
-                        tool_calls=[
+                        tool_calls=(
                             ToolCall(
                                 index=idx,
                                 function=FunctionCall(
                                     arguments=delta.get("partial_json", "")
                                 ),
-                            )
-                        ],
+                            ),
+                        ),
                     )
                 )
             case _:
@@ -575,15 +575,15 @@ class AnthropicAdapter(APIAdapter):
             return LLMChunk(
                 message=LLMMessage(
                     role=Role.assistant,
-                    tool_calls=[
+                    tool_calls=(
                         ToolCall(
                             index=index,
                             id=content_block.get("id"),
                             function=FunctionCall(
                                 name=content_block.get("name"), arguments=""
                             ),
-                        )
-                    ],
+                        ),
+                    ),
                 )
             )
         return None
@@ -617,14 +617,14 @@ class AnthropicAdapter(APIAdapter):
                 return LLMChunk(
                     message=LLMMessage(
                         role=Role.assistant,
-                        tool_calls=[
+                        tool_calls=(
                             ToolCall(
                                 index=index,
                                 function=FunctionCall(
                                     arguments=delta.get("partial_json", "")
                                 ),
-                            )
-                        ],
+                            ),
+                        ),
                     )
                 )
             case _:

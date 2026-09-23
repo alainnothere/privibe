@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable, Generator
+from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 import contextlib
 from enum import StrEnum, auto
 import hashlib
@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from threading import Thread
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -94,11 +94,13 @@ from privibe.core.types import (
     LLMChunk,
     LLMMessage,
     LLMUsage,
+    MessageMeta,
     RateLimitError,
     ReasoningEvent,
     Role,
     ToolCall,
     ToolCallEvent,
+    ToolOutcome,
     ToolResultEvent,
     ToolStreamEvent,
     UserInputCallback,
@@ -124,6 +126,10 @@ class ToolDecision(BaseModel):
     verdict: ToolExecutionResponse
     approval_type: ToolPermission
     feedback: str | None = None
+    # time.time() around the approval prompt, when one was shown. Carried on
+    # the decision (not the loop) because tools run concurrently.
+    approval_asked_at: float | None = None
+    approval_answered_at: float | None = None
 
 
 class AgentLoopError(Exception):
@@ -443,7 +449,8 @@ class AgentLoop:
 
     def _permission_group(self, tool_name: str) -> str:
         """Tools sharing a permission_group share session approval/denial
-        rules; a tool without one is its own group."""
+        rules; a tool without one is its own group.
+        """
         cls = self.tool_manager.available_tools.get(tool_name)
         group = getattr(cls, "permission_group", None) if cls else None
         return group or tool_name
@@ -517,7 +524,8 @@ class AgentLoop:
         never affects config or matching.
 
         llama.cpp reports the full filesystem path of the loaded .gguf file, so
-        reduce the raw value to just the file name without the extension."""
+        reduce the raw value to just the file name without the extension.
+        """
         active = self.config.get_active_model()
         if self._detected_model_alias != active.alias:
             return None
@@ -975,6 +983,7 @@ class AgentLoop:
             content=user_msg,
             message_id=client_message_id,
             reasoning_effort=self.current_reasoning_effort(),
+            meta=MessageMeta(submitted_at=time.time()),
         )
         self.messages.add(user_message)
         self.stats.steps += 1
@@ -1044,17 +1053,17 @@ class AgentLoop:
         if self._tools_suspended_for_step:
             self._tools_suspended_for_step = False
             async for event in self._refuse_tool_calls(resolved):
-                yield event
+                yield self._with_timing(event, last_message)
             return
 
         profile_before = self.agent_profile.name
         async for event in self._handle_tool_calls(resolved):
-            yield event
+            yield self._with_timing(event, last_message)
         if self.agent_profile.name != profile_before:
             yield AgentProfileChangedEvent(agent_name=self.agent_profile.name)
 
     def _build_tool_call_events(
-        self, tool_calls: list[ToolCall] | None, emitted_ids: set[str]
+        self, tool_calls: Sequence[ToolCall] | None, emitted_ids: set[str]
     ) -> Generator[ToolCallEvent, None, None]:
         for tc in tool_calls or []:
             if tc.id is None or not tc.function.name:
@@ -1113,22 +1122,53 @@ class AgentLoop:
             message_id=llm_result.message.message_id,
         )
 
+    def _with_timing[E: BaseEvent](self, event: E, request: LLMMessage) -> E:
+        """Attach the two MessageMeta a finished tool line derives its times
+        from: the assistant message that made the call (`request`) and the
+        tool response message. Every emission site adds the response message
+        before yielding its ToolResultEvent, so it is always found here.
+        """
+        if not isinstance(event, ToolResultEvent):
+            return event
+        tool_meta: MessageMeta | None = None
+        for msg in reversed(self.messages):
+            if msg is request:
+                break
+            if msg.role == Role.tool and msg.tool_call_id == event.tool_call_id:
+                tool_meta = msg.meta
+                break
+        first_id = request.tool_calls[0].id if request.tool_calls else None
+        return event.model_copy(
+            update={
+                "request_meta": request.meta,
+                "tool_meta": tool_meta,
+                "first_in_message": event.tool_call_id == first_id,
+            }
+        )
+
     async def _emit_failed_tool_events(
         self, failed_calls: list[FailedToolCall]
     ) -> AsyncGenerator[ToolResultEvent]:
         for failed in failed_calls:
             error_msg = f"<{TOOL_ERROR_TAG}>{failed.tool_name}: {failed.error}</{TOOL_ERROR_TAG}>"
+            self.stats.tool_calls_failed += 1
+            self.messages.add(
+                self.format_handler.create_failed_tool_response_message(
+                    failed, error_msg
+                ).model_copy(
+                    update={
+                        "meta": MessageMeta(
+                            tool_finished_at=time.time(),
+                            tool_outcome=ToolOutcome.failure,
+                        )
+                    }
+                )
+            )
             yield ToolResultEvent(
                 tool_name=failed.tool_name,
                 tool_class=None,
                 error=error_msg,
                 tool_call_id=failed.call_id,
-            )
-            self.stats.tool_calls_failed += 1
-            self.messages.add(
-                self.format_handler.create_failed_tool_response_message(
-                    failed, error_msg
-                )
             )
 
     async def _process_one_tool_call(
@@ -1148,6 +1188,7 @@ class AgentLoop:
             return
 
         decision: ToolDecision | None = None
+        started_at: float | None = None
         try:
             decision = await self._should_execute_tool(
                 tool_instance, tool_call.validated_args, tool_call.call_id
@@ -1160,6 +1201,9 @@ class AgentLoop:
                         CancellationReason.TOOL_SKIPPED, tool_call.tool_name
                     )
                 )
+                self._handle_tool_response(
+                    tool_call, skip_reason, "skipped", decision
+                )
                 yield ToolResultEvent(
                     tool_name=tool_call.tool_name,
                     tool_class=tool_call.tool_class,
@@ -1167,9 +1211,6 @@ class AgentLoop:
                     skip_reason=skip_reason,
                     cancelled=f"<{CANCELLATION_TAG}>" in skip_reason,
                     tool_call_id=tool_call.call_id,
-                )
-                self._handle_tool_response(
-                    tool_call, skip_reason, "skipped", decision
                 )
                 return
 
@@ -1181,6 +1222,7 @@ class AgentLoop:
                 self.undo_stack.capture(snapshot)
 
             start_time = time.perf_counter()
+            started_at = time.time()
             result_model = None
             async for item in tool_instance.invoke(
                 ctx=InvokeContext(
@@ -1213,8 +1255,15 @@ class AgentLoop:
             extra = tool_instance.get_result_extra(result_model)
             if extra:
                 text += "\n\n" + extra
+            file_diff = self._file_diff_for(snapshot, tool_call.tool_name)
             self._handle_tool_response(
-                tool_call, text, "success", decision, result_dict
+                tool_call,
+                text,
+                "success",
+                decision,
+                result_dict,
+                started_at=started_at,
+                file_diff=file_diff,
             )
             yield ToolResultEvent(
                 tool_name=tool_call.tool_name,
@@ -1223,7 +1272,7 @@ class AgentLoop:
                 cancelled=getattr(result_model, "cancelled", False),
                 duration=duration,
                 tool_call_id=tool_call.call_id,
-                file_diff=self._file_diff_for(snapshot, tool_call.tool_name),
+                file_diff=file_diff,
             )
             self.stats.tool_calls_succeeded += 1
 
@@ -1234,7 +1283,16 @@ class AgentLoop:
                 extra = tool_instance.get_result_extra(result_model)
                 if extra:
                     text += "\n\n" + extra
-                self._handle_tool_response(tool_call, text, "success", decision, result_dict)
+                file_diff = self._file_diff_for(snapshot, tool_call.tool_name)
+                self._handle_tool_response(
+                    tool_call,
+                    text,
+                    "success",
+                    decision,
+                    result_dict,
+                    started_at=started_at,
+                    file_diff=file_diff,
+                )
                 self.stats.tool_calls_succeeded += 1
                 yield ToolResultEvent(
                     tool_name=tool_call.tool_name,
@@ -1242,21 +1300,25 @@ class AgentLoop:
                     result=result_model,
                     cancelled=True,
                     tool_call_id=tool_call.call_id,
-                    file_diff=self._file_diff_for(snapshot, tool_call.tool_name),
+                    file_diff=file_diff,
                 )
             else:
                 cancel = str(
                     get_user_cancellation_message(CancellationReason.TOOL_INTERRUPTED)
                 )
                 self.stats.tool_calls_failed += 1
-                yield self._tool_failure_event(tool_call, cancel, decision, cancelled=True)
+                yield self._tool_failure_event(
+                    tool_call, cancel, decision, cancelled=True, started_at=started_at
+                )
             raise
 
         except Exception as exc:
             error_msg = self._classify_tool_failure(
                 tool_call, tool_instance, exc, decision
             )
-            yield self._tool_failure_event(tool_call, error_msg, decision)
+            yield self._tool_failure_event(
+                tool_call, error_msg, decision, started_at=started_at
+            )
 
     def _classify_tool_failure(
         self,
@@ -1343,6 +1405,7 @@ class AgentLoop:
                 f"this reply was supposed to be your written answer, not a "
                 f"{tc.tool_name} call. The turn ends here."
             )
+            self._handle_tool_response(tc, skip_reason, "skipped")
             yield ToolResultEvent(
                 tool_name=tc.tool_name,
                 tool_class=tc.tool_class,
@@ -1350,7 +1413,6 @@ class AgentLoop:
                 skip_reason=skip_reason,
                 tool_call_id=tc.call_id,
             )
-            self._handle_tool_response(tc, skip_reason, "skipped")
 
     def _call_ids_repeating_previous_message(self) -> set[str]:
         """Ids of calls in the executing assistant message that repeat the previous one.
@@ -1441,6 +1503,7 @@ class AgentLoop:
                     "from it and move on. Issuing this same call once more will "
                     "end the turn."
                 )
+                self._handle_tool_response(tc, skip_reason, "skipped")
                 yield ToolResultEvent(
                     tool_name=tc.tool_name,
                     tool_class=tc.tool_class,
@@ -1448,7 +1511,6 @@ class AgentLoop:
                     skip_reason=skip_reason,
                     tool_call_id=tc.call_id,
                 )
-                self._handle_tool_response(tc, skip_reason, "skipped")
                 continue
             key = (tc.tool_name, json.dumps(tc.args_dict, sort_keys=True, default=str))
             first_id = seen.get(key)
@@ -1478,6 +1540,7 @@ class AgentLoop:
                             "need a second run, issue it in your next message after "
                             "reviewing the first result."
                         )
+                        self._handle_tool_response(tc, skip_reason, "skipped")
                         yield ToolResultEvent(
                             tool_name=tc.tool_name,
                             tool_class=tc.tool_class,
@@ -1485,7 +1548,6 @@ class AgentLoop:
                             skip_reason=skip_reason,
                             tool_call_id=tc.call_id,
                         )
-                        self._handle_tool_response(tc, skip_reason, "skipped")
                         continue
                     # A surviving bash call registers every keyword it contains.
                     for _orig, low in matched:
@@ -1499,6 +1561,7 @@ class AgentLoop:
                 "which was executed once. See that call's result. If you intended to "
                 "run the same call again, issue it in your next message."
             )
+            self._handle_tool_response(tc, skip_reason, "skipped")
             yield ToolResultEvent(
                 tool_name=tc.tool_name,
                 tool_class=tc.tool_class,
@@ -1506,7 +1569,6 @@ class AgentLoop:
                 skip_reason=skip_reason,
                 tool_call_id=tc.call_id,
             )
-            self._handle_tool_response(tc, skip_reason, "skipped")
 
         readonly = [tc for tc in deduped if not tc.tool_class.mutates_files]
         mutating = [tc for tc in deduped if tc.tool_class.mutates_files]
@@ -1569,7 +1631,24 @@ class AgentLoop:
         status: Literal["success", "failure", "skipped"],
         decision: ToolDecision | None = None,
         result: dict[str, Any] | None = None,
+        *,
+        started_at: float | None = None,
+        file_diff: FileDiff | None = None,
     ) -> None:
+        """Append the tool response message, stamped with its MessageMeta.
+
+        Every instant known here goes on the message now: it is frozen and
+        hits messages.jsonl on the next event, so nothing can be added later.
+        """
+        meta = MessageMeta(
+            approval_asked_at=decision.approval_asked_at if decision else None,
+            approval_answered_at=decision.approval_answered_at if decision else None,
+            tool_started_at=started_at,
+            tool_finished_at=time.time(),
+            tool_outcome=ToolOutcome(status),
+            tool_result=result,
+            file_diff=file_diff,
+        )
         # agent steering — Before appending the tool result, check if there are
         # queued steering messages. If so, prepend them to the tool result text
         # in a prominent format:
@@ -1590,7 +1669,7 @@ class AgentLoop:
         self.messages.add(
             LLMMessage.model_validate(
                 self.format_handler.create_tool_response_message(tool_call, text)
-            )
+            ).model_copy(update={"meta": meta})
         )
 
     def _tool_failure_event(
@@ -1599,9 +1678,12 @@ class AgentLoop:
         error_msg: str,
         decision: ToolDecision | None = None,
         cancelled: bool = False,
+        started_at: float | None = None,
     ) -> ToolResultEvent:
         """Create a ToolResultEvent for a failed tool and record the failure."""
-        self._handle_tool_response(tool_call, error_msg, "failure", decision)
+        self._handle_tool_response(
+            tool_call, error_msg, "failure", decision, started_at=started_at
+        )
         return ToolResultEvent(
             tool_name=tool_call.tool_name,
             tool_class=tool_call.tool_class,
@@ -1720,6 +1802,14 @@ class AgentLoop:
 
             processed_message = self.format_handler.process_api_response_message(
                 result.message
+            ).model_copy(
+                update={
+                    "meta": MessageMeta(
+                        request_sent_at=self._llm_requested_at,
+                        response_done_at=time.time(),
+                        server_timings=result.usage.server_timings,
+                    )
+                }
             )
             self.messages.add(processed_message)
             return LLMChunk(message=processed_message, usage=result.usage)
@@ -1772,6 +1862,7 @@ class AgentLoop:
             usage = LLMUsage()
             chunk_agg: LLMChunk | None = None
             duplicate_cut = False
+            first_chunk_at: float | None = None
             async for chunk in self.backend.complete_streaming(
                 model=active_model,
                 messages=self.messages,
@@ -1783,6 +1874,8 @@ class AgentLoop:
                 metadata=self._build_metadata(),
                 wire_per_message_effort=self.messages.wire_per_message_effort_for_request(),
             ):
+                if first_chunk_at is None:
+                    first_chunk_at = time.time()
                 self._note_served_model(chunk.served_model)
                 processed_message = self.format_handler.process_api_response_message(
                     chunk.message
@@ -1833,7 +1926,18 @@ class AgentLoop:
                     }
                 )
 
-            self.messages.add(chunk_agg.message)
+            self.messages.add(
+                chunk_agg.message.model_copy(
+                    update={
+                        "meta": MessageMeta(
+                            request_sent_at=self._llm_requested_at,
+                            first_chunk_at=first_chunk_at,
+                            response_done_at=time.time(),
+                            server_timings=usage.server_timings,
+                        )
+                    }
+                )
+            )
 
         except Exception as e:
             if _should_raise_rate_limit_error(e):
@@ -1939,9 +2043,11 @@ class AgentLoop:
                 approval_type=ToolPermission.ASK,
                 feedback="Tool execution not permitted.",
             )
+        asked_at = time.time()
         response, feedback = await self.approval_callback(
             tool_name, args, tool_call_id, required_permissions
         )
+        answered_at = time.time()
 
         match response:
             case ApprovalResponse.YES:
@@ -1950,7 +2056,11 @@ class AgentLoop:
                 verdict = ToolExecutionResponse.SKIP
 
         return ToolDecision(
-            verdict=verdict, approval_type=ToolPermission.ASK, feedback=feedback
+            verdict=verdict,
+            approval_type=ToolPermission.ASK,
+            feedback=feedback,
+            approval_asked_at=asked_at,
+            approval_answered_at=answered_at,
         )
 
     def _reset_session(self) -> None:

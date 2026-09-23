@@ -79,7 +79,7 @@ def test_binary_old_side_detected():
     assert diff is not None
     assert diff.kind == "binary"
     assert diff.note == "Binary file - no diff shown"
-    assert diff.hunks == []
+    assert diff.hunks == ()
 
 
 def test_binary_new_side_detected():

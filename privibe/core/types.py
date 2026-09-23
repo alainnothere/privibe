@@ -3,7 +3,6 @@ from __future__ import annotations
 from abc import ABC
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-import copy
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import uuid4
@@ -166,11 +165,19 @@ class AvailableTool(BaseModel):
 
 
 class FunctionCall(BaseModel):
+    # frozen: a tool call is rendered into the llama.cpp KV-cache prefix by
+    # the chat template. A stored LLMMessage is frozen, but frozen only
+    # guards the message's own attributes; without this, `msg.tool_calls[0]
+    # .function.arguments = ...` silently rewrites already-processed tokens.
+    model_config = ConfigDict(frozen=True)
+
     name: str | None = None
     arguments: str | None = None
 
 
 class ToolCall(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     id: str | None = None
     index: int | None = None
     function: FunctionCall = Field(default_factory=FunctionCall)
@@ -206,6 +213,93 @@ class ApprovalResponse(StrEnum):
     NO = "n"
 
 
+class FileDiff(BaseModel):
+    """A red/green diff of a file-mutating tool's change, for display only.
+
+    Rows are (css_class, text) pairs so the widget can mount them directly.
+    kind:
+      - "diff":   `hunks` holds one list of rows per difflib hunk (already
+                  per-run cropped); the widget applies the hunk budget.
+      - "sample": one synthetic hunk (head/tail sample) for changes too large
+                  to diff; `note` unused.
+      - "binary": no rows; `note` carries the "no diff shown" message.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    kind: str
+    hunks: tuple[tuple[tuple[str, str], ...], ...] = ()
+    note: str | None = None
+
+
+class ServerTimings(BaseModel):
+    """llama.cpp's per-request `timings` object, the fields we keep.
+
+    All wall-clock milliseconds and token counts as the server reported them.
+    extra="ignore": the server may add fields; we don't store what we don't
+    read.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    cache_n: int | None = None
+    prompt_n: int | None = None
+    prompt_ms: float | None = None
+    predicted_n: int | None = None
+    predicted_ms: float | None = None
+    draft_n: int | None = None
+    draft_n_accepted: int | None = None
+
+
+class ToolOutcome(StrEnum):
+    success = auto()
+    failure = auto()
+    skipped = auto()
+
+
+class MessageMeta(BaseModel):
+    """What happened around one message, for display and nothing else.
+
+    THE RULE: if the model ever needs a value, it is content, not meta. Meta
+    holds wall-clock instants (time.time()) and what a widget needs to redraw
+    the message after a resume. Durations are never stored: every "how long"
+    on screen is the difference between two instants, computed at render
+    time, so adding a clock later never invalidates an old one.
+
+    extra="forbid" and frozen=True: this model cannot grow without editing
+    the type and the test that lists its fields, and cannot be edited after
+    the message it hangs on is stored. Both on purpose; see the field-level
+    exclude on LLMMessage.meta for why it can never reach the wire.
+
+    Which fields a message uses depends on its role:
+      user       submitted_at
+      assistant  request_sent_at, first_chunk_at, response_done_at,
+                 server_timings
+      tool       approval_asked_at, approval_answered_at, tool_started_at,
+                 tool_finished_at, tool_outcome, tool_result, file_diff
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    submitted_at: float | None = None
+
+    request_sent_at: float | None = None
+    first_chunk_at: float | None = None
+    response_done_at: float | None = None
+    server_timings: ServerTimings | None = None
+
+    approval_asked_at: float | None = None
+    approval_answered_at: float | None = None
+    tool_started_at: float | None = None
+    tool_finished_at: float | None = None
+    tool_outcome: ToolOutcome | None = None
+    # result_model.model_dump() of a successful call: what the per-tool
+    # result widget renders. The text the model saw is the message content.
+    tool_result: dict[str, Any] | None = None
+    file_diff: FileDiff | None = None
+
+
 class LLMMessage(BaseModel):
     # frozen: once a message exists it is immutable. Stored conversation
     # messages are the llama.cpp KV-cache prefix; in-place edits would
@@ -219,7 +313,9 @@ class LLMMessage(BaseModel):
     reasoning_content: Content | None = None
     reasoning_signature: str | None = None
     reasoning_message_id: str | None = None
-    tool_calls: list[ToolCall] | None = None
+    # A tuple, not a list: `msg.tool_calls.append(...)` on a stored message
+    # would grow the KV-cache prefix in place. Lists validate into it.
+    tool_calls: tuple[ToolCall, ...] | None = None
     name: str | None = None
     tool_call_id: str | None = None
     message_id: str | None = None
@@ -230,6 +326,13 @@ class LLMMessage(BaseModel):
     # content. Only sent on the wire by providers that opt in
     # (ProviderConfig.per_message_reasoning_effort).
     reasoning_effort: str | None = None
+    # Display-only record of what happened around this message (clocks,
+    # server timings, the structured tool result). exclude=True is field-level
+    # in pydantic: no model_dump anywhere can emit it, not even with an
+    # explicit include, so it can never reach a backend payload. The session
+    # log writes it through SessionLogger's storage dict, the one place it
+    # exists on disk. See MessageMeta for the rule on what belongs here.
+    meta: MessageMeta | None = Field(default=None, exclude=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -291,20 +394,26 @@ class LLMMessage(BaseModel):
                 if tc.index is None:
                     raise ValueError("Tool call chunk missing index")
                 if tc.index not in tool_calls_map:
-                    tool_calls_map[tc.index] = copy.deepcopy(tc)
+                    tool_calls_map[tc.index] = tc
                 else:
-                    existing_name = tool_calls_map[tc.index].function.name
+                    existing = tool_calls_map[tc.index]
+                    existing_name = existing.function.name
                     new_name = tc.function.name
                     if existing_name and new_name and existing_name != new_name:
                         raise ValueError(
                             "Can't accumulate messages with different tool call names"
                         )
-                    if new_name and not existing_name:
-                        tool_calls_map[tc.index].function.name = new_name
-                    new_args = (tool_calls_map[tc.index].function.arguments or "") + (
-                        tc.function.arguments or ""
+                    tool_calls_map[tc.index] = existing.model_copy(
+                        update={
+                            "function": existing.function.model_copy(
+                                update={
+                                    "name": existing_name or new_name,
+                                    "arguments": (existing.function.arguments or "")
+                                    + (tc.function.arguments or ""),
+                                }
+                            )
+                        }
                     )
-                    tool_calls_map[tc.index].function.arguments = new_args
 
         return LLMMessage(
             role=self.role,
@@ -313,10 +422,11 @@ class LLMMessage(BaseModel):
             reasoning_signature=reasoning_signature,
             reasoning_message_id=self.reasoning_message_id
             or other.reasoning_message_id,
-            tool_calls=list(tool_calls_map.values()) or None,
+            tool_calls=tuple(tool_calls_map.values()) or None,
             name=self.name,
             tool_call_id=self.tool_call_id,
             message_id=self.message_id,
+            meta=self.meta or other.meta,
         )
 
 
@@ -330,11 +440,19 @@ class LLMUsage(BaseModel):
     # the provider doesn't expose them (e.g. OpenRouter, Mistral).
     tokens_per_second: float | None = None
     prompt_tokens_per_second: float | None = None
+    # The server's own clocks for this request (llama.cpp only). Arrives in
+    # the final chunk; None for providers that don't report it.
+    server_timings: ServerTimings | None = None
 
     def __add__(self, other: LLMUsage) -> LLMUsage:
         return LLMUsage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
+            server_timings=(
+                other.server_timings
+                if other.server_timings is not None
+                else self.server_timings
+            ),
             # Speeds arrive only in the final chunk, so prefer the latest non-None
             # value as chunks accumulate.
             tokens_per_second=(
@@ -413,24 +531,6 @@ class ToolCallEvent(BaseEvent):
     requested_at: float | None = None
 
 
-class FileDiff(BaseModel):
-    """A red/green diff of a file-mutating tool's change, for display only.
-
-    Rows are (css_class, text) pairs so the widget can mount them directly.
-    kind:
-      - "diff":   `hunks` holds one list of rows per difflib hunk (already
-                  per-run cropped); the widget applies the hunk budget.
-      - "sample": one synthetic hunk (head/tail sample) for changes too large
-                  to diff; `note` unused.
-      - "binary": no rows; `note` carries the "no diff shown" message.
-    """
-
-    path: str
-    kind: str
-    hunks: list[list[tuple[str, str]]] = []
-    note: str | None = None
-
-
 class ToolResultEvent(BaseEvent):
     tool_name: str
     tool_class: type[BaseTool] | None
@@ -442,6 +542,13 @@ class ToolResultEvent(BaseEvent):
     duration: float | None = None
     tool_call_id: str
     file_diff: FileDiff | None = None
+    # The two MessageMeta the finished line derives its times from: the
+    # assistant message that made the call and the tool response message.
+    # The request's prefill/decode belong to the first call of a batch only
+    # (first_in_message), so parallel calls don't each claim them.
+    request_meta: MessageMeta | None = None
+    tool_meta: MessageMeta | None = None
+    first_in_message: bool = False
 
 
 class ToolStreamEvent(BaseEvent):

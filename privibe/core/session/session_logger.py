@@ -41,6 +41,19 @@ _REPLACE_BACKOFF_S = 0.1
 logger = logging.getLogger(__name__)
 
 
+def stored_message_dict(message: LLMMessage) -> dict[str, Any]:
+    """The messages.jsonl line for one message.
+
+    model_dump drops `meta` by construction (field-level exclude, so no
+    backend can ever send it); the session log is the one place it is
+    written, added back here explicitly. Never use this for a wire payload.
+    """
+    data = message.model_dump(exclude_none=True)
+    if message.meta is not None:
+        data["meta"] = message.meta.model_dump(exclude_none=True)
+    return data
+
+
 class SessionLogger:
     def __init__(self, session_config: SessionLoggingConfig, session_id: str) -> None:
         self.session_config = session_config
@@ -400,7 +413,7 @@ class SessionLogger:
             if len(new_messages) == 0 and not needs_meta_reconcile:
                 return
 
-            messages_data = [m.model_dump(exclude_none=True) for m in new_messages]
+            messages_data = [stored_message_dict(m) for m in new_messages]
             await SessionLogger.persist_messages(messages_data, self.session_dir)
 
             # The session's frozen tools, when messages is the ConversationList

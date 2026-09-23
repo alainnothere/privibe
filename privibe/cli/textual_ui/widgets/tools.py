@@ -18,19 +18,27 @@ from privibe.cli.textual_ui.widgets.tool_widgets import (
     half_viewport_cap,
 )
 from privibe.core.tools.ui import ToolUIDataAdapter
-from privibe.core.types import ToolCallEvent, ToolResultEvent
+from privibe.core.types import MessageMeta, ToolCallEvent, ToolResultEvent
 
 
 class ToolCallMessage(StatusMessage):
     def __init__(
-        self, event: ToolCallEvent | None = None, *, tool_name: str | None = None
+        self,
+        event: ToolCallEvent | None = None,
+        *,
+        tool_name: str | None = None,
+        history: bool = False,
     ) -> None:
+        """A tool call line. Live: built from the event as it streams in.
+        History (resume / load-more): built from the stored message, with an
+        event when the tool is known and without one otherwise; never spins.
+        """
         if event is None and tool_name is None:
             raise ValueError("Either event or tool_name must be provided")
 
         self._event = event
         self._tool_name = tool_name or (event.tool_name if event else None) or "unknown"
-        self._is_history = event is None
+        self._is_history = history or event is None
         self._stream_widget: NoMarkupStatic | None = None
         self._hint_widget: NoMarkupStatic | None = None
         self._start_time: float | None = None
@@ -45,7 +53,8 @@ class ToolCallMessage(StatusMessage):
     @property
     def history_key(self) -> str | None:
         """Stable id for windowing: the tool call id, prefixed to distinguish
-        the assistant message holding the call from the tool result message."""
+        the assistant message holding the call from the tool result message.
+        """
         if self._event is None or not self._event.tool_call_id:
             return None
         return f"call:{self._event.tool_call_id}"
@@ -80,7 +89,8 @@ class ToolCallMessage(StatusMessage):
                     self._hint_widget.update(f"({_format_elapsed(elapsed)})")
 
     def on_mount(self) -> None:
-        self._start_time = time()
+        if not self._is_history:
+            self._start_time = time()
         super().on_mount()
         siblings = list(self.parent.children) if self.parent else []
         idx = siblings.index(self) if self in siblings else -1
@@ -120,18 +130,115 @@ class ToolCallMessage(StatusMessage):
         if self._text_widget:
             self._text_widget.update(text)
 
-    def set_finished_hint(self, duration: float | None) -> None:
-        """Replace the frozen elapsed counter with the measured duration and
-        the wall-clock time the LLM request behind this call went out."""
+    def set_finished_hint(self, result: ToolResultEvent | None) -> None:
+        """Replace the frozen elapsed counter with where the time went: the
+        LLM request behind this call, the approval wait, and the run.
+        """
         if self._hint_widget is None:
             return
-        parts: list[str] = []
-        if duration is not None:
-            parts.append(f"{duration:.1f}s")
-        requested_at = self._event.requested_at if self._event else None
-        if requested_at is not None:
-            parts.append(datetime.fromtimestamp(requested_at).strftime("%H:%M:%S"))
-        self._hint_widget.update(f"({' · '.join(parts)})" if parts else "")
+        call_requested_at = self._event.requested_at if self._event else None
+        if result is None:
+            self._hint_widget.update(finished_hint_text(None, call_requested_at))
+            return
+        self._hint_widget.update(
+            finished_hint_text(
+                result.duration,
+                call_requested_at,
+                request_meta=result.request_meta,
+                tool_meta=result.tool_meta,
+                include_request=result.first_in_message,
+            )
+        )
+
+
+# Wall time of a request that the server's own clocks don't account for
+# (queue, slot wait, template, network). Shown only above this, so noise
+# stays off the line.
+OVERHEAD_SHOWN_ABOVE_S = 0.1
+_MINUTE = 60
+_THOUSAND = 1000
+
+
+def _secs(seconds: float) -> str:
+    if seconds < _MINUTE:
+        return f"{seconds:.1f}s"
+    minutes, rest = divmod(int(seconds), _MINUTE)
+    return f"{minutes}m{rest:02d}s"
+
+
+def _tokens(n: int) -> str:
+    return str(n) if n < _THOUSAND else f"{n / _THOUSAND:.1f}k"
+
+
+def _request_parts(meta: MessageMeta) -> list[str]:
+    """Where the LLM request's time went. llama.cpp reports its own prefill
+    and decode clocks; whatever the wall clock saw beyond them is overhead.
+    Providers without server timings fall back to our own instants.
+    """
+    parts: list[str] = []
+    wall = (
+        meta.response_done_at - meta.request_sent_at
+        if meta.response_done_at is not None and meta.request_sent_at is not None
+        else None
+    )
+    t = meta.server_timings
+    if t is not None and t.prompt_ms is not None:
+        prefill = f"prefill {_secs(t.prompt_ms / 1000)} {_tokens(t.prompt_n or 0)} new"
+        if t.cache_n:
+            prefill += f" {_tokens(t.cache_n)} cached"
+        parts.append(prefill)
+        server_s = t.prompt_ms / 1000
+        if t.predicted_ms is not None:
+            parts.append(
+                f"decode {_secs(t.predicted_ms / 1000)} "
+                f"{_tokens(t.predicted_n or 0)} tok"
+            )
+            server_s += t.predicted_ms / 1000
+        if wall is not None and wall - server_s > OVERHEAD_SHOWN_ABOVE_S:
+            parts.append(f"overhead {_secs(wall - server_s)}")
+    elif meta.first_chunk_at is not None and meta.request_sent_at is not None:
+        parts.append(f"first token {_secs(meta.first_chunk_at - meta.request_sent_at)}")
+        if meta.response_done_at is not None:
+            parts.append(f"gen {_secs(meta.response_done_at - meta.first_chunk_at)}")
+    elif wall is not None:
+        parts.append(f"llm {_secs(wall)}")
+    return parts
+
+
+def finished_hint_text(
+    duration: float | None,
+    requested_at: float | None,
+    *,
+    request_meta: MessageMeta | None = None,
+    tool_meta: MessageMeta | None = None,
+    include_request: bool = False,
+) -> str:
+    """The hint after a finished call, in the order things happened: the LLM
+    request (first call of a batch only), the approval wait, the run, and the
+    wall-clock instant the request went out. Every number is a difference of
+    stored instants or a server-reported clock; nothing here is stored.
+    Empty when nothing is known (sessions written before meta existed).
+    """
+    parts: list[str] = []
+    if include_request and request_meta is not None:
+        parts.extend(_request_parts(request_meta))
+    if (
+        tool_meta is not None
+        and tool_meta.approval_asked_at is not None
+        and tool_meta.approval_answered_at is not None
+    ):
+        waited = tool_meta.approval_answered_at - tool_meta.approval_asked_at
+        parts.append(f"approval {_secs(waited)}")
+    if duration is not None:
+        parts.append(f"run {_secs(duration)}")
+    sent_at = (
+        request_meta.request_sent_at
+        if request_meta is not None and request_meta.request_sent_at is not None
+        else requested_at
+    )
+    if sent_at is not None:
+        parts.append(datetime.fromtimestamp(sent_at).strftime("%H:%M:%S"))
+    return f"({' · '.join(parts)})" if parts else ""
 
 
 class ToolResultMessage(Static):
@@ -164,7 +271,8 @@ class ToolResultMessage(Static):
     @property
     def history_key(self) -> str | None:
         """Stable id for windowing: the tool call id, prefixed to distinguish
-        the tool result message from the assistant message holding the call."""
+        the tool result message from the assistant message holding the call.
+        """
         if self._event is None or not self._event.tool_call_id:
             return None
         return f"result:{self._event.tool_call_id}"
@@ -192,9 +300,7 @@ class ToolResultMessage(Static):
             self._call_widget.stop_spinning(success=success)
             result_text = self._get_result_text()
             self._call_widget.set_result_text(result_text)
-            self._call_widget.set_finished_hint(
-                self._event.duration if self._event else None
-            )
+            self._call_widget.set_finished_hint(self._event)
         await self._render_result()
 
     def _determine_success(self) -> bool:

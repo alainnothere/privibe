@@ -88,21 +88,17 @@ class EventHandler:
 
     def _sanitize_event(self, event: ToolResultEvent) -> ToolResultEvent:
         if isinstance(event, ToolResultEvent):
-            return ToolResultEvent(
-                tool_name=event.tool_name,
-                tool_class=event.tool_class,
-                result=event.result,
-                error=TaggedText.from_string(event.error).message
-                if event.error
-                else None,
-                skipped=event.skipped,
-                skip_reason=TaggedText.from_string(event.skip_reason).message
-                if event.skip_reason
-                else None,
-                cancelled=event.cancelled,
-                duration=event.duration,
-                tool_call_id=event.tool_call_id,
-                file_diff=event.file_diff,
+            # model_copy, not a field-by-field rebuild: every other field
+            # (timing metas included) must reach the widget untouched.
+            return event.model_copy(
+                update={
+                    "error": TaggedText.from_string(event.error).message
+                    if event.error
+                    else None,
+                    "skip_reason": TaggedText.from_string(event.skip_reason).message
+                    if event.skip_reason
+                    else None,
+                }
             )
         return event
 

@@ -6,7 +6,10 @@ from typing import Any, ClassVar
 
 from privibe.core.config import ProviderConfig
 from privibe.core.llm.backend.base import APIAdapter, PreparedRequest
-from privibe.core.llm.message_utils import merge_consecutive_user_messages, strip_reasoning
+from privibe.core.llm.message_utils import (
+    merge_consecutive_user_messages,
+    strip_reasoning,
+)
 from privibe.core.types import (
     AvailableTool,
     FunctionCall,
@@ -14,6 +17,7 @@ from privibe.core.types import (
     LLMMessage,
     LLMUsage,
     Role,
+    ServerTimings,
     StrToolChoice,
     ToolCall,
 )
@@ -177,10 +181,10 @@ class ReasoningAdapter(APIAdapter):
     @staticmethod
     def _parse_tool_calls(
         tool_calls: list[dict[str, Any]] | None,
-    ) -> list[ToolCall] | None:
+    ) -> tuple[ToolCall, ...] | None:
         if not tool_calls:
             return None
-        return [
+        return tuple(
             ToolCall(
                 id=tc.get("id"),
                 index=tc.get("index"),
@@ -190,7 +194,7 @@ class ReasoningAdapter(APIAdapter):
                 ),
             )
             for tc in tool_calls
-        ]
+        )
 
     def _parse_message_dict(self, msg_dict: dict[str, Any]) -> LLMMessage:
         content = msg_dict.get("content")
@@ -231,6 +235,7 @@ class ReasoningAdapter(APIAdapter):
             completion_tokens=usage_data.get("completion_tokens", 0),
             tokens_per_second=timings.get("predicted_per_second"),
             prompt_tokens_per_second=timings.get("prompt_per_second"),
+            server_timings=ServerTimings.model_validate(timings) if timings else None,
         )
 
         return LLMChunk(message=message, usage=usage)
