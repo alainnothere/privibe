@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import signal
 import sys
-from typing import ClassVar, Literal, final
+from typing import ClassVar, Literal, NamedTuple, final
 
 from pydantic import BaseModel, Field
 from tree_sitter import Language, Node, Parser
@@ -366,6 +366,125 @@ class BashResult(BaseModel):
     stdout: str
     stderr: str
     returncode: int
+    was_truncated: bool = Field(
+        default=False,
+        description="True if stdout or stderr was cut to max_output_bytes.",
+    )
+    total_lines: int | None = Field(
+        default=None,
+        description="Exact line count of the full stdout. Set only when stdout "
+        "was truncated, so the model can plan how to get the rest.",
+    )
+    advisory: str | None = Field(
+        default=None,
+        description="Set when output was truncated. Says how much was cut and "
+        "how to get the rest without re-running the command.",
+    )
+
+
+def _line_count(data: bytes) -> int:
+    """Lines the way the file readers number them: newlines, plus one for an
+    unterminated tail.
+    """
+    if not data:
+        return 0
+    return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
+
+
+def _cap_stream(
+    raw: bytes, max_bytes: int, encoding: str
+) -> tuple[str, bool, int, int]:
+    """Cut a captured stream to max_bytes on a line boundary.
+
+    Returns (text, was_truncated, total_lines, shown_lines). The cut drops
+    the torn partial line so the model never sees a sentence that stops
+    mid-word and has to guess whether that was the file or the tool. With no
+    newline inside the cap the raw slice is kept, since dropping it would
+    leave nothing. Bytes are sliced before decoding so the cap is the number
+    the config promises.
+    """
+    if not raw:
+        return "", False, 0, 0
+    total_lines = _line_count(raw)
+    if len(raw) <= max_bytes:
+        return raw.decode(encoding, errors="replace"), False, total_lines, total_lines
+    head = raw[:max_bytes]
+    cut = head.rfind(b"\n")
+    if cut > 0:
+        head = head[: cut + 1]
+    return head.decode(encoding, errors="replace"), True, total_lines, _line_count(head)
+
+
+_RERUN_WARNING = (
+    "Do NOT re-run the command to see the rest: a second run may not produce "
+    "the same output. If this was a file, use hashed_read with start_line and "
+    "limit. Otherwise narrow the command with head, tail or grep, or redirect "
+    "its output to a file and read that with hashed_read."
+)
+
+
+def truncation_advisory(
+    *,
+    max_bytes: int,
+    stdout: tuple[int, int, int] | None,
+    stderr: tuple[int, int, int] | None,
+) -> str:
+    """Advisory for a head-kept cut. Each stream tuple is
+    (total_bytes, total_lines, shown_lines) for a stream that was cut, or
+    None when that stream fit. Same voice as the readers' large-file
+    advisory, so the model reads one dialect.
+    """
+    parts = []
+    for name, stat in (("stdout", stdout), ("stderr", stderr)):
+        if stat is None:
+            continue
+        total_bytes, total_lines, shown_lines = stat
+        parts.append(
+            f"{name} was {total_bytes:,} bytes, {total_lines:,} lines; only the "
+            f"first {shown_lines:,} lines are shown ({max_bytes:,} byte cap)"
+        )
+    return "OUTPUT TRUNCATED: " + ". ".join(parts) + ". " + _RERUN_WARNING
+
+
+class _CappedOutput(NamedTuple):
+    stdout: str
+    stderr: str
+    was_truncated: bool
+    total_lines: int | None
+    advisory: str | None
+
+
+def _cap_output(
+    stdout_bytes: bytes, stderr_bytes: bytes, max_bytes: int, encoding: str
+) -> _CappedOutput:
+    """Cap both streams and, if either was cut, say so in the readers' voice."""
+    stdout, stdout_cut, stdout_lines, stdout_shown = _cap_stream(
+        stdout_bytes, max_bytes, encoding
+    )
+    stderr, stderr_cut, stderr_lines, stderr_shown = _cap_stream(
+        stderr_bytes, max_bytes, encoding
+    )
+    if not (stdout_cut or stderr_cut):
+        return _CappedOutput(stdout, stderr, False, None, None)
+    advisory = truncation_advisory(
+        max_bytes=max_bytes,
+        stdout=(len(stdout_bytes), stdout_lines, stdout_shown) if stdout_cut else None,
+        stderr=(len(stderr_bytes), stderr_lines, stderr_shown) if stderr_cut else None,
+    )
+    return _CappedOutput(
+        stdout, stderr, True, stdout_lines if stdout_cut else None, advisory
+    )
+
+
+def tail_kept_advisory(max_bytes: int) -> str:
+    """Advisory for the ACP path, where the editor keeps the last max_bytes
+    and the beginning is gone before the tool ever sees it.
+    """
+    return (
+        f"OUTPUT TRUNCATED: the editor kept only the last {max_bytes:,} bytes "
+        "of the output; the beginning is gone and the total size is unknown. "
+        + _RERUN_WARNING
+    )
 
 
 class Bash(
@@ -385,7 +504,12 @@ class Bash(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
 
-        return ToolResultDisplay(success=True, message=f"$ {event.result.command}")
+        warnings = []
+        if event.result.was_truncated:
+            warnings.append("Output was truncated due to size limit")
+        return ToolResultDisplay(
+            success=True, message=f"$ {event.result.command}", warnings=warnings
+        )
 
     @classmethod
     def get_status_text(cls) -> str:
@@ -538,7 +662,15 @@ class Bash(
 
     @final
     def _build_result(
-        self, *, command: str, stdout: str, stderr: str, returncode: int
+        self,
+        *,
+        command: str,
+        stdout: str,
+        stderr: str,
+        returncode: int,
+        was_truncated: bool = False,
+        total_lines: int | None = None,
+        advisory: str | None = None,
     ) -> BashResult:
         if returncode != 0:
             error_msg = f"Command failed: {command!r}\n"
@@ -547,10 +679,21 @@ class Bash(
                 error_msg += f"\nStderr: {stderr}"
             if stdout:
                 error_msg += f"\nStdout: {stdout}"
+            if advisory:
+                # The failing case is the one the model reads closest; a
+                # silent cut here is where it goes looking for a bug that
+                # is really a byte cap.
+                error_msg += f"\n{advisory}"
             raise ToolError(error_msg.strip())
 
         return BashResult(
-            command=command, stdout=stdout, stderr=stderr, returncode=returncode
+            command=command,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+            was_truncated=was_truncated,
+            total_lines=total_lines,
+            advisory=advisory,
         )
 
     async def run(
@@ -601,24 +744,16 @@ class Bash(
                 raise self._build_timeout_error(args.command, timeout)
 
             encoding = _get_subprocess_encoding(windows_bash=windows_bash is not None)
-            stdout = (
-                stdout_bytes.decode(encoding, errors="replace")[:max_bytes]
-                if stdout_bytes
-                else ""
-            )
-            stderr = (
-                stderr_bytes.decode(encoding, errors="replace")[:max_bytes]
-                if stderr_bytes
-                else ""
-            )
-
-            returncode = proc.returncode or 0
+            capped = _cap_output(stdout_bytes, stderr_bytes, max_bytes, encoding)
 
             yield self._build_result(
                 command=args.command,
-                stdout=stdout,
-                stderr=stderr,
-                returncode=returncode,
+                stdout=capped.stdout,
+                stderr=capped.stderr,
+                returncode=proc.returncode or 0,
+                was_truncated=capped.was_truncated,
+                total_lines=capped.total_lines,
+                advisory=capped.advisory,
             )
 
         except (ToolError, asyncio.CancelledError):

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from tests.mock.utils import collect_result
 from privibe.core.tools.base import BaseToolState, ToolError, ToolPermission
-from privibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
+from privibe.core.tools.builtins.bash import Bash, BashArgs, BashResult, BashToolConfig
 from privibe.core.tools.permissions import PermissionContext
+from privibe.core.types import ToolResultEvent
+from tests.mock.utils import collect_result
 
 
 @pytest.fixture
@@ -68,6 +69,96 @@ async def test_truncates_output_to_max_bytes(bash):
     assert result.stdout == "abcde"
     assert result.stderr == ""
     assert result.returncode == 0
+    # No newline inside the cap: the raw slice is kept, and the cut is named.
+    assert result.was_truncated
+    assert result.total_lines == 1
+    assert result.advisory is not None
+    assert "OUTPUT TRUNCATED" in result.advisory
+    assert "stdout was 10 bytes, 1 lines" in result.advisory
+    assert "Do NOT re-run" in result.advisory
+
+
+@pytest.mark.asyncio
+async def test_untruncated_output_carries_no_flag(bash):
+    result = await collect_result(bash.run(BashArgs(command="printf 'a\\nb\\n'")))
+
+    assert result.stdout == "a\nb\n"
+    assert not result.was_truncated
+    assert result.total_lines is None
+    assert result.advisory is None
+
+
+@pytest.mark.asyncio
+async def test_truncation_cuts_on_line_boundary_and_counts_all_lines(bash):
+    config = BashToolConfig(max_output_bytes=8)
+    bash_tool = Bash(config=config, state=BaseToolState())
+
+    result = await collect_result(
+        bash_tool.run(BashArgs(command="printf 'line1\\nline2\\nline3\\n'"))
+    )
+
+    # 18 bytes in, 8-byte cap lands inside "line2"; the torn line is dropped.
+    assert result.stdout == "line1\n"
+    assert result.was_truncated
+    assert result.total_lines == 3
+    assert result.advisory is not None
+    assert "stdout was 18 bytes, 3 lines" in result.advisory
+    assert "only the first 1 lines are shown (8 byte cap)" in result.advisory
+
+
+@pytest.mark.asyncio
+async def test_stderr_truncation_is_reported_without_stdout_count(bash):
+    config = BashToolConfig(max_output_bytes=5)
+    bash_tool = Bash(config=config, state=BaseToolState())
+
+    result = await collect_result(
+        bash_tool.run(BashArgs(command="printf 'abcdefghij' >&2"))
+    )
+
+    assert result.stdout == ""
+    assert result.stderr == "abcde"
+    assert result.was_truncated
+    assert result.total_lines is None
+    assert result.advisory is not None
+    assert "stderr was 10 bytes" in result.advisory
+    assert "stdout was" not in result.advisory
+
+
+@pytest.mark.asyncio
+async def test_failed_command_error_names_the_truncation(bash):
+    config = BashToolConfig(max_output_bytes=5)
+    bash_tool = Bash(config=config, state=BaseToolState())
+
+    with pytest.raises(ToolError) as err:
+        await collect_result(
+            bash_tool.run(BashArgs(command="printf 'abcdefghij'; exit 3"))
+        )
+
+    message = str(err.value)
+    assert "Return code: 3" in message
+    assert "Stdout: abcde" in message
+    assert "OUTPUT TRUNCATED" in message
+
+
+def test_result_display_warns_on_truncation():
+    result = BashResult(
+        command="cat big.txt",
+        stdout="head\n",
+        stderr="",
+        returncode=0,
+        was_truncated=True,
+        total_lines=469,
+        advisory="OUTPUT TRUNCATED: ...",
+    )
+    event = ToolResultEvent(
+        tool_name="bash", tool_class=Bash, result=result, tool_call_id="1"
+    )
+
+    display = Bash.get_result_display(event)
+
+    assert display.success is True
+    assert display.message == "$ cat big.txt"
+    assert display.warnings == ["Output was truncated due to size limit"]
 
 
 @pytest.mark.asyncio

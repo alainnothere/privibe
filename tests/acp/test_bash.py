@@ -6,10 +6,10 @@ from acp import CreateTerminalResponse
 from acp.schema import EnvVariable, TerminalOutputResponse, WaitForTerminalExitResponse
 import pytest
 
-from tests.mock.utils import collect_result
 from privibe.acp.tools.builtins.bash import AcpBashState, Bash
 from privibe.core.tools.base import ToolError
 from privibe.core.tools.builtins.bash import BashArgs, BashResult, BashToolConfig
+from tests.mock.utils import collect_result
 
 
 class MockTerminalHandle:
@@ -19,11 +19,13 @@ class MockTerminalHandle:
         exit_code: int | None = 0,
         output: str = "test output",
         wait_delay: float = 0.01,
+        truncated: bool = False,
     ) -> None:
         self.id = terminal_id
         self._exit_code = exit_code
         self._output = output
         self._wait_delay = wait_delay
+        self._truncated = truncated
         self._killed = False
 
     async def wait_for_exit(self) -> WaitForTerminalExitResponse:
@@ -31,7 +33,7 @@ class MockTerminalHandle:
         return WaitForTerminalExitResponse(exit_code=self._exit_code)
 
     async def current_output(self) -> TerminalOutputResponse:
-        return TerminalOutputResponse(output=self._output, truncated=False)
+        return TerminalOutputResponse(output=self._output, truncated=self._truncated)
 
     async def kill(self) -> None:
         self._killed = True
@@ -141,6 +143,8 @@ class TestAcpBashExecution:
         assert result.stdout == "test output"
         assert result.stderr == ""
         assert result.returncode == 0
+        assert not result.was_truncated
+        assert result.advisory is None
         assert mock_client._create_terminal_called
 
         # Verify create_terminal was called correctly
@@ -148,6 +152,25 @@ class TestAcpBashExecution:
         assert params["session_id"] == "test_session_123"
         assert params["command"] == "echo hello"
         assert params["cwd"] == str(Path.cwd())  # effective_workdir defaults to cwd
+
+    @pytest.mark.asyncio
+    async def test_run_forwards_client_truncation(self) -> None:
+        client = MockClient(
+            terminal_handle=MockTerminalHandle(output="tail only", truncated=True)
+        )
+        state = AcpBashState.model_construct(
+            client=client, session_id="s", tool_call_id="t"
+        )
+        tool = Bash(config=BashToolConfig(max_output_bytes=16_000), state=state)
+
+        result = await collect_result(tool.run(BashArgs(command="cat big.txt")))
+
+        assert result.stdout == "tail only"
+        assert result.was_truncated
+        assert result.total_lines is None
+        assert result.advisory is not None
+        assert "kept only the last 16,000 bytes" in result.advisory
+        assert "Do NOT re-run" in result.advisory
 
     @pytest.mark.asyncio
     async def test_run_creates_terminal_with_env_vars(

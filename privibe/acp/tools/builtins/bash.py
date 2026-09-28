@@ -15,7 +15,12 @@ from privibe import VIBE_ROOT
 from privibe.acp.tools.base import AcpToolState, BaseAcpTool
 from privibe.core.logger import logger
 from privibe.core.tools.base import BaseToolState, InvokeContext, ToolError
-from privibe.core.tools.builtins.bash import Bash as CoreBashTool, BashArgs, BashResult
+from privibe.core.tools.builtins.bash import (
+    Bash as CoreBashTool,
+    BashArgs,
+    BashResult,
+    tail_kept_advisory,
+)
 from privibe.core.types import ToolCallEvent, ToolResultEvent, ToolStreamEvent
 
 
@@ -64,11 +69,16 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                 session_id=session_id, terminal_id=terminal_id
             )
 
+            # The editor applies output_byte_limit itself and keeps the tail,
+            # so all we can pass on is that it happened.
+            truncated = bool(output_response.truncated)
             yield self._build_result(
                 command=args.command,
                 stdout=output_response.output,
                 stderr="",
                 returncode=exit_response.exit_code or 0,
+                was_truncated=truncated,
+                advisory=tail_kept_advisory(max_bytes) if truncated else None,
             )
 
         finally:
