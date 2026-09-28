@@ -32,6 +32,7 @@ class SkillResult(BaseModel):
     name: str = Field(description="The name of the loaded skill")
     content: str = Field(description="The full skill content block")
     skill_dir: str = Field(description="Absolute path to the skill directory")
+    skill_path: str = Field(description="Absolute path to the loaded SKILL.md file")
 
 
 class SkillToolConfig(BaseToolConfig):
@@ -64,7 +65,8 @@ class Skill(
         if not isinstance(event.result, SkillResult):
             return ToolResultDisplay(success=True, message="Skill loaded")
         return ToolResultDisplay(
-            success=True, message=f"Loaded skill: {event.result.name}"
+            success=True,
+            message=f"Loaded skill: {event.result.name} ({event.result.skill_path})",
         )
 
     @classmethod
@@ -105,5 +107,8 @@ class Skill(
             raise ToolError(f"Cannot load skill file: {e}") from e
 
         yield SkillResult(
-            name=args.name, content=output, skill_dir=str(skill_info.skill_dir)
+            name=args.name,
+            content=output,
+            skill_dir=str(skill_info.skill_dir),
+            skill_path=str(skill_info.skill_path),
         )

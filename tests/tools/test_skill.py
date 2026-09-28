@@ -16,6 +16,7 @@ from privibe.core.tools.builtins.skill import (
     SkillToolConfig,
 )
 from privibe.core.tools.permissions import PermissionScope
+from privibe.core.types import ToolResultEvent
 
 
 def _make_skill_dir(
@@ -215,3 +216,38 @@ class TestSkillMeta:
     def test_description_is_set(self) -> None:
         assert "skill" in Skill.description.lower()
         assert len(Skill.description) > 20
+
+
+class TestSkillDisplay:
+    @pytest.mark.asyncio
+    async def test_result_carries_skill_path(
+        self, tmp_path: Path, skill_tool: Skill
+    ) -> None:
+        info = _make_skill_dir(tmp_path)
+        manager = _make_skill_manager({"my-skill": info})
+
+        result = await collect_result(
+            skill_tool.run(SkillArgs(name="my-skill"), _make_ctx(manager))
+        )
+
+        assert isinstance(result, SkillResult)
+        assert result.skill_path == str(info.skill_path)
+        assert result.skill_path.endswith("SKILL.md")
+
+    def test_result_display_shows_full_path(self) -> None:
+        result = SkillResult(
+            name="copilot",
+            content="",
+            skill_dir="/home/u/.privibe/skills/copilot",
+            skill_path="/home/u/.privibe/skills/copilot/SKILL.md",
+        )
+        event = ToolResultEvent(
+            tool_name="skill", tool_class=Skill, result=result, tool_call_id="c1"
+        )
+
+        display = Skill.get_result_display(event)
+
+        assert display.success
+        assert display.message == (
+            "Loaded skill: copilot (/home/u/.privibe/skills/copilot/SKILL.md)"
+        )
