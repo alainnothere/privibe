@@ -19,6 +19,7 @@ from privibe.core.tools.builtins.read_file import (
     ReadFileState,
     ReadFileToolConfig,
 )
+from privibe.core.tools.utils import count_file_lines
 from tests.mock.utils import collect_result
 
 # 4 KB threshold / 1 KB preview keep the fixtures small.
@@ -37,6 +38,17 @@ def _write_big_file(tmp_path: Path) -> Path:
 def _write_small_file(tmp_path: Path) -> Path:
     f = tmp_path / "small.txt"
     f.write_text(LINE * 10, encoding="utf-8")  # ~1 KB, under threshold
+    return f
+
+
+def _write_long_line_file(tmp_path: Path) -> Path:
+    """Ten short lines, then one 8 KB line with no trailing newline: 11 lines.
+
+    The old size-over-preview-average estimator saw only the short lines and
+    reported hundreds. The count must say 11 and honor the unterminated tail.
+    """
+    f = tmp_path / "longline.txt"
+    f.write_text("short\n" * 10 + "y" * 8192, encoding="utf-8")
     return f
 
 
@@ -73,6 +85,9 @@ async def test_naive_read_of_big_file_returns_preview_and_advisory(
     assert result.advisory is not None
     assert "LARGE FILE" in result.advisory
     assert "grep" in result.advisory
+    assert "100 lines" in result.advisory
+    assert "roughly" not in result.advisory
+    assert result.total_lines == 100
     assert result.was_truncated
     # Preview honors the preview cap, not max_read_bytes.
     assert len(result.content.encode("utf-8")) <= PREVIEW_KB * 1024
@@ -90,6 +105,7 @@ async def test_targeted_read_of_big_file_is_untouched(
         read_file_tool.run(ReadFileArgs(path=str(f), limit=50))
     )
     assert with_limit.advisory is None
+    assert with_limit.total_lines is None
     assert with_limit.lines_read == 50
 
     with_start_line = await collect_result(
@@ -144,6 +160,9 @@ async def test_hashed_naive_read_of_big_file_returns_preview_and_advisory(
 
     assert result.advisory is not None
     assert "LARGE FILE" in result.advisory
+    assert "100 lines" in result.advisory
+    assert "roughly" not in result.advisory
+    assert result.total_lines == 100
     assert result.was_truncated
     assert result.lines_read == 10
     # Output still carries usable line|hash| addresses for the preview.
@@ -162,6 +181,7 @@ async def test_hashed_targeted_read_of_big_file_is_untouched(
     )
 
     assert result.advisory is None
+    assert result.total_lines is None
     assert result.lines_read == 20
     assert result.start_line == 41
 
@@ -177,3 +197,46 @@ async def test_hashed_small_file_naive_read_is_untouched(
 
     assert result.advisory is None
     assert not result.was_truncated
+
+
+# ---------------------------------------------------------------------------
+# exact line count
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_advisory_counts_long_line_file_exactly(
+    tmp_path, monkeypatch, read_file_tool, hashed_read_tool
+):
+    monkeypatch.chdir(tmp_path)
+    f = _write_long_line_file(tmp_path)
+
+    plain = await collect_result(read_file_tool.run(ReadFileArgs(path=str(f))))
+    hashed = await collect_result(hashed_read_tool.run(HashedReadArgs(path=str(f))))
+
+    for result in (plain, hashed):
+        assert result.advisory is not None
+        assert result.total_lines == 11
+        assert "11 lines" in result.advisory
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (b"", 0),
+        (b"a\n", 1),
+        (b"a", 1),
+        (b"a\nb", 2),
+        (b"a\nb\n", 2),
+        (b"a\r\nb\r\n", 2),
+        (b"\n\n\n", 3),
+        # Newline exactly at the 1 MB chunk boundary, then a partial tail.
+        (b"x" * (1 << 20) + b"\ny", 2),
+        (b"x" * (1 << 20) + b"\n", 1),
+    ],
+)
+def test_count_file_lines_matches_reader_numbering(tmp_path, data, expected):
+    f = tmp_path / "f.bin"
+    f.write_bytes(data)
+
+    assert count_file_lines(f) == expected

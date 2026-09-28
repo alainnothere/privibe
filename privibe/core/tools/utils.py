@@ -215,22 +215,40 @@ def resolve_file_tool_permission(
     return None
 
 
+def count_file_lines(path: Path) -> int:
+    """Exact line count in the file tools' own numbering.
+
+    Newlines, plus one for a trailing partial line: the readers iterate the
+    file line by line and hand a final unterminated line its own address, so
+    the total has to agree with those addresses. Raw bytes in 1 MB chunks, no
+    decode, never more than one chunk in memory. Synchronous; callers on the
+    event loop wrap it in anyio's to_thread.run_sync.
+    """
+    total = 0
+    last = b""
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            total += chunk.count(b"\n")
+            last = chunk[-1:]
+    if last and last != b"\n":
+        total += 1
+    return total
+
+
 def large_file_advisory(
-    size_bytes: int, preview_bytes: int, preview_lines: int, threshold_kb: int
+    size_bytes: int, total_lines: int, preview_lines: int, threshold_kb: int
 ) -> str:
     """Message returned with the head preview of an over-threshold naive read.
 
     Delivered in the tool result (not the prompt) because that is the moment
     the model is about to page through a huge file, and result-level notes
-    are what actually change its next step.
+    are what actually change its next step. total_lines is a real count, not
+    an estimate: a wrong number here sends the model chasing a mismatch
+    between the advisory and the file it can see.
     """
     size_kb = size_bytes / 1024
-    estimate = ""
-    if preview_lines > 0 and preview_bytes > 0:
-        est_total = int(size_bytes / (preview_bytes / preview_lines))
-        estimate = f", roughly {est_total:,} lines"
     return (
-        f"LARGE FILE: this file is {size_kb:,.0f} KB{estimate} - only the "
+        f"LARGE FILE: this file is {size_kb:,.0f} KB, {total_lines:,} lines - only the "
         f"first {preview_lines} lines are shown (the file exceeds the "
         f"{threshold_kb} KB large-file threshold). Do NOT page through the "
         "rest sequentially; that floods the context. Instead: locate what "

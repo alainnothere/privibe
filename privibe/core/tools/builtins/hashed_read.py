@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import zlib
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, final
+import zlib
 
 import anyio
+from anyio import to_thread
 from pydantic import BaseModel, Field
 
 from privibe.core.tools.base import (
@@ -19,8 +20,9 @@ from privibe.core.tools.base import (
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import (
-    line_range,
+    count_file_lines,
     large_file_advisory,
+    line_range,
     normalization_note,
     normalize_tool_path,
     resolve_file_tool_permission,
@@ -66,6 +68,11 @@ class HashedReadResult(BaseModel):
     was_truncated: bool = Field(
         description="True if the read stopped before end of file, whether due "
         "to the byte cap or the line limit."
+    )
+    total_lines: int | None = Field(
+        default=None,
+        description="Exact line count of the whole file. Set when a whole-file "
+        "read returned only a head preview, so the model can plan ranged reads.",
     )
     path_note: str | None = Field(
         default=None,
@@ -133,10 +140,12 @@ class HashedRead(
             args, file_path, max_bytes=max_bytes
         )
 
+        total_lines: int | None = None
         if naive and size > threshold_bytes:
+            total_lines = await to_thread.run_sync(count_file_lines, file_path)
             advisory = large_file_advisory(
                 size_bytes=size,
-                preview_bytes=sum(len(line.encode("utf-8")) for line in lines),
+                total_lines=total_lines,
                 preview_lines=len(lines),
                 threshold_kb=self.config.large_file_threshold_kb,
             )
@@ -157,6 +166,7 @@ class HashedRead(
             start_line=args.start_line,
             lines_read=len(lines),
             was_truncated=was_truncated,
+            total_lines=total_lines,
             path_note=normalization_note(args.path, file_path),
             advisory=advisory,
         )

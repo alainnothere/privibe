@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, NamedTuple, final
 
 import anyio
+from anyio import to_thread
 from pydantic import BaseModel, Field
 
 from privibe.core.config.harness_files import get_harness_files_manager
@@ -19,8 +20,9 @@ from privibe.core.tools.base import (
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import (
-    line_range,
+    count_file_lines,
     large_file_advisory,
+    line_range,
     normalization_note,
     normalize_tool_path,
     resolve_file_tool_permission,
@@ -57,6 +59,11 @@ class ReadFileResult(BaseModel):
     was_truncated: bool = Field(
         description="True if the read stopped before end of file, whether due "
         "to the max_read_bytes cap or the line limit."
+    )
+    total_lines: int | None = Field(
+        default=None,
+        description="Exact line count of the whole file. Set when a whole-file "
+        "read returned only a head preview, so the model can plan ranged reads.",
     )
     # For the user-facing result line only; the model already knows it.
     start_line: int = Field(default=1, exclude=True)
@@ -133,10 +140,12 @@ class ReadFile(
 
         read_result = await self._read_file(args, file_path, max_bytes=max_bytes)
 
+        total_lines: int | None = None
         if naive and size > threshold_bytes:
+            total_lines = await to_thread.run_sync(count_file_lines, file_path)
             advisory = large_file_advisory(
                 size_bytes=size,
-                preview_bytes=read_result.bytes_read,
+                total_lines=total_lines,
                 preview_lines=len(read_result.lines),
                 threshold_kb=self.config.large_file_threshold_kb,
             )
@@ -147,6 +156,7 @@ class ReadFile(
             content="".join(read_result.lines),
             lines_read=len(read_result.lines),
             was_truncated=read_result.was_truncated,
+            total_lines=total_lines,
             path_note=normalization_note(args.path, file_path),
             advisory=advisory,
         )
