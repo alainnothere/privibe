@@ -32,6 +32,45 @@ def _decode(data: bytes | None) -> list[str]:
     return data.decode("utf-8", errors="replace").splitlines()
 
 
+def _byte_shape(data: bytes | None) -> tuple[str, bool] | None:
+    """(dominant ending name, has BOM) for a text blob, None when unknown."""
+    if not data:
+        return None
+    bom = data.startswith(b"\xef\xbb\xbf")
+    crlf = data.count(b"\r\n")
+    lf = data.count(b"\n") - crlf
+    if crlf == 0 and lf == 0:
+        ending = "none"
+    elif crlf and lf:
+        ending = "mixed"
+    elif crlf:
+        ending = "CRLF"
+    else:
+        ending = "LF"
+    return ending, bom
+
+
+def _shape_header(old_bytes: bytes | None, new_bytes: bytes | None) -> Row | None:
+    """A header row naming an ending or BOM change, or None when neither moved.
+
+    After the file tools learned to preserve endings this should never fire
+    for their edits; when it does it is a regression alarm, and for bash
+    edits it is the only warning anyone gets.
+    """
+    old = _byte_shape(old_bytes)
+    new = _byte_shape(new_bytes)
+    if old is None or new is None:
+        return None
+    parts: list[str] = []
+    if old[0] != new[0] and "none" not in {old[0], new[0]}:
+        parts.append(f"line endings {old[0]} -> {new[0]}")
+    if old[1] != new[1]:
+        parts.append("BOM removed" if old[1] else "BOM added")
+    if not parts:
+        return None
+    return ("diff-header", "; ".join(parts))
+
+
 def _crop_run(texts: list[str], css_class: str) -> list[Row]:
     """Crop a contiguous run of same-kind lines to head/tail with a cut marker."""
     n = len(texts)
@@ -152,6 +191,9 @@ def build_file_diff(
         return _sample(path, old_bytes, new_bytes, old_lines, new_lines, tool_name)
 
     hunks = _build_hunks(old_lines, new_lines)
+    shape = _shape_header(old_bytes, new_bytes)
+    if shape is not None:
+        hunks.insert(0, [shape])
     if not hunks:
         return None
     return FileDiff(path=path, kind="diff", hunks=hunks)

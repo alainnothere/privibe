@@ -1977,7 +1977,7 @@ class VibeApp(App):  # noqa: PLR0904
             return label
         active = self.config.get_active_model()
         # Skip the suffix when it would just repeat the alias or configured name.
-        if detected and detected not in (label, active.alias, active.name):
+        if detected and detected not in {label, active.alias, active.name}:
             label = f"{label} - {detected}"
         return label
 
@@ -2206,6 +2206,8 @@ class VibeApp(App):  # noqa: PLR0904
                 await self._apply_scrollback(int(event.value))
             case "llm_calls_per_turn":
                 await self._apply_llm_calls_per_turn(int(event.value))
+            case "ascii":
+                await self._apply_ascii(event.value == "on")
             case "detect_context_size":
                 match event.value:
                     case "off":
@@ -2318,6 +2320,49 @@ class VibeApp(App):  # noqa: PLR0904
             options=[(str(o), f"{o} calls") for o in options],
             current=str(current),
             error=error,
+        )
+
+    _ASCII_CHOICES: ClassVar[dict[str, bool]] = {
+        "on": True,
+        "ascii": True,
+        "true": True,
+        "off": False,
+        "unicode": False,
+        "utf8": False,
+        "utf-8": False,
+        "false": False,
+    }
+
+    async def _select_ascii(self, args: str = "") -> None:
+        from privibe.core.utils.asciify import session_ascii_override
+
+        error: str | None = None
+        if args:
+            choice = self._ASCII_CHOICES.get(args.strip().lower())
+            if choice is not None:
+                await self._apply_ascii(choice)
+                return
+            error = f"'{args}' is not a write policy (use on or off)."
+        override = session_ascii_override()
+        current = self.config.ascii_default if override is None else override
+        await self._open_option_picker(
+            setting="ascii",
+            title="Non-ASCII characters in content the model writes (this session)",
+            options=[
+                ("on", "ASCII: transliterate and report (allow_unicode=true keeps them)"),
+                ("off", "UTF-8 verbatim (allow_unicode=false transliterates)"),
+            ],
+            current="on" if current else "off",
+            error=error,
+        )
+
+    async def _apply_ascii(self, ascii_on: bool) -> None:
+        # Session-only: tool schemas and the frozen prompt stay untouched; the
+        # model is told through an injected message the loop adds.
+        self.agent_loop.set_ascii_default(ascii_on)
+        state = "ASCII (transliterated)" if ascii_on else "UTF-8 verbatim"
+        await self._mount_and_scroll(
+            UserCommandMessage(f"Write policy for this session: {state}.")
         )
 
     async def _apply_llm_calls_per_turn(self, new_value: int) -> None:

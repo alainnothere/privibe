@@ -19,6 +19,7 @@ from privibe.core.tools.builtins.write_file import (
     WriteFileResult,
 )
 from privibe.core.types import ToolCallEvent, ToolResultEvent
+from privibe.core.utils.textfile import TextFile, render_text
 
 
 class AcpWriteFileState(BaseToolState, AcpToolState):
@@ -35,17 +36,21 @@ class WriteFile(CoreWriteFileTool, BaseAcpTool[AcpWriteFileState]):
     def _get_tool_state_class(cls) -> type[AcpWriteFileState]:
         return AcpWriteFileState
 
-    async def _write_file(self, args: WriteFileArgs, file_path: Path) -> None:
+    async def _write_file(self, file_path: Path, tf: TextFile, lines: list[str]) -> int:
+        # The client owns the bytes; the best we can do is hand it a string
+        # with the file's endings (and BOM as U+FEFF) already re-attached.
         client, session_id, _ = self._load_state()
 
         await self._send_in_progress_session_update()
 
+        text = render_text(tf, lines)
         try:
             await client.write_text_file(
-                session_id=session_id, path=str(file_path), content=args.content
+                session_id=session_id, path=str(file_path), content=text
             )
         except Exception as e:
             raise ToolError(f"Error writing {file_path}: {e}") from e
+        return len(text.encode(tf.encoding, errors="replace"))
 
     @classmethod
     def tool_call_session_update(cls, event: ToolCallEvent) -> SessionUpdate | None:

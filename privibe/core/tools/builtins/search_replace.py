@@ -7,8 +7,8 @@ import re
 import shutil
 from typing import ClassVar, NamedTuple, final
 
-import anyio
-from pydantic import BaseModel, Field
+from anyio import to_thread
+from pydantic import BaseModel, Field, PrivateAttr
 
 from privibe.core.rewind.manager import FileSnapshot
 from privibe.core.tools.base import (
@@ -26,7 +26,17 @@ from privibe.core.tools.utils import (
     resolve_file_tool_permission,
 )
 from privibe.core.types import ToolResultEvent, ToolStreamEvent
-from privibe.core.utils.io import read_safe_async
+from privibe.core.utils.asciify import asciify, format_ascii_notes, resolve_ascii
+from privibe.core.utils.newfile_conventions import editorconfig_for
+from privibe.core.utils.textfile import (
+    BinaryFileError,
+    TextFile,
+    UnencodableError,
+    load_text_file_async,
+    normalize_newlines,
+    trim_trailing_whitespace,
+    write_text_file,
+)
 
 SEARCH_REPLACE_BLOCK_RE = re.compile(
     r"<{5,} SEARCH\r?\n(.*?)\r?\n?={5,}\r?\n(.*?)\r?\n?>{5,} REPLACE", flags=re.DOTALL
@@ -60,17 +70,38 @@ class BlockApplyResult(NamedTuple):
 class SearchReplaceArgs(BaseModel):
     file_path: str
     content: str
+    allow_unicode: bool | None = Field(
+        default=None,
+        description=(
+            "Omit to use the session default. true: write non-ASCII characters "
+            "in REPLACE text verbatim as UTF-8. false: transliterate them to "
+            "ASCII best effort and report every replacement. SEARCH text is "
+            "never altered."
+        ),
+    )
+    _prepare_notes: list[str] = PrivateAttr(default_factory=list)
 
 
 class SearchReplaceResult(BaseModel):
     file: str
     blocks_applied: int
     lines_changed: int
-    content: str
+    content: str = Field(
+        description="The SEARCH/REPLACE blocks as applied (after any ASCII transliteration)."
+    )
     warnings: list[str] = Field(default_factory=list)
     path_note: str | None = Field(
         default=None,
         description="Set when the input path was rewritten across path dialects.",
+    )
+    content_note: str | None = Field(
+        default=None,
+        description=(
+            "Set when the tool changed or decided something about your content: "
+            "non-ASCII in REPLACE text transliterated (names the line and the "
+            "flag to keep it), mixed line endings kept per line, or a non-UTF-8 "
+            "file written back as itself."
+        ),
     )
 
 
@@ -126,6 +157,31 @@ class SearchReplace(
 
     permission_group: ClassVar[str] = "file"
 
+    def prepare_args(self, args: SearchReplaceArgs) -> None:
+        """Transliterate REPLACE sections only; SEARCH must still match the file."""
+        if not resolve_ascii(args.allow_unicode, self.config.ascii_default):
+            return
+        content = args.content
+        out: list[str] = []
+        pos = 0
+        notes: list[str] = []
+        for i, m in enumerate(SEARCH_REPLACE_BLOCK_RE.finditer(content), 1):
+            result = asciify(m.group(2))
+            if not result.changed:
+                continue
+            out.append(content[pos : m.start(2)])
+            out.append(result.text)
+            pos = m.end(2)
+            notes.extend(
+                f"block {i} REPLACE {n}" for n in format_ascii_notes(result.replacements)[:-1]
+            )
+        if not notes:
+            return
+        out.append(content[pos:])
+        args.content = "".join(out)
+        notes.append("(pass allow_unicode=true to write those characters verbatim as UTF-8)")
+        args._prepare_notes = notes
+
     def resolve_permission(self, args: SearchReplaceArgs) -> PermissionContext | None:
         return resolve_file_tool_permission(
             args.file_path,
@@ -145,7 +201,17 @@ class SearchReplace(
     ) -> AsyncGenerator[ToolStreamEvent | SearchReplaceResult, None]:
         file_path, search_replace_blocks = self._prepare_and_validate_args(args)
 
-        original_content = await self._read_file(file_path)
+        # Matching happens on bare-\n text; the file's real endings, BOM and
+        # encoding live in ``tf`` and are re-attached on write, per line, so
+        # a block that touches three lines changes three lines.
+        tf = await self._read_file(file_path)
+        original_content = tf.text
+        search_replace_blocks = [
+            SearchReplaceBlock(
+                search=normalize_newlines(b.search), replace=normalize_newlines(b.replace)
+            )
+            for b in search_replace_blocks
+        ]
 
         block_result = self._apply_blocks(
             original_content,
@@ -165,14 +231,15 @@ class SearchReplace(
             raise ToolError(error_message)
 
         modified_content = block_result.content
+        notes: list[str] = list(args._prepare_notes)
 
         # Calculate line changes
         if modified_content == original_content:
             lines_changed = 0
         else:
             original_lines = len(original_content.splitlines())
-            new_lines = len(modified_content.splitlines())
-            lines_changed = new_lines - original_lines
+            new_count = len(modified_content.splitlines())
+            lines_changed = new_count - original_lines
 
             try:
                 if self.config.create_backup:
@@ -180,7 +247,14 @@ class SearchReplace(
             except Exception:
                 pass
 
-            await self._write_file(file_path, modified_content)
+            new_lines = self._to_lines(modified_content)
+            editor = await to_thread.run_sync(editorconfig_for, file_path)
+            if editor.trim_trailing_whitespace:
+                new_lines, notes = self._trim_new_lines(tf, new_lines, notes)
+            await self._write_file(file_path, tf, new_lines)
+            notes.extend(tf.notes)
+            if tf.encoding_note:
+                notes.append(tf.encoding_note)
 
         yield SearchReplaceResult(
             file=str(file_path),
@@ -189,7 +263,40 @@ class SearchReplace(
             warnings=block_result.warnings,
             content=args.content,
             path_note=normalization_note(args.file_path, file_path),
+            content_note="\n".join(notes) if notes else None,
         )
+
+    @staticmethod
+    def _to_lines(text: str) -> list[str]:
+        if not text:
+            return []
+        parts = text.split("\n")
+        if parts and parts[-1] == "":
+            parts.pop()
+        return [p + "\n" for p in parts]
+
+    @staticmethod
+    def _trim_new_lines(
+        tf: TextFile, new_lines: list[str], notes: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """.editorconfig trim, applied to lines that are not in the original."""
+        original = set(tf.lines)
+        out: list[str] = []
+        trimmed = 0
+        for line in new_lines:
+            if line in original:
+                out.append(line)
+                continue
+            (stripped,), n = trim_trailing_whitespace([line])
+            trimmed += n
+            out.append(stripped)
+        if trimmed:
+            notes = [
+                *notes,
+                f"trimmed trailing whitespace from {trimmed} new "
+                f"line{'s' if trimmed != 1 else ''} (.editorconfig)",
+            ]
+        return out, notes
 
     @final
     def _prepare_and_validate_args(
@@ -232,9 +339,13 @@ class SearchReplace(
 
         return file_path, search_replace_blocks
 
-    async def _read_file(self, file_path: Path) -> str:
+    async def _read_file(self, file_path: Path) -> TextFile:
         try:
-            return await read_safe_async(file_path, raise_on_error=True)
+            return await load_text_file_async(
+                file_path, charset_hint=editorconfig_for(file_path).charset
+            )
+        except BinaryFileError as e:
+            raise ToolError(f"{file_path} is a binary file: {e}") from e
         except PermissionError:
             raise ToolError(f"Permission denied reading file: {file_path}")
         except OSError as e:
@@ -245,12 +356,11 @@ class SearchReplace(
     async def _backup_file(self, file_path: Path) -> None:
         shutil.copy2(file_path, file_path.with_suffix(file_path.suffix + ".bak"))
 
-    async def _write_file(self, file_path: Path, content: str) -> None:
+    async def _write_file(self, file_path: Path, tf: TextFile, lines: list[str]) -> None:
         try:
-            async with await anyio.Path(file_path).open(
-                mode="w", encoding="utf-8"
-            ) as f:
-                await f.write(content)
+            await write_text_file(file_path, tf, lines)
+        except UnencodableError as e:
+            raise ToolError(f"Error writing {file_path}: {e}") from e
         except PermissionError:
             raise ToolError(f"Permission denied writing to file: {file_path}")
         except OSError as e:
@@ -290,7 +400,7 @@ class SearchReplace(
                 error_msg += (
                     "\nDebugging tips:\n"
                     "1. Check for exact whitespace/indentation match\n"
-                    "2. Verify line endings match the file exactly (\\r\\n vs \\n)\n"
+                    "2. Line endings are matched loosely (CRLF and LF both work) and written to match the file\n"
                     "3. Ensure the search text hasn't been modified by previous blocks or user edits\n"
                     "4. Check for typos or case sensitivity issues"
                 )

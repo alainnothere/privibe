@@ -121,6 +121,7 @@ Available commands:
   /log       Show the current session log directory
   /preview-lines  Cycle how many tool output lines are shown (3 / 5 / 10)
   /llm-calls-per-turn  Cycle the LLM-call budget per message (30 / 60 / 90)
+  /ascii     Write policy for non-ASCII in model-written content: /ascii on|off (toggles without an argument)
   /effort    Cycle reasoning effort stamped on new messages (low / medium / xhigh)
   /exit      Exit (also /quit, or Ctrl+D)
 
@@ -681,6 +682,8 @@ class ConsoleUI:
                 self._command_preview_lines()
             case "/llm-calls-per-turn":
                 self._command_llm_calls_per_turn()
+            case "/ascii":
+                self._command_ascii(parts[1] if len(parts) > 1 else "")
             case "/effort":
                 self._command_effort()
             case "/replay":
@@ -721,6 +724,25 @@ class ConsoleUI:
         VibeConfig.save_updates({"tool_result_preview_lines": new_value})
         self.agent_loop.refresh_config()
         print(f"Tool result preview set to {new_value} lines.")
+
+    def _command_ascii(self, arg: str) -> None:
+        from privibe.core.utils.asciify import session_ascii_override
+
+        override = session_ascii_override()
+        current = self.agent_loop.config.ascii_default if override is None else override
+        choice = arg.strip().lower()
+        if choice in {"on", "ascii", "true"}:
+            ascii_on = True
+        elif choice in {"off", "unicode", "utf8", "utf-8", "false"}:
+            ascii_on = False
+        elif not choice:
+            ascii_on = not current
+        else:
+            print(f"'{arg}' is not a write policy (use on or off).")
+            return
+        self.agent_loop.set_ascii_default(ascii_on)
+        state = "ASCII (transliterated)" if ascii_on else "UTF-8 verbatim"
+        print(f"Write policy for this session: {state}.")
 
     def _command_llm_calls_per_turn(self) -> None:
         config = self.agent_loop.config

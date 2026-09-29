@@ -412,6 +412,32 @@ class AgentLoop:
                 return msg.reasoning_effort
         return "xhigh"
 
+    def set_ascii_default(self, ascii_on: bool) -> str:
+        """Flip the session's write policy and tell the model in a message.
+
+        The tool prompt sentence about ASCII is part of the frozen prefix, so a
+        mid-session change cannot edit it; instead the new policy arrives as an
+        injected user message the model carries in context. Returns the notice
+        text for the UI to echo.
+        """
+        from privibe.core.utils.asciify import set_session_ascii_override
+
+        set_session_ascii_override(ascii_on)
+        if ascii_on:
+            notice = (
+                "File content policy for this session: content you write is stored "
+                "as plain ASCII by default; non-ASCII characters are transliterated "
+                "and reported. Pass allow_unicode=true to keep them verbatim."
+            )
+        else:
+            notice = (
+                "File content policy for this session: content you write is stored "
+                "as UTF-8 verbatim by default. Pass allow_unicode=false to have "
+                "non-ASCII transliterated to ASCII."
+            )
+        self.messages.add(LLMMessage(role=Role.user, content=notice, injected=True))
+        return notice
+
     def set_reasoning_effort(self, value: str) -> None:
         """Set the effort stamped on user messages from now on.
 
@@ -1190,6 +1216,9 @@ class AgentLoop:
         decision: ToolDecision | None = None
         started_at: float | None = None
         try:
+            # Content rewrites (ASCII transliteration) happen here so the
+            # approval preview shows the bytes that will actually land.
+            tool_instance.prepare_args(tool_call.validated_args)
             decision = await self._should_execute_tool(
                 tool_instance, tool_call.validated_args, tool_call.call_id
             )

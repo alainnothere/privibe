@@ -155,6 +155,12 @@ class CommandRegistry:
                 handler="_select_llm_calls_per_turn",
                 takes_args=True,
             ),
+            "ascii": Command(
+                aliases=frozenset(["/ascii"]),
+                description="Set this session's write policy for non-ASCII characters; /ascii on (transliterate to ASCII) or /ascii off (UTF-8 verbatim), or pick from a menu",
+                handler="_select_ascii",
+                takes_args=True,
+            ),
             "list_tools": Command(
                 aliases=frozenset(["/list-tools"]),
                 description="Show active tools for the current session",

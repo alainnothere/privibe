@@ -19,6 +19,7 @@ from privibe.core.tools.builtins.search_replace import (
     SearchReplaceResult,
 )
 from privibe.core.types import ToolCallEvent, ToolResultEvent
+from privibe.core.utils.textfile import TextFile, render_text
 
 
 class AcpSearchReplaceState(BaseToolState, AcpToolState):
@@ -35,7 +36,7 @@ class SearchReplace(CoreSearchReplaceTool, BaseAcpTool[AcpSearchReplaceState]):
     def _get_tool_state_class(cls) -> type[AcpSearchReplaceState]:
         return AcpSearchReplaceState
 
-    async def _read_file(self, file_path: Path) -> str:
+    async def _read_file(self, file_path: Path) -> TextFile:
         client, session_id, _ = self._load_state()
 
         await self._send_in_progress_session_update()
@@ -48,18 +49,28 @@ class SearchReplace(CoreSearchReplaceTool, BaseAcpTool[AcpSearchReplaceState]):
             raise ToolError(f"Unexpected error reading {file_path}: {e}") from e
 
         self.state.file_backup_content = response.content
-        return response.content
+        # The client hands us a decoded string; its endings survive in it, so
+        # the same per-line re-attachment applies. A BOM, if the client kept
+        # one, arrives as U+FEFF and is remembered the same way.
+        content = response.content
+        bom = content.startswith("\ufeff")
+        tf = TextFile.from_text(content[1:] if bom else content)
+        tf.bom = bom
+        return tf
 
     async def _backup_file(self, file_path: Path) -> None:
         if self.state.file_backup_content is None:
             return
 
-        await self._write_file(
+        await self._send_text(
             file_path.with_suffix(file_path.suffix + ".bak"),
             self.state.file_backup_content,
         )
 
-    async def _write_file(self, file_path: Path, content: str) -> None:
+    async def _write_file(self, file_path: Path, tf: TextFile, lines: list[str]) -> None:
+        await self._send_text(file_path, render_text(tf, lines))
+
+    async def _send_text(self, file_path: Path, content: str) -> None:
         client, session_id, _ = self._load_state()
 
         try:

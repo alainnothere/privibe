@@ -208,13 +208,16 @@ class ReadFile(
     async def _read_file(
         self, args: ReadFileArgs, file_path: Path, *, max_bytes: int | None = None
     ) -> _ReadResult:
+        # utf-8-sig strips a BOM (a UTF-8 file without one decodes the same),
+        # so the model never sees a U+FEFF glued to line 1. The fallback is an
+        # explicit cp1252, never the locale.
         try:
             return await self._do_read_file(
-                args, file_path, encoding="utf-8", max_bytes=max_bytes
+                args, file_path, encoding="utf-8-sig", max_bytes=max_bytes
             )
         except (UnicodeDecodeError, ValueError):
             return await self._do_read_file(
-                args, file_path, errors="replace", max_bytes=max_bytes
+                args, file_path, encoding="cp1252", errors="replace", max_bytes=max_bytes
             )
 
     async def _do_read_file(

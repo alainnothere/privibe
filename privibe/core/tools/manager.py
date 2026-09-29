@@ -237,6 +237,8 @@ class ToolManager:
             )
         if self._config.protect_outside_workdir:
             config.protect_outside_workdir = True
+        if user_overrides is None or "ascii_default" not in user_overrides:
+            config.ascii_default = self._config.ascii_default
         if self._config.outside_workdir_exempt:
             config.outside_workdir_exempt = list(
                 dict.fromkeys(

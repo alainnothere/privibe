@@ -287,6 +287,27 @@ def _get_available_subagents_section(agent_manager: AgentManager) -> str:
 # explains how to intentionally re-run — in-band, at the moment it matters.
 
 
+def _file_write_policy(config: VibeConfig) -> str:
+    """The one sentence the write tools need the model to know about
+    characters, rendered from config at session birth (it is part of the
+    frozen prefix; a mid-session /ascii flip arrives as a message instead).
+    """
+    if config.ascii_default:
+        return (
+            "**File content policy:** content you write is stored as plain ASCII "
+            "by default; non-ASCII characters are transliterated best effort and "
+            "reported back per line. Pass `allow_unicode=true` on a write or edit "
+            "call to keep them verbatim as UTF-8. Lines you did not write are "
+            "never touched."
+        )
+    return (
+        "**File content policy:** content you write is stored as UTF-8 verbatim "
+        "by default. Pass `allow_unicode=false` on a write or edit call to have "
+        "non-ASCII characters transliterated to ASCII. Lines you did not write "
+        "are never touched."
+    )
+
+
 def get_universal_system_prompt(
     tool_manager: ToolManager,
     config: VibeConfig,
@@ -311,6 +332,11 @@ def get_universal_system_prompt(
         for tool_class in tool_manager.available_tools.values():
             if prompt := tool_class.get_tool_prompt():
                 tool_prompts.append(prompt)
+        if any(
+            getattr(tool_class, "mutates_files", False)
+            for tool_class in tool_manager.available_tools.values()
+        ):
+            tool_prompts.append(_file_write_policy(config))
         if tool_prompts:
             sections.append("\n---\n".join(tool_prompts))
 

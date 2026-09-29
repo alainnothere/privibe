@@ -89,7 +89,7 @@ class TestRewindIntegration:
         agent_loop = _make_agent_loop(backend)
 
         await _act_and_collect(agent_loop, "create hello.txt")
-        assert target.read_text() == "hello world"
+        assert target.read_text() == "hello world\n"
 
         rm = agent_loop.rewind_manager
         rewindable = rm.get_rewindable_messages()
@@ -197,13 +197,13 @@ class TestRewindIntegration:
         agent_loop = _make_agent_loop(backend)
 
         await _act_and_collect(agent_loop, "write data")
-        assert target.read_text() == '{"a": 1}'
+        assert target.read_text() == '{"a": 1}\n'
 
         rm = agent_loop.rewind_manager
         rewindable = rm.get_rewindable_messages()
         await rm.rewind_to_message(rewindable[0][0], restore_files=False)
 
-        assert target.read_text() == '{"a": 1}'
+        assert target.read_text() == '{"a": 1}\n'
 
     async def test_rewind_then_new_turn(self, tmp_working_directory: Path) -> None:
         """After rewind, a new turn creates fresh checkpoints that work correctly."""
@@ -246,19 +246,19 @@ class TestRewindIntegration:
 
         await _act_and_collect(agent_loop, "turn1")
         await _act_and_collect(agent_loop, "turn2")
-        assert target.read_text() == "v2"
+        assert target.read_text() == "v2\n"
 
         rm = agent_loop.rewind_manager
         rewindable = rm.get_rewindable_messages()
         await rm.rewind_to_message(rewindable[1][0], restore_files=True)
-        assert target.read_text() == "v1"
+        assert target.read_text() == "v1\n"
 
         await _act_and_collect(agent_loop, "turn2bis")
-        assert target.read_text() == "v2bis"
+        assert target.read_text() == "v2bis\n"
 
         rewindable = rm.get_rewindable_messages()
         await rm.rewind_to_message(rewindable[1][0], restore_files=True)
-        assert target.read_text() == "v1"
+        assert target.read_text() == "v1\n"
 
     async def test_rewind_restores_file_deleted_by_bash(
         self, tmp_working_directory: Path
@@ -293,7 +293,7 @@ class TestRewindIntegration:
         agent_loop = _make_agent_loop(backend)
 
         await _act_and_collect(agent_loop, "create file")
-        assert target.read_text() == "precious data"
+        assert target.read_text() == "precious data\n"
 
         await _act_and_collect(agent_loop, "delete file")
         assert not target.exists()
@@ -305,4 +305,4 @@ class TestRewindIntegration:
         # Rewind to turn 2 → restores the file to its state before turn 2
         await rm.rewind_to_message(rewindable[1][0], restore_files=True)
         assert target.exists()
-        assert target.read_text() == "precious data"
+        assert target.read_text() == "precious data\n"

@@ -37,7 +37,7 @@ import sys
 
 IMPORTANT:
 
-- The SEARCH text must match EXACTLY (including whitespace, indentation, and line endings)
+- The SEARCH text must match EXACTLY (including whitespace and indentation). Line endings are matched loosely and written back to match the file; you never need to think about CRLF vs LF
 - The SEARCH text must appear exactly once in the file - if it appears multiple times, the tool will error
 - Use at least 5 equals signs (=====) between SEARCH and REPLACE sections
 - Each search/replace block is applied in order, so later blocks see the results of earlier ones

@@ -129,6 +129,16 @@ class BaseToolConfig(BaseModel):
     sensitive_patterns: list[str] = Field(default_factory=list)
     protected_paths: list[str] = Field(default_factory=list)
     protect_outside_workdir: bool = False
+    ascii_default: bool = Field(
+        default=True,
+        description=(
+            "When true (the default) content the model writes is transliterated "
+            "to ASCII unless the call passes allow_unicode=true; when false it is "
+            "written as UTF-8 verbatim unless the call passes allow_unicode=false. "
+            "Propagated from the global config by ToolManager; a session may flip "
+            "it with /ascii."
+        ),
+    )
     outside_workdir_exempt: list[str] = Field(
         default_factory=lambda: ["/dev/*", "/tmp/*"]
     )
@@ -385,6 +395,15 @@ class BaseTool[
     ) -> BaseToolConfig:
         config_class = cls._get_tool_config_class()
         return config_class(permission=permission)
+
+    def prepare_args(self, args: ToolArgs) -> None:
+        """Rewrite ``args`` in place before the approval preview and the run.
+
+        Runs once per call, before ``resolve_permission`` and the approval
+        callback, so whatever the user is shown is what lands on disk (the
+        write tools transliterate content here). Default: nothing.
+        """
+        return None
 
     def resolve_permission(self, args: ToolArgs) -> PermissionContext | None:
         """Per-invocation permission override, checked before config-level permission.

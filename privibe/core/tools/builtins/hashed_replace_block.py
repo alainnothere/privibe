@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, ClassVar, final
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from privibe.core.rewind.manager import FileSnapshot
 from privibe.core.tools.base import (
@@ -20,6 +20,7 @@ from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import resolve_file_tool_permission
 from privibe.core.types import ToolStreamEvent
+from privibe.core.utils.asciify import asciify, format_ascii_notes, resolve_ascii
 
 if TYPE_CHECKING:
     from privibe.core.types import ToolResultEvent
@@ -80,6 +81,15 @@ class HashedReplaceBlockArgs(BaseModel):
             "Set true to write your indentation exactly as given."
         ),
     )
+    allow_unicode: bool | None = Field(
+        default=None,
+        description=(
+            "Omit to use the session default. true: write non-ASCII characters "
+            "in new_content verbatim as UTF-8. false: transliterate them to "
+            "ASCII best effort and report every replacement."
+        ),
+    )
+    _prepare_notes: list[str] = PrivateAttr(default_factory=list)
 
 
 class HashedReplaceBlockResult(BaseModel):
@@ -121,6 +131,24 @@ class HashedReplaceBlock(
 
     permission_group: ClassVar[str] = "file"
 
+    def prepare_args(self, args: HashedReplaceBlockArgs) -> None:
+        if not resolve_ascii(args.allow_unicode, self.config.ascii_default):
+            return
+        notes: list[str] = []
+        for r in args.replacements:
+            result = asciify(r.new_content)
+            if result.changed:
+                r.new_content = result.text
+                notes.extend(
+                    f"line {r.line} (new content {n})"
+                    for n in format_ascii_notes(result.replacements)[:-1]
+                )
+        if notes:
+            notes.append(
+                "(pass allow_unicode=true to write those characters verbatim as UTF-8)"
+            )
+            args._prepare_notes = notes
+
     def resolve_permission(
         self, args: HashedReplaceBlockArgs
     ) -> PermissionContext | None:
@@ -156,6 +184,7 @@ class HashedReplaceBlock(
             allow_literal=args.allow_literal,
             keep_duplicate=args.keep_duplicate,
             keep_indent=args.keep_indent,
+            extra_notes=args._prepare_notes,
         )
         yield HashedReplaceBlockResult(
             path=result.path,

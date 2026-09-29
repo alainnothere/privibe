@@ -5,13 +5,22 @@ from pathlib import Path
 import re
 import zlib
 
-import anyio
+from anyio import to_thread
 from pydantic import BaseModel, Field
 
 from privibe.core.tools.base import ToolError
 from privibe.core.tools.builtins.hashed_read import _line_hash, format_hashed_lines
 from privibe.core.tools.utils import normalization_note, normalize_tool_path
-from privibe.core.utils.io import read_safe_async
+from privibe.core.utils.newfile_conventions import EditorConfig, editorconfig_for
+from privibe.core.utils.textfile import (
+    BinaryFileError,
+    TextFile,
+    UnencodableError,
+    content_to_lines,
+    load_text_file_async,
+    trim_trailing_whitespace,
+    write_text_file,
+)
 
 _ERROR_CONTEXT_LINES = 2
 _SUCCESS_CONTEXT_LINES = 5
@@ -68,7 +77,8 @@ _CHAIN_WALK_LIMIT = 30
 
 def _is_dot_continuation(content: str) -> bool:
     """True for a method-chain continuation line: leading "." then an
-    identifier (.HasComment, .Where). Excludes ranges (..) and decimals (.5)."""
+    identifier (.HasComment, .Where). Excludes ranges (..) and decimals (.5).
+    """
     body = content.lstrip(" \t")
     return (
         len(body) > 1
@@ -155,6 +165,21 @@ def _infer_indent_unit(file_lines: list[str], start_idx: int, end_idx: int) -> i
     return min(diffs, key=lambda d: (-diffs[d], d))
 
 
+def _spaces_to_tabs(contents: list[str], tab_width: int) -> tuple[list[str], int]:
+    out: list[str] = []
+    changed = 0
+    for c in contents:
+        indent = _indent_of(c)
+        if not c.strip() or " " not in indent:
+            out.append(c)
+            continue
+        width = len(indent)
+        tabs, rest = divmod(width, tab_width)
+        out.append("\t" * tabs + " " * rest + c[width:])
+        changed += 1
+    return out, changed
+
+
 def correct_indentation(
     lines: list[str],
     file_lines: list[str],
@@ -162,6 +187,7 @@ def correct_indentation(
     end_idx: int,
     covered: set[int],
     line_no: int,
+    tab_width: int = _INDENT_UNIT_FALLBACK,
 ) -> tuple[list[str], list[str]]:
     """Best-effort indent correction of replacement lines.
 
@@ -179,6 +205,18 @@ def correct_indentation(
 
     anchor = file_lines[start_idx].rstrip("\r\n")
     anchor_indent = _indent_of(anchor)
+    if "\t" in anchor_indent and not any("\t" in _indent_of(c) for c in non_blank):
+        # Tab-indented neighbourhood, space-indented new lines: blend. Leading
+        # spaces become tabs at the file's tab width; a remainder shorter than
+        # one tab stays as spaces (alignment), never rounded away.
+        converted, changed = _spaces_to_tabs(contents, tab_width)
+        if changed:
+            notes.append(
+                f"line {line_no}: converted leading spaces to tabs on {changed} "
+                f"line{'s' if changed != 1 else ''} to match the file's tab "
+                "indentation (pass keep_indent=true to keep as written)"
+            )
+        return [c + "\n" for c in converted], notes
     if "\t" in anchor_indent or any("\t" in _indent_of(c) for c in non_blank):
         notes.append(
             f"line {line_no}: indent correction skipped (tab-indented context or content)"
@@ -395,6 +433,16 @@ class ApplyResult:
     content_note: str | None = None
 
 
+def file_notes(tf: TextFile) -> list[str]:
+    """Facts about the file worth one line each, only when they deviate from
+    the plain case (mixed endings, non-UTF-8 fallback).
+    """
+    notes = list(tf.notes)
+    if tf.encoding_note:
+        notes.append(tf.encoding_note)
+    return notes
+
+
 def resolve_file_path(path_str: str) -> Path:
     if not path_str.strip():
         raise ToolError("Path cannot be empty")
@@ -406,29 +454,36 @@ def resolve_file_path(path_str: str) -> Path:
     return resolved
 
 
-async def read_file_lines(file_path: Path) -> list[str]:
+async def load_text(file_path: Path) -> TextFile:
+    """Decode the file byte-faithfully; the returned lines are normalized."""
     try:
-        content = await read_safe_async(file_path, raise_on_error=True)
-        lines = content.splitlines(keepends=True)
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        return lines
+        return await load_text_file_async(
+            file_path, charset_hint=editorconfig_for(file_path).charset
+        )
+    except BinaryFileError as exc:
+        raise ToolError(f"{file_path} is a binary file: {exc}") from exc
     except OSError as exc:
         raise ToolError(f"Error reading {file_path}: {exc}") from exc
 
 
-async def write_file_lines(file_path: Path, lines: list[str]) -> None:
+async def read_file_lines(file_path: Path) -> list[str]:
+    return (await load_text(file_path)).lines
+
+
+async def write_file_lines(file_path: Path, tf: TextFile, lines: list[str]) -> None:
+    """Write normalized ``lines`` back with the file's own endings, BOM and
+    encoding re-attached; untouched lines come out byte-identical.
+    """
     try:
-        async with await anyio.Path(file_path).open(mode="w", encoding="utf-8") as f:
-            await f.write("".join(lines))
+        await write_text_file(file_path, tf, lines)
+    except UnencodableError as exc:
+        raise ToolError(f"Error writing {file_path}: {exc}") from exc
     except OSError as exc:
         raise ToolError(f"Error writing {file_path}: {exc}") from exc
 
 
 def build_replacement_lines(new_content: str) -> list[str]:
-    if not new_content:
-        return []
-    return [line + "\n" for line in new_content.splitlines()]
+    return content_to_lines(new_content)
 
 
 def _context_around(file_lines: list[str], idx: int) -> str:
@@ -653,6 +708,7 @@ def prepare_replacements(
     allow_literal: bool,
     keep_duplicate: bool,
     keep_indent: bool = False,
+    editor: EditorConfig | None = None,
 ) -> tuple[list[tuple[int, int, LineReplacement, list[str]]], list[str]]:
     """Turn each replacement's new_content into the lines to splice, applying
     the hallucination corrections and recording what was done.
@@ -678,6 +734,9 @@ def prepare_replacements(
 
     prepared: list[tuple[int, int, LineReplacement, list[str]]] = []
     notes: list[str] = []
+    tab_width = (editor.tab_width if editor and editor.tab_width else None) or _INDENT_UNIT_FALLBACK
+    trim = bool(editor and editor.trim_trailing_whitespace)
+    trimmed_total = 0
 
     for start_idx, end_idx, r in resolved:
         content = r.new_content
@@ -694,9 +753,15 @@ def prepare_replacements(
 
         if not keep_indent and lines:
             lines, indent_notes = correct_indentation(
-                lines, file_lines, start_idx, end_idx, covered, r.line
+                lines, file_lines, start_idx, end_idx, covered, r.line, tab_width
             )
             notes.extend(indent_notes)
+
+        if trim and lines:
+            # .editorconfig trim_trailing_whitespace, applied to the lines the
+            # model wrote and to nothing else in the file.
+            lines, trimmed = trim_trailing_whitespace(lines)
+            trimmed_total += trimmed
 
         if not keep_duplicate and lines:
             lead = _dup_prefix_len(lines, file_lines, covered, start_idx)
@@ -710,6 +775,11 @@ def prepare_replacements(
 
         prepared.append((start_idx, end_idx, r, lines))
 
+    if trimmed_total:
+        notes.append(
+            f"trimmed trailing whitespace from {trimmed_total} new "
+            f"line{'s' if trimmed_total != 1 else ''} (.editorconfig)"
+        )
     return prepared, notes
 
 
@@ -758,9 +828,12 @@ async def apply_replacements_to_file(
     allow_literal: bool = False,
     keep_duplicate: bool = False,
     keep_indent: bool = False,
+    extra_notes: list[str] | None = None,
 ) -> ApplyResult:
     file_path = resolve_file_path(path_str)
-    file_lines = await read_file_lines(file_path)
+    tf = await load_text(file_path)
+    file_lines = tf.lines
+    editor = await to_thread.run_sync(editorconfig_for, file_path)
 
     replacements, shift_notes = translate_stale_addresses(
         str(file_path), replacements, file_lines
@@ -775,6 +848,7 @@ async def apply_replacements_to_file(
         allow_literal=allow_literal,
         keep_duplicate=keep_duplicate,
         keep_indent=keep_indent,
+        editor=editor,
     )
 
     prepared_asc = sorted(prepared, key=lambda p: p[0])
@@ -786,10 +860,10 @@ async def apply_replacements_to_file(
         new_lines[start_idx : end_idx + 1] = replacement_lines
         total_lines_changed += end_idx - start_idx + 1
 
-    await write_file_lines(file_path, new_lines)
+    await write_file_lines(file_path, tf, new_lines)
     record_shift_generation(str(file_path), prepared_asc, new_lines)
     context = build_success_context(new_lines, prepared_asc)
-    all_notes = shift_notes + notes
+    all_notes = list(extra_notes or []) + shift_notes + notes + file_notes(tf)
     return ApplyResult(
         path=str(file_path),
         total_ops=len(replacements),

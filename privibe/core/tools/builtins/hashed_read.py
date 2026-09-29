@@ -204,8 +204,10 @@ class HashedRead(
             lines: list[str] = []
             bytes_read = 0
             was_truncated = False
+            # utf-8-sig strips a BOM so line 1 hashes its real content; the
+            # hashed edit tools decode the same way, so addresses agree.
             async with await anyio.Path(file_path).open(
-                encoding="utf-8", errors="replace"
+                encoding="utf-8-sig", errors="replace"
             ) as f:
                 line_index = 0
                 async for line in f:

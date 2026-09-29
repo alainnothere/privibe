@@ -606,6 +606,17 @@ class VibeConfig(BaseSettings):
         default_factory=lambda: list(LLM_CALLS_PER_TURN_OPTIONS),
         description="Values /llm-calls-per-turn offers (positive ints).",
     )
+    ascii_default: bool = Field(
+        default=True,
+        description=(
+            "Write policy for content the model produces. True: written as "
+            "ASCII, non-ASCII transliterated best effort and reported, unless a "
+            "call passes allow_unicode=true. False: written as UTF-8 verbatim "
+            "unless a call passes allow_unicode=false. Never touches lines the "
+            "model did not write. Merged into every tool's own ascii_default; "
+            "flip it for one session with /ascii."
+        ),
+    )
 
     project_scan_depth: int = Field(
         default=0,

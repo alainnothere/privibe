@@ -68,7 +68,7 @@ async def test_same_file_writes_apply_in_model_order(tmp_path, monkeypatch):
 
     [ev async for ev in loop.act("write the file twice")]
 
-    assert (tmp_path / "out.txt").read_text() == "SECOND"
+    assert (tmp_path / "out.txt").read_text() == "SECOND\n"
     # The pre-edit states were captured into the per-agent undo stack.
     assert loop.undo_stack.has_versions("out.txt")
 

@@ -78,7 +78,7 @@ class TestAcpWriteFileExecution:
         assert isinstance(result, WriteFileResult)
         assert result.path == str(test_file)
         assert result.content == "Hello, world!"
-        assert result.bytes_written == len(b"Hello, world!")
+        assert result.bytes_written == len(b"Hello, world!\n")
         assert result.file_existed is False
         assert mock_client._write_text_file_called
         assert mock_client._session_update_called
@@ -87,7 +87,7 @@ class TestAcpWriteFileExecution:
         params = mock_client._last_write_params
         assert params["session_id"] == "test_session_123"
         assert params["path"] == str(test_file)
-        assert params["content"] == "Hello, world!"
+        assert params["content"] == "Hello, world!\n"
 
     @pytest.mark.asyncio
     async def test_run_success_overwrite(
@@ -111,7 +111,7 @@ class TestAcpWriteFileExecution:
         assert isinstance(result, WriteFileResult)
         assert result.path == str(test_file)
         assert result.content == "New content"
-        assert result.bytes_written == len(b"New content")
+        assert result.bytes_written == len(b"New content\n")
         assert result.file_existed is True
         assert mock_client._write_text_file_called
         assert mock_client._session_update_called
@@ -120,7 +120,7 @@ class TestAcpWriteFileExecution:
         params = mock_client._last_write_params
         assert params["session_id"] == "test_session"
         assert params["path"] == str(test_file)
-        assert params["content"] == "New content"
+        assert params["content"] == "New content\n"
 
     @pytest.mark.asyncio
     async def test_run_write_error(
