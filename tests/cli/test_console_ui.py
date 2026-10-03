@@ -603,9 +603,43 @@ def test_print_transcript_separators_around_user_entries(
         "\n--- resumed conversation ---\n"
         "you: first question\n" + SEP + "let me check\n[tool] bash\nthe answer\n"
         + SEP + "you: second question\n" + SEP + "you: third question\n" + SEP
-        + "--- end of history ---\n"
+        + "--- end of history ---\n" + SEP
     )
-    assert ui._after_separator is False
+    assert ui._after_separator is True
+
+
+def test_print_transcript_ending_on_answer_closes_like_a_live_turn(
+    ui: ConsoleUI, capsys, narrow
+) -> None:
+    # The usual case: the replay ends on the model's answer, not on you.
+    ui.agent_loop.messages = make_history()[:5]
+    ui._print_transcript(None)
+    assert capsys.readouterr().out == (
+        "\n--- resumed conversation ---\n"
+        "you: first question\n" + SEP + "let me check\n[tool] bash\nthe answer\n"
+        "\n--- end of history ---\n" + SEP
+    )
+    assert ui._after_separator is True
+
+
+@pytest.mark.asyncio
+async def test_prompt_after_replay_has_no_extra_blank_line(
+    ui: ConsoleUI, narrow
+) -> None:
+    ui.agent_loop.messages = make_history()[:5]
+    inputs = ["/replay"]
+    prompts: list[str] = []
+
+    async def fake_read_line(prompt: str) -> str:
+        prompts.append(prompt)
+        if not inputs:
+            raise EOFError
+        return inputs.pop(0)
+
+    ui._read_line = fake_read_line  # type: ignore[method-assign]
+    await ui.run()
+    # First prompt follows the startup replay, second follows /replay.
+    assert prompts == ["you: ", "you: "]
 
 
 def test_print_transcript_silent_when_empty(ui: ConsoleUI, capsys) -> None:

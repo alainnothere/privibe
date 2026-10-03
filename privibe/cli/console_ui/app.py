@@ -911,8 +911,13 @@ class ConsoleUI:
             self._after_separator = False
             if is_user:
                 self._print_separator()
+        # A blank line keeps the marker off the last answer line (a
+        # separator already ends in one); the closing separator is the
+        # live end-of-turn one, so the prompt lines up the same way.
+        if not self._after_separator:
+            print()
         print("--- end of history ---")
-        self._after_separator = False
+        self._print_separator()
 
     # ------------------------------------------------------------------
     # Session resume
