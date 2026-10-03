@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from pydantic import BaseModel
 import pytest
 
-from privibe.cli.console_ui.app import ConsoleUI
+from privibe.cli.console_ui.app import ConsoleUI, run_console_ui
 from privibe.core.tools.builtins.ask_user_question import (
     AskUserQuestion,
     AskUserQuestionArgs,
@@ -15,6 +16,7 @@ from privibe.core.tools.builtins.ask_user_question import (
     Question,
 )
 from privibe.core.types import (
+    AgentStats,
     ApprovalResponse,
     AssistantEvent,
     FunctionCall,
@@ -112,6 +114,102 @@ def test_tool_result_lines(ui: ConsoleUI) -> None:
     )
     assert "cancelled" in ui._result_line(ToolResultEvent(**base, cancelled=True))
     assert ui._result_line(ToolResultEvent(**base)) == "[tool] bash done"
+
+
+# ----------------------------------------------------------------------
+# Separators
+# ----------------------------------------------------------------------
+
+# COLUMNS=21 makes the rule 20 wide (one short of the terminal width).
+SEP = "\n" + "=" * 20 + "\n\n"
+
+
+@pytest.fixture
+def narrow(monkeypatch) -> None:
+    monkeypatch.setenv("COLUMNS", "21")
+
+
+def test_separator_between_thinking_and_answer(
+    ui: ConsoleUI, capsys, narrow
+) -> None:
+    ui._handle_event(ReasoningEvent(content="hmm"))
+    ui._handle_event(AssistantEvent(content="\n\n"))
+    ui._handle_event(AssistantEvent(content="\nanswer"))
+    ui._close_block()
+    assert capsys.readouterr().out == "[thinking] hmm\n" + SEP + "answer\n"
+
+
+def test_no_separator_between_thinking_and_tool_call(
+    ui: ConsoleUI, capsys, narrow
+) -> None:
+    ui._handle_event(ReasoningEvent(content="hmm"))
+    ui._handle_event(
+        ToolCallEvent(
+            tool_call_id="t1",
+            tool_name="ask_user_question",
+            tool_class=AskUserQuestion,
+        )
+    )
+    assert "=" not in capsys.readouterr().out
+
+
+def test_no_separator_when_answer_follows_tool(ui: ConsoleUI, capsys, narrow) -> None:
+    ui._handle_event(
+        ToolCallEvent(
+            tool_call_id="t1",
+            tool_name="ask_user_question",
+            tool_class=AskUserQuestion,
+        )
+    )
+    ui._handle_event(AssistantEvent(content="answer"))
+    ui._close_block()
+    assert "=" not in capsys.readouterr().out
+
+
+def test_reasoning_leading_newlines_stripped(ui: ConsoleUI, capsys) -> None:
+    ui._handle_event(ReasoningEvent(content="\n"))
+    ui._handle_event(ReasoningEvent(content="\nhmm"))
+    ui._close_block()
+    assert capsys.readouterr().out == "[thinking] hmm\n"
+
+
+@pytest.mark.asyncio
+async def test_turn_wrapped_in_separators(ui: ConsoleUI, capsys, narrow) -> None:
+    ui.agent_loop.act_events = [
+        ReasoningEvent(content="hmm"),
+        AssistantEvent(content="answer"),
+    ]
+    await ui._dispatch("hello")
+    assert capsys.readouterr().out == (
+        SEP + "[thinking] hmm\n" + SEP + "answer\n" + SEP
+    )
+
+
+@pytest.mark.asyncio
+async def test_commands_get_no_separators(ui: ConsoleUI, capsys, narrow) -> None:
+    await ui._dispatch("/help")
+    assert "=" * 20 not in capsys.readouterr().out
+    assert ui._after_separator is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_skips_blank_line_only_after_separator(
+    ui: ConsoleUI, capsys, narrow
+) -> None:
+    ui.agent_loop.messages = []
+    ui.agent_loop.act_events = [AssistantEvent(content="answer")]
+    inputs = ["hello", "/help"]
+    prompts: list[str] = []
+
+    async def fake_read_line(prompt: str) -> str:
+        prompts.append(prompt)
+        if not inputs:
+            raise EOFError
+        return inputs.pop(0)
+
+    ui._read_line = fake_read_line  # type: ignore[method-assign]
+    await ui.run()
+    assert prompts == ["\nyou: ", "you: ", "\nyou: "]
 
 
 # ----------------------------------------------------------------------
@@ -492,6 +590,24 @@ def test_print_transcript_output(ui: ConsoleUI, capsys) -> None:
     assert "--- end of history ---" in out
 
 
+def test_print_transcript_separators_around_user_entries(
+    ui: ConsoleUI, capsys, narrow
+) -> None:
+    ui.agent_loop.messages = [
+        *make_history()[:5],
+        LLMMessage(role=Role.user, content="second question"),
+        LLMMessage(role=Role.user, content="third question"),
+    ]
+    ui._print_transcript(None)
+    assert capsys.readouterr().out == (
+        "\n--- resumed conversation ---\n"
+        "you: first question\n" + SEP + "let me check\n[tool] bash\nthe answer\n"
+        + SEP + "you: second question\n" + SEP + "you: third question\n" + SEP
+        + "--- end of history ---\n"
+    )
+    assert ui._after_separator is False
+
+
 def test_print_transcript_silent_when_empty(ui: ConsoleUI, capsys) -> None:
     ui.agent_loop.messages = [LLMMessage(role=Role.system, content="system prompt")]
     ui._print_transcript(None)
@@ -560,3 +676,85 @@ async def test_preview_lines_command_cycles_and_persists(
     assert handled is True
     assert saved == {"tool_result_preview_lines": 5}
     assert "5 lines" in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------------
+# Exit message
+# ----------------------------------------------------------------------
+
+
+def exit_loop(tmp_path: Path, session_id: str) -> StubAgentLoop:
+    loop = StubAgentLoop()
+    loop.stats = AgentStats()
+    loop.session_logger = SimpleNamespace(
+        enabled=True,
+        session_id=session_id,
+        session_config=SimpleNamespace(save_dir=str(tmp_path), session_prefix="session"),
+    )
+    return loop
+
+
+def save_session(save_dir: Path, session_id: str) -> None:
+    session_dir = save_dir / f"session_20261002_120000_{session_id[:8]}"
+    session_dir.mkdir(parents=True)
+    (session_dir / "messages.jsonl").write_text("{}\n")
+
+
+def test_exit_prints_resume_hint(tmp_path: Path, monkeypatch, capsys) -> None:
+    save_session(tmp_path, "aaaaaaaa-1111")
+    loop = exit_loop(tmp_path, "aaaaaaaa-1111")
+
+    async def fake_run(self, **kwargs) -> None:
+        print("Bye!")
+
+    monkeypatch.setattr(ConsoleUI, "run", fake_run)
+    run_console_ui(loop)  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert out.index("Bye!") < out.index("privibe --resume aaaaaaaa")
+    assert "\x1b" not in out
+
+
+def test_exit_by_ctrl_c_still_prints_resume_hint(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    save_session(tmp_path, "aaaaaaaa-1111")
+    loop = exit_loop(tmp_path, "aaaaaaaa-1111")
+
+    async def fake_run(self, **kwargs) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ConsoleUI, "run", fake_run)
+    run_console_ui(loop)  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert out.index("Bye!") < out.index("privibe --resume aaaaaaaa")
+
+
+def test_exit_hint_follows_mid_session_resume(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    save_session(tmp_path, "aaaaaaaa-1111")
+    save_session(tmp_path, "bbbbbbbb-2222")
+    loop = exit_loop(tmp_path, "aaaaaaaa-1111")
+
+    async def fake_run(self, **kwargs) -> None:
+        # What /resume does to the logger.
+        self.agent_loop.session_logger.session_id = "bbbbbbbb-2222"
+
+    monkeypatch.setattr(ConsoleUI, "run", fake_run)
+    run_console_ui(loop)  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert "privibe --resume bbbbbbbb" in out
+    assert "aaaaaaaa" not in out
+
+
+def test_exit_without_saved_session_prints_no_hint(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    loop = exit_loop(tmp_path, "aaaaaaaa-1111")
+
+    async def fake_run(self, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(ConsoleUI, "run", fake_run)
+    run_console_ui(loop)  # type: ignore[arg-type]
+    assert "--resume" not in capsys.readouterr().out

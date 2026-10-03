@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 from pathlib import Path
 import sys
 from typing import Any
@@ -336,13 +335,12 @@ def run_cli(args: argparse.Namespace) -> None:
             # Route to console mode or TUI based on --console flag. Imports
             # are local so console mode never loads textual.
             if getattr(args, "console", False):
-                from privibe.cli.console_ui.app import ConsoleUI
+                from privibe.cli.console_ui.app import run_console_ui
 
-                asyncio.run(
-                    ConsoleUI(agent_loop).run(
-                        initial_prompt=args.initial_prompt or stdin_prompt,
-                        show_resume_picker=args.resume is True,
-                    )
+                run_console_ui(
+                    agent_loop=agent_loop,
+                    initial_prompt=args.initial_prompt or stdin_prompt,
+                    show_resume_picker=args.resume is True,
                 )
             else:
                 from privibe.cli.textual_ui.app import StartupOptions, run_textual_ui

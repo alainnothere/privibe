@@ -38,7 +38,10 @@ from privibe.cli.textual_ui.notifications import (
     NotificationPort,
     TextualNotificationAdapter,
 )
-from privibe.cli.textual_ui.session_exit import print_session_resume_message
+from privibe.cli.textual_ui.session_exit import (
+    print_session_resume_message,
+    resumable_session_id,
+)
 from privibe.cli.textual_ui.widgets.approval_app import ApprovalApp
 from privibe.cli.textual_ui.widgets.banner.banner import Banner
 from privibe.cli.textual_ui.widgets.chat_input import ChatInputContainer
@@ -1345,17 +1348,7 @@ class VibeApp(App):  # noqa: PLR0904
                 self.event_handler.current_compact = None
 
     def _get_session_resume_info(self) -> str | None:
-        if not self.agent_loop.session_logger.enabled:
-            return None
-        if not self.agent_loop.session_logger.session_id:
-            return None
-        session_config = self.agent_loop.session_logger.session_config
-        session_path = SessionLoader.does_session_exist(
-            self.agent_loop.session_logger.session_id, session_config
-        )
-        if session_path is None:
-            return None
-        return short_session_id(self.agent_loop.session_logger.session_id)
+        return resumable_session_id(self.agent_loop.session_logger)
 
     async def _exit_app(self) -> None:
         await self._narrator_manager.close()

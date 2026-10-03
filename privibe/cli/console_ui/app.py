@@ -18,8 +18,13 @@ from __future__ import annotations
 import asyncio
 import difflib
 from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING, cast
 
+from privibe.cli.textual_ui.session_exit import (
+    print_session_resume_message,
+    resumable_session_id,
+)
 from privibe.core.config import (
     VibeConfig,
     cycle_llm_calls_per_turn,
@@ -70,6 +75,10 @@ _APPROVAL_PREVIEW_LIMIT = 4000
 # How many transcript entries the automatic replay after a resume shows.
 # /replay prints the whole conversation.
 _REPLAY_TAIL_ENTRIES = 20
+
+# Separator rule between your input, the model's thinking and its answer.
+_SEPARATOR_CHAR = "="
+_SEPARATOR_MIN_WIDTH = 10
 
 
 def _truncate_lines(content: str, max_lines: int) -> tuple[str, str | None]:
@@ -145,6 +154,9 @@ class ConsoleUI:
         # "assistant" or "reasoning". Used to insert prefixes/newlines
         # exactly once around delta sequences.
         self._open_block: str | None = None
+        # True when the last thing on stdout is a separator, which already
+        # ends in a blank line; the input prompt then skips its own.
+        self._after_separator = False
         self._prompt_session = None  # created lazily; needs a terminal
 
     async def run(
@@ -164,7 +176,9 @@ class ConsoleUI:
 
         while self._running:
             try:
-                user_input = (await self._read_line("\nyou: ")).strip()
+                prompt = "you: " if self._after_separator else "\nyou: "
+                self._after_separator = False
+                user_input = (await self._read_line(prompt)).strip()
             except KeyboardInterrupt:
                 print("(Ctrl+C at the prompt does nothing; /exit or Ctrl+D quits)")
                 continue
@@ -248,7 +262,7 @@ class ConsoleUI:
     async def _run_turn(self, prompt: str) -> None:
         if not prompt:
             return
-        print()
+        self._print_separator()
         try:
             async for event in self.agent_loop.act(prompt):
                 self._handle_event(event)
@@ -266,6 +280,7 @@ class ConsoleUI:
             print(f"\n[error] {e}")
         finally:
             self._close_block()
+            self._print_separator()
 
     def _close_block(self) -> None:
         """Terminate an open assistant/reasoning stream with a newline."""
@@ -273,22 +288,46 @@ class ConsoleUI:
             print(flush=True)
             self._open_block = None
 
+    def _print_separator(self) -> None:
+        """Print blank line, rule, blank line. Expects the cursor at the
+        start of a line. One short of the terminal width so consoles that
+        wrap eagerly (Windows conhost) do not add an extra empty line.
+        """
+        width = max(_SEPARATOR_MIN_WIDTH, shutil.get_terminal_size().columns - 1)
+        print(f"\n{_SEPARATOR_CHAR * width}\n", flush=True)
+        self._after_separator = True
+
+    def _stream_assistant(self, content: str) -> None:
+        if self._open_block != "assistant":
+            # Leading newlines of a fresh block are noise; a chunk made
+            # only of them must not open the block either.
+            content = content.lstrip("\n")
+            if not content:
+                return
+            after_reasoning = self._open_block == "reasoning"
+            self._close_block()
+            if after_reasoning:
+                self._print_separator()
+            self._open_block = "assistant"
+        print(content, end="", flush=True)
+
+    def _stream_reasoning(self, content: str) -> None:
+        if self._open_block != "reasoning":
+            content = content.lstrip("\n")
+            if not content:
+                return
+            self._close_block()
+            print("[thinking] ", end="", flush=True)
+            self._open_block = "reasoning"
+        print(content, end="", flush=True)
+
     def _handle_event(self, event: BaseEvent) -> None:
         match event:
             case AssistantEvent():
-                if event.content:
-                    if self._open_block != "assistant":
-                        self._close_block()
-                        self._open_block = "assistant"
-                    print(event.content, end="", flush=True)
+                self._stream_assistant(event.content or "")
 
             case ReasoningEvent():
-                if event.content:
-                    if self._open_block != "reasoning":
-                        self._close_block()
-                        print("[thinking] ", end="", flush=True)
-                        self._open_block = "reasoning"
-                    print(event.content, end="", flush=True)
+                self._stream_reasoning(event.content or "")
 
             case ToolCallEvent():
                 self._close_block()
@@ -862,11 +901,18 @@ class ConsoleUI:
         if not entries:
             return
         print("\n--- resumed conversation ---")
+        # Same separators as the live REPL: around each of your messages.
+        # Reasoning is not replayed, so there is no thinking separator.
         for i, entry in enumerate(entries):
-            if i > 0 and entry.startswith("you: "):
-                print()
+            is_user = entry.startswith("you: ")
+            if is_user and i > 0 and not self._after_separator:
+                self._print_separator()
             print(entry)
+            self._after_separator = False
+            if is_user:
+                self._print_separator()
         print("--- end of history ---")
+        self._after_separator = False
 
     # ------------------------------------------------------------------
     # Session resume
@@ -923,3 +969,27 @@ class ConsoleUI:
             f"with {len(self.agent_loop.messages)} messages."
         )
         self._print_transcript(_REPLAY_TAIL_ENTRIES)
+
+
+def run_console_ui(
+    agent_loop: AgentLoop,
+    initial_prompt: str | None = None,
+    show_resume_picker: bool = False,
+) -> None:
+    """Run the console REPL, then say how to come back to this session.
+
+    A second Ctrl+C mid-turn escapes asyncio.run as KeyboardInterrupt;
+    catching it here keeps the resume hint on that exit too, which is the
+    one where you most want it.
+    """
+    ui = ConsoleUI(agent_loop)
+    try:
+        asyncio.run(
+            ui.run(initial_prompt=initial_prompt, show_resume_picker=show_resume_picker)
+        )
+    except KeyboardInterrupt:
+        print("\nBye!")
+    # Read at exit: /resume may have switched sessions mid-run.
+    print_session_resume_message(
+        resumable_session_id(agent_loop.session_logger), agent_loop.stats, plain=True
+    )
