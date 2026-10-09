@@ -545,8 +545,10 @@ class TestSessionLoggerSaveInteraction:
                 tool_manager=mock_tool_manager,
                 agent_profile=mock_agent_profile,
             )
+            # A second save with nothing new persists only metadata; a new
+            # message is what earns the second persist_messages.
             await logger.save_interaction(
-                messages=messages,
+                messages=[*messages, LLMMessage(role=Role.user, content="More")],
                 stats=AgentStats(steps=2),
                 base_config=mock_vibe_config,
                 tool_manager=mock_tool_manager,

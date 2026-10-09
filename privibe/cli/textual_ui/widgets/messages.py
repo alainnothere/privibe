@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -93,10 +92,13 @@ def cap_open_block(text: str, open_len: int, cap: int) -> tuple[str, int]:
 
 
 class StreamingMessageBase(Static):
-    # Minimum seconds between flushes to the markdown stream. Textual's
-    # Markdown.append re-parses, re-highlights, and re-renders the entire
-    # still-open block on every call, so per-token appends are quadratic in
-    # the block size. Throttling flushes caps that cost.
+    # Seconds between flushes to the display. Textual's Markdown.append
+    # re-parses, re-highlights, and re-renders the entire still-open block on
+    # every call, so per-token appends are quadratic in the block size.
+    # Tokens are only buffered here; one interval timer per message drains
+    # the buffer. On Windows every Textual timer tick is a kernel waitable
+    # timer plus a thread-pool hop, so the timer is paused whenever a tick
+    # finds nothing to flush, and never created per token.
     FLUSH_INTERVAL: float = 0.05
 
     def __init__(self, content: str, history_key: str | None = None) -> None:
@@ -111,7 +113,6 @@ class StreamingMessageBase(Static):
         self._stream: MarkdownStream | None = None
         self._content_initialized = False
         self._to_write_buffer = ""
-        self._last_flush_time = 0.0
         self._flush_timer: Timer | None = None
 
     def _get_markdown(self) -> Markdown:
@@ -147,15 +148,15 @@ class StreamingMessageBase(Static):
         if not self._is_chat_at_bottom():
             return
 
-        elapsed = time.monotonic() - self._last_flush_time
-        if elapsed >= self.FLUSH_INTERVAL:
-            await self._flush_buffer()
-        elif self._flush_timer is None:
-            # Trailing flush so the last tokens of a burst are not stuck in
-            # the buffer until the next append or stop_stream.
-            self._flush_timer = self.set_timer(
-                self.FLUSH_INTERVAL - elapsed, self._flush_on_timer
+        self._ensure_flush_timer()
+
+    def _ensure_flush_timer(self) -> None:
+        if self._flush_timer is None:
+            self._flush_timer = self.set_interval(
+                self.FLUSH_INTERVAL, self._flush_on_timer
             )
+        else:
+            self._flush_timer.resume()
 
     async def _write_display(self, to_write: str) -> None:
         stream = self._ensure_stream()
@@ -168,20 +169,19 @@ class StreamingMessageBase(Static):
         self._stream = None
 
     async def _flush_buffer(self) -> None:
-        self._cancel_flush_timer()
-        self._last_flush_time = time.monotonic()
         to_write = self._to_write_buffer
         self._to_write_buffer = ""
         if to_write:
             await self._write_display(to_write)
 
     async def _flush_on_timer(self) -> None:
-        self._flush_timer = None
-        if (
-            self._to_write_buffer
-            and self._should_write_content()
-            and self._is_chat_at_bottom()
-        ):
+        if not self._to_write_buffer:
+            # Nothing arrived since the last tick: stop ticking until the
+            # next append resumes the timer.
+            if self._flush_timer is not None:
+                self._flush_timer.pause()
+            return
+        if self._should_write_content() and self._is_chat_at_bottom():
             await self._flush_buffer()
 
     def _cancel_flush_timer(self) -> None:
@@ -203,6 +203,9 @@ class StreamingMessageBase(Static):
             await self._write_display(self._to_write_buffer)
         self._to_write_buffer = ""
         await self._finalize_display()
+
+    def on_unmount(self) -> None:
+        self._cancel_flush_timer()
 
     def _should_write_content(self) -> bool:
         return True

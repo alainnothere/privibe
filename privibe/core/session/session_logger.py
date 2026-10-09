@@ -65,6 +65,13 @@ class SessionLogger:
         # read-modify-replace cycles on meta.json; on Windows a reader holding
         # the file open makes the other writer's os.replace fail (WinError 5).
         self._save_lock = asyncio.Lock()
+        # Cached line count of messages.jsonl, valid only for the directory it
+        # was taken in. The file is append-only within a session dir and every
+        # append goes through this object, so the count is kept in memory
+        # after one read instead of re-reading the whole file on the UI thread
+        # at every save. Cleared whenever session_dir changes.
+        self._persisted_count: int | None = None
+        self._persisted_count_dir: Path | None = None
 
         if not self.enabled:
             self.save_dir: Path | None = None
@@ -333,6 +340,22 @@ class SessionLogger:
                     count += 1
         return count
 
+    def _persisted_message_count(self) -> int:
+        """_count_persisted_messages, read from disk once per session dir."""
+        if (
+            self._persisted_count is not None
+            and self._persisted_count_dir == self.session_dir
+        ):
+            return self._persisted_count
+        count = self._count_persisted_messages()
+        self._persisted_count = count
+        self._persisted_count_dir = self.session_dir
+        return count
+
+    def _forget_persisted_count(self) -> None:
+        self._persisted_count = None
+        self._persisted_count_dir = None
+
     async def save_interaction(
         self,
         messages: Sequence[LLMMessage],
@@ -375,7 +398,7 @@ class SessionLogger:
         # total_messages is only compared against it to surface divergence
         # left behind by a crash between the two writes.
         try:
-            old_total_messages = self._count_persisted_messages()
+            old_total_messages = self._persisted_message_count()
         except OSError as e:
             raise RuntimeError(
                 f"Failed to read session messages at {self.messages_filepath}: {e}"
@@ -414,7 +437,12 @@ class SessionLogger:
                 return
 
             messages_data = [stored_message_dict(m) for m in new_messages]
+            # Unknown until the append is known to have landed: a failure
+            # part-way through leaves the file with some of these lines.
+            self._persisted_count = None
             await SessionLogger.persist_messages(messages_data, self.session_dir)
+            self._persisted_count = old_total_messages + len(new_messages)
+            self._persisted_count_dir = self.session_dir
 
             # The session's frozen tools, when messages is the ConversationList
             # (the owner of the sent payload). None when unfrozen (no request
@@ -496,6 +524,7 @@ class SessionLogger:
         self.session_start_time = utc_now().isoformat()
         self.session_dir = self.save_folder
         self.session_metadata = self._initialize_session_metadata()
+        self._forget_persisted_count()
 
     def resume_existing_session(self, session_id: str, session_dir: Path) -> None:
         if not self.enabled:
@@ -504,6 +533,7 @@ class SessionLogger:
         self.session_id = session_id
         self.session_dir = session_dir
         self.session_metadata = SessionLoader.load_metadata(session_dir)
+        self._forget_persisted_count()
 
         if self.session_metadata.start_time:
             self.session_start_time = self.session_metadata.start_time

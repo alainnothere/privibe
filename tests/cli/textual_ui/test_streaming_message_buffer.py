@@ -37,7 +37,6 @@ class MessageTestDouble(StreamingMessageBase):
         self._to_write_buffer = ""
         self._stream = None
         self._markdown = None
-        self._last_flush_time = 0.0
         self._flush_timer = None
         self._at_bottom = at_bottom
         self._should_write = should_write
@@ -56,6 +55,18 @@ class MessageTestDouble(StreamingMessageBase):
     def _should_write_content(self) -> bool:
         return self._should_write
 
+    def set_interval(self, interval, callback=None, *args, **kwargs):  # type: ignore[override]
+        return FakeTimer()
+
+    # Zero interval: drain on every append, as the real timer would on its
+    # next tick. ThrottledMessageTestDouble turns this off.
+    DRAIN_ON_APPEND = True
+
+    async def append_content(self, content: str) -> None:
+        await super().append_content(content)
+        if self.DRAIN_ON_APPEND and self._flush_timer is not None:
+            await self._flush_on_timer()
+
 
 def make_msg(*, at_bottom: bool = True, should_write: bool = True) -> MessageTestDouble:
     return MessageTestDouble(at_bottom=at_bottom, should_write=should_write)
@@ -64,22 +75,37 @@ def make_msg(*, at_bottom: bool = True, should_write: bool = True) -> MessageTes
 class FakeTimer:
     def __init__(self) -> None:
         self.stopped = False
+        self.paused = False
+        self.resumes = 0
 
     def stop(self) -> None:
         self.stopped = True
 
+    def pause(self) -> None:
+        self.paused = True
+
+    def resume(self) -> None:
+        self.paused = False
+        self.resumes += 1
+
 
 class ThrottledMessageTestDouble(MessageTestDouble):
-    """Test double with a large flush interval and a captured flush timer."""
+    """Test double with a large flush interval and a captured flush timer.
+
+    Appends only buffer; the interval timer created on the first append is
+    what drains the buffer, so nothing reaches the stream until the test
+    calls _flush_on_timer itself.
+    """
 
     FLUSH_INTERVAL = 60.0
+    DRAIN_ON_APPEND = False
 
     def __init__(self, at_bottom: bool = True, should_write: bool = True) -> None:
         super().__init__(at_bottom=at_bottom, should_write=should_write)
         self.timers: list[tuple[float, object]] = []
 
-    def set_timer(self, delay, callback=None, *args, **kwargs):  # type: ignore[override]
-        self.timers.append((delay, callback))
+    def set_interval(self, interval, callback=None, *args, **kwargs):  # type: ignore[override]
+        self.timers.append((interval, callback))
         return FakeTimer()
 
 
@@ -351,36 +377,26 @@ class TestNoDoubleWrite:
 
 class TestFlushThrottle:
     @pytest.mark.asyncio
-    async def test_first_append_flushes_immediately(self) -> None:
+    async def test_first_append_only_buffers_and_starts_timer(self) -> None:
         msg = ThrottledMessageTestDouble()
 
         await msg.append_content("first")
 
-        assert msg._fake_stream.all_written == "first"
-        assert msg._to_write_buffer == ""
-
-    @pytest.mark.asyncio
-    async def test_append_within_interval_buffers_and_arms_timer(self) -> None:
-        msg = ThrottledMessageTestDouble()
-        await msg.append_content("first")
-
-        await msg.append_content(" second")
-
-        assert msg._fake_stream.all_written == "first"
-        assert msg._to_write_buffer == " second"
+        assert msg._fake_stream.all_written == ""
+        assert msg._to_write_buffer == "first"
         assert len(msg.timers) == 1
+        assert msg.timers[0][0] == 60.0
 
     @pytest.mark.asyncio
-    async def test_only_one_trailing_timer_is_armed(self) -> None:
+    async def test_only_one_timer_per_message(self) -> None:
         msg = ThrottledMessageTestDouble()
-        await msg.append_content("first")
 
-        await msg.append_content(" a")
+        await msg.append_content("a")
         await msg.append_content(" b")
         await msg.append_content(" c")
 
         assert len(msg.timers) == 1
-        assert msg._to_write_buffer == " a b c"
+        assert msg._to_write_buffer == "a b c"
 
     @pytest.mark.asyncio
     async def test_timer_callback_flushes_buffer(self) -> None:
@@ -394,9 +410,25 @@ class TestFlushThrottle:
         assert msg._to_write_buffer == ""
 
     @pytest.mark.asyncio
+    async def test_empty_tick_pauses_timer_and_append_resumes_it(self) -> None:
+        msg = ThrottledMessageTestDouble()
+        await msg.append_content("first")
+        await msg._flush_on_timer()
+        timer = msg._flush_timer
+        assert timer is not None and timer.paused is False
+
+        await msg._flush_on_timer()
+        assert timer.paused is True
+
+        await msg.append_content(" more")
+        assert timer.paused is False
+        assert len(msg.timers) == 1
+
+    @pytest.mark.asyncio
     async def test_timer_callback_skips_when_scrolled_away(self) -> None:
         msg = ThrottledMessageTestDouble()
         await msg.append_content("first")
+        await msg._flush_on_timer()
         await msg.append_content(" buffered")
 
         msg._at_bottom = False
@@ -409,6 +441,7 @@ class TestFlushThrottle:
     async def test_stop_stream_cancels_timer_and_flushes_once(self) -> None:
         msg = ThrottledMessageTestDouble()
         await msg.append_content("first")
+        await msg._flush_on_timer()
         await msg.append_content(" tail")
         timer = msg._flush_timer
 
@@ -417,9 +450,10 @@ class TestFlushThrottle:
         assert msg._fake_stream.all_written == "first tail"
         assert msg._to_write_buffer == ""
         assert timer is not None and timer.stopped is True
+        assert msg._flush_timer is None
 
     @pytest.mark.asyncio
-    async def test_scrolled_away_does_not_arm_timer(self) -> None:
+    async def test_scrolled_away_does_not_start_timer(self) -> None:
         msg = ThrottledMessageTestDouble(at_bottom=False)
 
         await msg.append_content("hidden")
