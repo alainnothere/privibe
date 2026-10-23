@@ -55,3 +55,37 @@ def merge_consecutive_user_messages(messages: Sequence[LLMMessage]) -> list[LLMM
             result.append(msg)
 
     return result
+
+
+STEERING_TAG = "user_steering"
+
+
+def wrap_steering_messages(messages: Sequence[LLMMessage]) -> list[LLMMessage]:
+    """Return a copy of *messages* with steering messages put in their envelope.
+
+    Stored steering messages hold the user's raw words (history, rewind and
+    resume show what was typed). On the wire the model needs to know this is a
+    mid-task instruction, so the request carries the words inside the
+    ``<user_steering>`` envelope whose text lives in prompts/steering.md. Pure
+    function of the stored bytes: the same history always yields the same
+    request, so this never disturbs the KV-cache prefix.
+    """
+    from string import Template
+
+    from privibe.core.prompts import UtilityPrompt
+
+    template: Template | None = None
+    out: list[LLMMessage] = []
+    for msg in messages:
+        if not msg.steering or not isinstance(msg.content, str):
+            out.append(msg)
+            continue
+        if template is None:
+            template = Template(UtilityPrompt.STEERING.read().strip())
+        body = template.safe_substitute(message=msg.content)
+        out.append(
+            msg.model_copy(
+                update={"content": f"<{STEERING_TAG}>{body}</{STEERING_TAG}>"}
+            )
+        )
+    return out

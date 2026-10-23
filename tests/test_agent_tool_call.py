@@ -997,3 +997,42 @@ class TestToolFailureClassification:
         assert loop.stats.tool_calls_failed == failed_before
         assert loop.stats.tool_calls_rejected == rejected_before + 1
         assert loop.stats.tool_calls_agreed == agreed_before - 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_approval_yields_one_failure_without_unbound_locals() -> None:
+    """Cancellation while the approval prompt is open must not raise a second error.
+
+    The CancelledError branch of _execute_tool_call reads result_model, which
+    used to be assigned only after approval; a cancel during approval tripped
+    an UnboundLocalError on top of the cancellation.
+    """
+
+    async def approval_callback(
+        _tool_name: str, _args: BaseModel, _tool_call_id: str, _rp: list | None = None
+    ) -> tuple[ApprovalResponse, str | None]:
+        raise asyncio.CancelledError()
+
+    agent_loop = make_agent_loop(
+        auto_approve=False,
+        todo_permission=ToolPermission.ASK,
+        backend=FakeBackend([
+            [
+                mock_llm_chunk(
+                    content="Let me check your todos.",
+                    tool_calls=[make_todo_tool_call("call_cancel")],
+                )
+            ],
+            [mock_llm_chunk(content="unreachable")],
+        ]),
+        approval_callback=approval_callback,
+    )
+
+    events = await act_and_collect_events(agent_loop, "What's my todo list?")
+
+    results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(results) == 1
+    assert results[0].error is not None
+    assert "interrupted" in results[0].error.lower()
+    assert agent_loop.stats.tool_calls_failed == 1
+    assert len([e for e in events if isinstance(e, AssistantEvent)]) == 1

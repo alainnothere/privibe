@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 import httpx
 
-from privibe.core.logger import logger
 from privibe.core.llm.backend.anthropic import AnthropicAdapter
 from privibe.core.llm.backend.base import APIAdapter, PreparedRequest
 from privibe.core.llm.backend.reasoning_adapter import ReasoningAdapter
@@ -18,6 +17,7 @@ from privibe.core.llm.message_utils import (
     insert_between_consecutive_assistant_messages,
     merge_consecutive_user_messages,
 )
+from privibe.core.logger import logger
 from privibe.core.types import (
     AvailableTool,
     LLMChunk,
@@ -171,14 +171,9 @@ class OpenAIAdapter(APIAdapter):
                     msg.model_dump(
                         exclude_none=True,
                         exclude=(
-                            {"message_id", "reasoning_message_id", "injected"}
+                            _LOCAL_ONLY_FIELDS
                             if per_message_effort
-                            else {
-                                "message_id",
-                                "reasoning_message_id",
-                                "injected",
-                                "reasoning_effort",
-                            }
+                            else _LOCAL_ONLY_FIELDS | {"reasoning_effort"}
                         ),
                     ),
                     field_name,
@@ -216,6 +211,7 @@ class OpenAIAdapter(APIAdapter):
             dump_payload as _dbg_dump_payload,
             is_enabled as _dbg_enabled,
         )
+
         if _dbg_enabled():
             _dbg_dump_payload(body, payload)
 
@@ -270,6 +266,17 @@ ADAPTERS: dict[str, APIAdapter] = {
     "anthropic": AnthropicAdapter(),
     "vertex-anthropic": VertexAnthropicAdapter(),
     "reasoning": ReasoningAdapter(),
+}
+
+
+# LLMMessage fields that are harness bookkeeping and never go on the wire.
+# The steering flag's effect is already applied to content by
+# wrap_steering_messages before the message reaches this driver.
+_LOCAL_ONLY_FIELDS: set[str] = {
+    "message_id",
+    "reasoning_message_id",
+    "injected",
+    "steering",
 }
 
 
@@ -659,7 +666,12 @@ class GenericBackend:
                 return ModelEndpointInfo(int(val), detected_name)
 
         # Generic OpenAI-compatible servers (vLLM, LM Studio, etc.)
-        for field in ("context_length", "max_context_length", "context_window", "max_model_len"):
+        for field in (
+            "context_length",
+            "max_context_length",
+            "context_window",
+            "max_model_len",
+        ):
             if val := target.get(field):
                 logger.info(
                     "fetch_model_endpoint_info: found %s=%s for model '%s'",

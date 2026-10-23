@@ -13,6 +13,7 @@ from privibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from privibe.core.tools.builtins.ask_user_question import AskUserQuestionResult
 from privibe.core.tools.builtins.bash import BashArgs, BashResult
 from privibe.core.tools.builtins.grep import GrepArgs, GrepResult
+from privibe.core.tools.builtins.hashed_read import HashedReadArgs
 from privibe.core.tools.builtins.read_file import ReadFileArgs, ReadFileResult
 from privibe.core.tools.builtins.search_replace import (
     SEARCH_REPLACE_BLOCK_RE,
@@ -310,12 +311,18 @@ class TodoResultWidget(ToolResultWidget[TodoResult]):
         return icons.get(status, "☐")
 
 
-class ReadFileApprovalWidget(ToolApprovalWidget[ReadFileArgs]):
+class ReadApprovalWidget(ToolApprovalWidget[ReadFileArgs | HashedReadArgs]):
+    """Approval card shared by read_file and hashed_read.
+
+    Both arg models carry the same three fields (path, 1-based start_line,
+    limit); one widget keeps them from drifting apart again.
+    """
+
     def compose(self) -> ComposeResult:
         yield NoMarkupStatic(f"path: {self.args.path}", classes="approval-description")
-        if self.args.offset > 0:
+        if self.args.start_line > 1:
             yield NoMarkupStatic(
-                f"offset: {self.args.offset}", classes="approval-description"
+                f"start_line: {self.args.start_line}", classes="approval-description"
             )
         if self.args.limit is not None:
             yield NoMarkupStatic(
@@ -387,7 +394,8 @@ class AskUserQuestionResultWidget(ToolResultWidget[AskUserQuestionResult]):
 
 APPROVAL_WIDGETS: dict[str, type[ToolApprovalWidget]] = {
     "bash": BashApprovalWidget,
-    "read_file": ReadFileApprovalWidget,
+    "read_file": ReadApprovalWidget,
+    "hashed_read": ReadApprovalWidget,
     "write_file": WriteFileApprovalWidget,
     "search_replace": SearchReplaceApprovalWidget,
     "grep": GrepApprovalWidget,

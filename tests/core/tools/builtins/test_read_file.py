@@ -166,3 +166,15 @@ class TestGetResultExtra:
         )
         assert tool.get_result_extra(result) is None
         reset_harness_files_manager()
+
+
+def test_start_line_zero_rejected_at_parse_like_hashed_read() -> None:
+    """read_file and hashed_read share the same 1-based floor on the schema."""
+    from pydantic import ValidationError
+
+    from privibe.core.tools.builtins.hashed_read import HashedReadArgs
+
+    for args_cls in (ReadFileArgs, HashedReadArgs):
+        with pytest.raises(ValidationError):
+            args_cls(path="x", start_line=0)
+        assert args_cls(path="x").start_line == 1

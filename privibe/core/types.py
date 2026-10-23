@@ -310,6 +310,11 @@ class LLMMessage(BaseModel):
     role: Role
     content: Content | None = None
     injected: bool = False
+    # A user message typed while the agent was running, appended after the
+    # tool batch it interrupted. Stored as the user's raw words; the request
+    # builder wraps it in the steering envelope (prompts/steering.md) so the
+    # model treats it as a mid-task instruction rather than a fresh turn.
+    steering: bool = False
     reasoning_content: Content | None = None
     reasoning_signature: str | None = None
     reasoning_message_id: str | None = None
@@ -498,6 +503,11 @@ class BaseEvent(BaseModel, ABC):
 class UserMessageEvent(BaseEvent):
     content: str
     message_id: str
+    # Set for steering messages the loop appended itself (the UI did not
+    # submit them through the normal turn path, so it must mount a bubble):
+    # the index of the message in agent_loop.messages, for rewind.
+    message_index: int | None = None
+    steering: bool = False
 
 
 class AssistantEvent(BaseEvent):

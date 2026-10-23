@@ -28,6 +28,7 @@ from privibe.core.llm.format import (
     ResolvedMessage,
     ResolvedToolCall,
 )
+from privibe.core.llm.message_utils import wrap_steering_messages
 from privibe.core.llm.types import BackendLike
 from privibe.core.logger import logger
 from privibe.core.middleware import (
@@ -364,10 +365,48 @@ class AgentLoop:
 
     # agent steering — Public API for the UI to queue a steering message.
     def queue_steering(self, message: str) -> None:
-        """Queue a user message to be injected into the next tool result."""
+        """Queue a message typed mid-turn; appended as a user message after the running tool batch."""
         self._steering_queue.append(message)
 
     # agent steering — Drain and return all queued steering messages.
+    def _flush_steering_queue(self) -> list[UserMessageEvent]:
+        """Append queued steering messages as real user messages.
+
+        Each gets its own checkpoint so rewind can restore files from it, and
+        is stored as the raw words (see wrap_steering_messages for the wire
+        form). Returns the events the UI needs to mount the bubbles.
+        """
+        events: list[UserMessageEvent] = []
+        for text in self._steering_queue:
+            self.rewind_manager.create_checkpoint()
+            message_index = len(self.messages)
+            msg = LLMMessage(
+                role=Role.user,
+                content=text,
+                steering=True,
+                reasoning_effort=self.current_reasoning_effort(),
+                meta=MessageMeta(submitted_at=time.time()),
+            )
+            self.messages.add(msg)
+            events.append(
+                UserMessageEvent(
+                    content=text,
+                    message_id=msg.message_id or "",
+                    message_index=message_index,
+                    steering=True,
+                )
+            )
+        self._steering_queue.clear()
+        return events
+
+    def _request_messages(self) -> list[LLMMessage]:
+        """The conversation as the backend must see it.
+
+        Stored messages are the truth; this applies only the deterministic
+        per-message rewrites (steering envelope). Same history, same request.
+        """
+        return wrap_steering_messages(self.messages)
+
     def drain_steering_queue(self) -> list[str]:
         """Return and clear the steering queue. Called after the agent loop exits."""
         msgs = list(self._steering_queue)
@@ -1055,6 +1094,14 @@ class AgentLoop:
                 if user_cancelled:
                     return
 
+                if not should_break_loop:
+                    # agent steering — the tool batch is complete and the next
+                    # request is not built yet: the only slot where a message
+                    # typed mid-turn can land without splitting a batch.
+                    for event in self._flush_steering_queue():
+                        yield event
+                    await self._save_messages()
+
         finally:
             await self._save_messages()
 
@@ -1215,6 +1262,10 @@ class AgentLoop:
 
         decision: ToolDecision | None = None
         started_at: float | None = None
+        # Approval can be cancelled before the tool runs; the CancelledError
+        # branch below reads these, so they must exist by then.
+        result_model: BaseModel | None = None
+        snapshot: FileSnapshot | None = None
         try:
             # Content rewrites (ASCII transliteration) happen here so the
             # approval preview shows the bytes that will actually land.
@@ -1678,23 +1729,6 @@ class AgentLoop:
             tool_result=result,
             file_diff=file_diff,
         )
-        # agent steering — Before appending the tool result, check if there are
-        # queued steering messages. If so, prepend them to the tool result text
-        # in a prominent format:
-        #   <user_steering>
-        #   The user has provided the following instruction. Acknowledge it and
-        #   incorporate it into your work: {steering message}
-        #   </user_steering>
-        # Then clear the queue. This injects user direction mid-conversation
-        # without breaking the LLM/harness cycle.
-        if self._steering_queue:
-            steering_block = "\n".join(
-                f"<user_steering>The user has provided the following instruction. Acknowledge it and incorporate it into your work: {msg}</user_steering>"
-                for msg in self._steering_queue
-            )
-            text = f"{steering_block}\n\n{text}"
-            self._steering_queue.clear()
-
         self.messages.add(
             LLMMessage.model_validate(
                 self.format_handler.create_tool_response_message(tool_call, text)
@@ -1811,7 +1845,7 @@ class AgentLoop:
             self._llm_requested_at = time.time()
             result = await self.backend.complete(
                 model=active_model,
-                messages=self.messages,
+                messages=self._request_messages(),
                 temperature=active_model.temperature,
                 tools=available_tools,
                 tool_choice=tool_choice,
@@ -1894,7 +1928,7 @@ class AgentLoop:
             first_chunk_at: float | None = None
             async for chunk in self.backend.complete_streaming(
                 model=active_model,
-                messages=self.messages,
+                messages=self._request_messages(),
                 temperature=active_model.temperature,
                 tools=available_tools,
                 tool_choice=tool_choice,
@@ -2156,7 +2190,7 @@ class AgentLoop:
 
             actual_context_tokens = await self.backend.count_tokens(
                 model=active_model,
-                messages=self.messages,
+                messages=self._request_messages(),
                 tools=self.messages.tools_for_request(),
                 extra_headers={"user-agent": get_user_agent(provider.backend)},
                 metadata=self._build_metadata(),

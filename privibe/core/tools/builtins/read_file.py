@@ -44,6 +44,7 @@ class ReadFileArgs(BaseModel):
     path: str
     start_line: int = Field(
         default=1,
+        ge=1,
         description="First line to read (1-based, inclusive) — ordinary "
         "editor line numbers.",
     )

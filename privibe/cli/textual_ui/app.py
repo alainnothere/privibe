@@ -492,15 +492,16 @@ class VibeApp(App):  # noqa: PLR0904
 
         # agent steering — When the agent is running, instead of cancelling
         # (which breaks the LLM/harness cycle and forces full reprocess),
-        # queue the user's message as a steering instruction. It will be
-        # injected into the next tool result. Show the user an info message
-        # explaining that the message is queued and that Esc/Ctrl+C still
-        # cancels immediately.
+        # queue the user's message as a steering instruction. The loop appends
+        # it as a user message once the running tool batch completes (and
+        # emits the event that mounts its bubble). Show the user an info
+        # message explaining that the message is queued and that Esc/Ctrl+C
+        # still cancels immediately.
         if self._agent_running:
             self.agent_loop.queue_steering(value)
             await self._mount_and_scroll(
                 UserCommandMessage(
-                    "Message queued — will steer the conversation at the next tool call. "
+                    "Message queued — will be added after the current tool calls finish. "
                     "Press Esc or Ctrl+C to cancel immediately."
                 )
             )
