@@ -121,6 +121,7 @@ from privibe.core.types import (
     ApprovalResponse,
     LLMMessage,
     RateLimitError,
+    UserMessageEvent,
     WaitingForInputEvent,
 )
 from privibe.core.utils import (
@@ -336,6 +337,9 @@ class VibeApp(App):  # noqa: PLR0904
 
         self._rewind_mode = False
         self._rewind_highlighted_widget: UserMessage | None = None
+        # The bubble mounted for the message being submitted, until the loop
+        # reports where that message actually landed.
+        self._pending_user_widget: UserMessage | None = None
 
     @property
     def config(self) -> VibeConfig:
@@ -849,10 +853,12 @@ class VibeApp(App):  # noqa: PLR0904
             )
 
     async def _handle_user_message(self, message: str) -> None:
-        # message_index is where the user message will land in agent_loop.messages
-        # (checkpoint is created in agent_loop.act())
+        # Provisional index: act() may repair the conversation tail before
+        # appending (shims for a session that died mid-tool), so the real
+        # slot arrives with the UserMessageEvent and is stamped then.
         message_index = len(self.agent_loop.messages)
         user_message = UserMessage(message, message_index=message_index)
+        self._pending_user_widget = user_message
 
         await self._mount_and_scroll(user_message)
 
@@ -987,6 +993,13 @@ class VibeApp(App):  # noqa: PLR0904
             self._narrator_manager.on_turn_start(rendered_prompt)
             async for event in self.agent_loop.act(rendered_prompt):
                 self._narrator_manager.on_turn_event(event)
+                if (
+                    isinstance(event, UserMessageEvent)
+                    and not event.steering
+                    and self._pending_user_widget is not None
+                ):
+                    self._pending_user_widget.message_index = event.message_index
+                    self._pending_user_widget = None
                 if isinstance(event, WaitingForInputEvent):
                     await self._remove_loading_widget()
                 elif self._loading_widget is None and not isinstance(event, WaitingForInputEvent):

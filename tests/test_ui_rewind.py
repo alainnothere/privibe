@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tests.conftest import build_test_agent_loop, build_test_vibe_app
-from tests.mock.utils import mock_llm_chunk
-from tests.stubs.fake_backend import FakeBackend
 from privibe.cli.textual_ui.app import BottomApp, VibeApp
 from privibe.cli.textual_ui.widgets.chat_input.container import ChatInputContainer
 from privibe.cli.textual_ui.widgets.messages import UserMessage
 from privibe.cli.textual_ui.widgets.rewind_app import RewindApp
+from tests.conftest import build_test_agent_loop, build_test_vibe_app
+from tests.mock.utils import mock_llm_chunk
+from tests.stubs.fake_backend import FakeBackend
 
 
 def _make_app(num_responses: int = 3) -> VibeApp:
@@ -28,7 +28,9 @@ async def _send_messages(pilot, messages: list[str]) -> None:
         await pilot.pause(0.4)
 
 
-async def _enter_rewind_with_changes(pilot, app: VibeApp) -> tuple[RewindApp, AsyncMock]:
+async def _enter_rewind_with_changes(
+    pilot, app: VibeApp
+) -> tuple[RewindApp, AsyncMock]:
     """Open the rewind panel with the restore option present.
 
     Returns the panel and a mock standing in for the real rewind, so tests can
@@ -383,3 +385,72 @@ async def test_rewind_ctrl_c_exits_rewind_mode() -> None:
         assert app._current_bottom_app == BottomApp.Input
         assert app.is_running is True
         rewind_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rewind_target_survives_a_resumed_session_with_dangling_tool_calls() -> (
+    None
+):
+    """Resume a session that died mid-tool, send a message, rewind to it.
+
+    act() appends shim results for the unanswered calls before the user
+    message lands, so the index the UI guessed when it mounted the bubble is
+    two slots short. The loop reports the real slot on the UserMessageEvent
+    and the bubble is stamped from it; the checkpoint lands there too.
+    """
+    from privibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
+
+    backend = FakeBackend([[mock_llm_chunk(content="answer")]])
+    agent_loop = build_test_agent_loop(backend=backend)
+    agent_loop.messages.add(LLMMessage(role=Role.user, content="first"))
+    agent_loop.messages.add(
+        LLMMessage(
+            role=Role.assistant,
+            content="working",
+            tool_calls=(
+                ToolCall(
+                    id="a", index=0, function=FunctionCall(name="todo", arguments="{}")
+                ),
+                ToolCall(
+                    id="b", index=1, function=FunctionCall(name="todo", arguments="{}")
+                ),
+            ),
+        )
+    )
+    app = build_test_vibe_app(agent_loop=agent_loop)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.3)
+        await _send_messages(pilot, ["second"])
+
+        widgets = [
+            w
+            for w in app.query_one("#messages").children
+            if isinstance(w, UserMessage) and w.message_index is not None
+        ]
+        second = widgets[-1]
+        assert second.get_content() == "second"
+        assert second.message_index is not None
+        landed = agent_loop.messages[second.message_index]
+        assert landed.role == Role.user and landed.content == "second"
+        assert (
+            agent_loop.rewind_manager._checkpoints[-1].message_index
+            == second.message_index
+        )
+
+        await pilot.press("alt+up")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause(0.1)
+        assert app._rewind_highlighted_widget is second
+        await pilot.press("enter")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause(0.2)
+
+        # the rewind took: no error toast path, input prefilled, tail cut
+        assert app.query_one(ChatInputContainer).value == "second"
+        assert [m.role for m in agent_loop.messages] == [
+            Role.system,
+            Role.user,
+            Role.assistant,
+            Role.tool,
+            Role.tool,
+        ]

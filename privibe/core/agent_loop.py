@@ -866,7 +866,6 @@ class AgentLoop:
     ) -> AsyncGenerator[BaseEvent, None]:
         self._cancel_preflight_warmup()
         self._drop_dangling_step_budget_warning()
-        self.rewind_manager.create_checkpoint()
         self._act_call_count += 1
         # Auto-detect context size (and the cosmetic model name) every turn. The
         # call self-guards: it short-circuits when disabled or already settled for
@@ -879,6 +878,10 @@ class AgentLoop:
             reset_context_size_detection_state(self.config.get_active_model().alias)
         asyncio.ensure_future(self.resolve_context_size())
         self._append_shims_for_dangling_tool_calls()
+        # After the tail repairs above, so the checkpoint's message_index is
+        # the slot the user message is about to take (rewind looks it up by
+        # that index; the UI learns it from the UserMessageEvent).
+        self.rewind_manager.create_checkpoint()
         async for event in self._conversation_loop(
             msg, client_message_id=client_message_id
         ):
@@ -1050,6 +1053,7 @@ class AgentLoop:
             reasoning_effort=self.current_reasoning_effort(),
             meta=MessageMeta(submitted_at=time.time()),
         )
+        message_index = len(self.messages)
         self.messages.add(user_message)
         self.stats.steps += 1
         self._current_user_message_id = user_message.message_id
@@ -1060,7 +1064,11 @@ class AgentLoop:
         if user_message.message_id is None:
             raise AgentLoopError("User message must have a message_id")
 
-        yield UserMessageEvent(content=user_msg, message_id=user_message.message_id)
+        yield UserMessageEvent(
+            content=user_msg,
+            message_id=user_message.message_id,
+            message_index=message_index,
+        )
 
         try:
             should_break_loop = False

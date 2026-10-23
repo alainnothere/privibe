@@ -503,9 +503,11 @@ class BaseEvent(BaseModel, ABC):
 class UserMessageEvent(BaseEvent):
     content: str
     message_id: str
-    # Set for steering messages the loop appended itself (the UI did not
-    # submit them through the normal turn path, so it must mount a bubble):
-    # the index of the message in agent_loop.messages, for rewind.
+    # Where the message landed in agent_loop.messages, for rewind. The loop
+    # may repair the conversation tail (shims for unanswered tool calls,
+    # dropped step-budget warning) before appending, so only it knows the
+    # real slot. steering marks a message typed mid-turn that the loop
+    # appended itself; the UI mounts that bubble from the event.
     message_index: int | None = None
     steering: bool = False
 

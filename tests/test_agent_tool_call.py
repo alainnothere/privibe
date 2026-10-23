@@ -117,7 +117,6 @@ async def test_single_tool_call_executes_under_auto_approve() -> None:
     assert "total_count" in (tool_msgs[-1].content or "")
 
 
-
 @pytest.mark.asyncio
 async def test_tool_call_requires_approval_if_not_auto_approved() -> None:
     agent_loop = make_agent_loop(
@@ -151,7 +150,6 @@ async def test_tool_call_requires_approval_if_not_auto_approved() -> None:
     assert agent_loop.stats.tool_calls_rejected == 1
     assert agent_loop.stats.tool_calls_agreed == 0
     assert agent_loop.stats.tool_calls_succeeded == 0
-
 
 
 @pytest.mark.asyncio
@@ -188,9 +186,10 @@ async def test_tool_call_approved_by_callback() -> None:
     assert agent_loop.stats.tool_calls_succeeded == 1
 
 
-
 @pytest.mark.asyncio
-async def test_tool_call_rejected_when_auto_approve_disabled_and_rejected_by_callback() -> None:
+async def test_tool_call_rejected_when_auto_approve_disabled_and_rejected_by_callback() -> (
+    None
+):
     custom_feedback = "User declined tool execution"
 
     async def approval_callback(
@@ -227,7 +226,6 @@ async def test_tool_call_rejected_when_auto_approve_disabled_and_rejected_by_cal
     assert agent_loop.stats.tool_calls_succeeded == 0
 
 
-
 @pytest.mark.asyncio
 async def test_tool_call_skipped_when_permission_is_never() -> None:
     agent_loop = make_agent_loop(
@@ -262,7 +260,6 @@ async def test_tool_call_skipped_when_permission_is_never() -> None:
     assert agent_loop.stats.tool_calls_rejected == 1
     assert agent_loop.stats.tool_calls_agreed == 0
     assert agent_loop.stats.tool_calls_succeeded == 0
-
 
 
 @pytest.mark.asyncio
@@ -469,7 +466,9 @@ async def test_fill_missing_tool_responses_inserts_placeholders() -> None:
     agent_loop.messages.add(assistant_msg)
     # only one tool responded: the second is missing
     agent_loop.messages.add(
-        LLMMessage(role=Role.tool, tool_call_id="tc1", name="todo", content="Retrieved 0 todos")
+        LLMMessage(
+            role=Role.tool, tool_call_id="tc1", name="todo", content="Retrieved 0 todos"
+        )
     )
 
     await act_and_collect_events(agent_loop, "Proceed")
@@ -531,7 +530,6 @@ async def test_parallel_tool_calls_produce_correct_events() -> None:
     tool_msgs = [m for m in agent_loop.messages if m.role == Role.tool]
     assert {m.tool_call_id for m in tool_msgs} == {"call_p1", "call_p2"}
     assert agent_loop.stats.tool_calls_succeeded == 2
-
 
 
 @pytest.mark.asyncio
@@ -667,7 +665,6 @@ async def test_parallel_mixed_approval_and_rejection() -> None:
     assert agent_loop.stats.tool_calls_succeeded == 1
 
 
-
 @pytest.mark.asyncio
 async def test_parallel_three_tools_all_succeed() -> None:
     """Three parallel tool calls should all complete successfully."""
@@ -715,7 +712,6 @@ async def test_parallel_three_tools_all_succeed() -> None:
     assert len(tool_msgs) == 3
 
 
-
 @pytest.mark.asyncio
 async def test_parallel_one_tool_error_does_not_block_others() -> None:
     """If one parallel tool fails, the other should still succeed."""
@@ -751,9 +747,7 @@ async def test_parallel_all_rejected_no_callback() -> None:
     # and this test must exercise the missing-callback rejection for both.
     tc1 = make_todo_tool_call("call_nc1", index=0)
     tc2 = make_todo_tool_call(
-        "call_nc2",
-        index=1,
-        arguments=json.dumps({"action": "write", "todos": []}),
+        "call_nc2", index=1, arguments=json.dumps({"action": "write", "todos": []})
     )
     agent_loop = make_agent_loop(
         auto_approve=False,
@@ -964,8 +958,7 @@ class TestToolFailureClassification:
         loop, tool, call = self._setup()
         failed_before = loop.stats.tool_calls_failed
         decision = ToolDecision(
-            verdict=ToolExecutionResponse.EXECUTE,
-            approval_type=ToolPermission.ALWAYS,
+            verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
         )
 
         try:
@@ -985,8 +978,7 @@ class TestToolFailureClassification:
         rejected_before = loop.stats.tool_calls_rejected
         agreed_before = loop.stats.tool_calls_agreed
         decision = ToolDecision(
-            verdict=ToolExecutionResponse.EXECUTE,
-            approval_type=ToolPermission.ALWAYS,
+            verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
         )
 
         msg = loop._classify_tool_failure(
@@ -1036,3 +1028,67 @@ async def test_cancelled_approval_yields_one_failure_without_unbound_locals() ->
     assert "interrupted" in results[0].error.lower()
     assert agent_loop.stats.tool_calls_failed == 1
     assert len([e for e in events if isinstance(e, AssistantEvent)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_user_message_index_and_checkpoint_follow_tail_repairs() -> None:
+    """A session that died mid-tool is repaired with shims before the user
+    message lands; the event's index and the checkpoint must point at the
+    user message, not at the slot it would have taken without the shims.
+    """
+    config = build_test_vibe_config(enabled_tools=["stub_tool"])
+    agent_loop = build_test_agent_loop(
+        config=config,
+        agent_name=BuiltinAgentName.AUTO_APPROVE,
+        backend=FakeBackend([[mock_llm_chunk(content="answer")]]),
+    )
+    agent_loop.messages.add(LLMMessage(role=Role.user, content="first"))
+    agent_loop.messages.add(
+        LLMMessage(
+            role=Role.assistant,
+            content="working",
+            tool_calls=(
+                ToolCall(
+                    id="a",
+                    index=0,
+                    function=FunctionCall(name="stub_tool", arguments="{}"),
+                ),
+                ToolCall(
+                    id="b",
+                    index=1,
+                    function=FunctionCall(name="stub_tool", arguments="{}"),
+                ),
+            ),
+        )
+    )
+    slot_before_repair = len(agent_loop.messages)
+
+    events = [e async for e in agent_loop.act("second")]
+
+    user_event = next(e for e in events if isinstance(e, UserMessageEvent))
+    assert user_event.message_index is not None
+    assert user_event.message_index == slot_before_repair + 2  # two shims first
+    landed = agent_loop.messages[user_event.message_index]
+    assert landed.role == Role.user and landed.content == "second"
+    assert [
+        m.role
+        for m in agent_loop.messages[slot_before_repair : user_event.message_index]
+    ] == [Role.tool, Role.tool]
+    assert [cp.message_index for cp in agent_loop.rewind_manager._checkpoints] == [
+        user_event.message_index
+    ]
+    assert agent_loop.rewind_manager.get_rewindable_messages()[-1] == (
+        user_event.message_index,
+        "second",
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_message_index_on_a_clean_tail_is_the_next_slot() -> None:
+    agent_loop = make_agent_loop(backend=FakeBackend([[mock_llm_chunk(content="hi")]]))
+    slot = len(agent_loop.messages)
+    events = [e async for e in agent_loop.act("hello")]
+    user_event = next(e for e in events if isinstance(e, UserMessageEvent))
+    assert user_event.message_index == slot
+    assert agent_loop.messages[slot].content == "hello"
+    assert [cp.message_index for cp in agent_loop.rewind_manager._checkpoints] == [slot]
