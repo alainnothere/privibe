@@ -382,6 +382,18 @@ class SearchReplace(
         current_content = content
 
         for i, (search, replace) in enumerate(blocks, 1):
+            if search not in current_content and not search.isascii():
+                ascii_search = asciify(search).text
+                idx = current_content.find(ascii_search) if ascii_search else -1
+                if idx >= 0:
+                    line_no = current_content.count("\n", 0, idx) + 1
+                    warnings.append(
+                        f"block {i} SEARCH matched at line {line_no} via its ASCII "
+                        "transliteration (the file stores the ASCII form because "
+                        "writes transliterate by default; pass allow_unicode=true "
+                        "to write non-ASCII characters verbatim as UTF-8)"
+                    )
+                    search = ascii_search
             if search not in current_content:
                 context = SearchReplace._find_search_context(current_content, search)
                 fuzzy_context = SearchReplace._find_fuzzy_match_context(

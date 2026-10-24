@@ -38,6 +38,7 @@ import sys
 IMPORTANT:
 
 - The SEARCH text must match EXACTLY (including whitespace and indentation). Line endings are matched loosely and written back to match the file; you never need to think about CRLF vs LF
+- If a search fails and your SEARCH text contains non-ASCII characters (em-dash —, curly quotes “ ”), the file may store their ASCII forms (hyphen -, straight quotes) — writes transliterate by default. Retry with the ASCII form, or re-read the region and copy the stored text exactly.
 - The SEARCH text must appear exactly once in the file - if it appears multiple times, the tool will error
 - Use at least 5 equals signs (=====) between SEARCH and REPLACE sections
 - Each search/replace block is applied in order, so later blocks see the results of earlier ones

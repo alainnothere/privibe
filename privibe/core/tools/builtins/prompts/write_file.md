@@ -7,3 +7,4 @@ Use `write_file` to create a new file, or to overwrite an existing one by settin
 - Never write new files unless the task requires it; prefer modifying existing ones.
 - Never proactively create documentation files (*.md) or READMEs unless explicitly requested.
 - Line endings, encoding and BOM are handled by the tool: a new file follows the repo's conventions (.gitattributes, .editorconfig, sibling files), an overwrite keeps the file's own. Write content with plain newlines and do not inspect or correct any of this yourself. Set `newline` or `encoding` only when you know something the repo does not.
+- Non-ASCII characters you write (em-dashes —, curly quotes) are stored as ASCII (hyphens -, straight quotes) by default and reported per line — remember what was stored, not what you typed.
