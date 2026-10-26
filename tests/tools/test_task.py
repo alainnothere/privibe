@@ -301,3 +301,54 @@ class TestTaskToolPermissionInheritance:
             )
 
         loop.add_session_rule.assert_not_called()
+
+
+class TestTaskToolNannySharing:
+    """A subagent borrows the parent's nanny the way it borrows the approval
+    callback: one reviewer conversation per session.
+    """
+
+    @pytest.mark.asyncio
+    async def test_subagent_gets_the_parent_nanny(self, task_tool: Task) -> None:
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        nanny = MagicMock(name="nanny")
+        ctx = InvokeContext(
+            tool_call_id="test-call-id",
+            agent_manager=AgentManager(lambda: config),
+            nanny=nanny,
+        )
+
+        async def mock_act(task: str):
+            yield AssistantEvent(content="done")
+
+        loop = MagicMock()
+        loop.act = mock_act
+        loop.messages = [LLMMessage(role=Role.assistant, content="done")]
+        with patch("privibe.core.tools.builtins.task.AgentLoop", return_value=loop):
+            await collect_result(
+                task_tool.run(TaskArgs(task="explore", agent="explore"), ctx)
+            )
+        loop.set_nanny.assert_called_once_with(nanny)
+
+    @pytest.mark.asyncio
+    async def test_no_nanny_means_no_call(self, task_tool: Task) -> None:
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        ctx = InvokeContext(
+            tool_call_id="test-call-id", agent_manager=AgentManager(lambda: config)
+        )
+
+        async def mock_act(task: str):
+            yield AssistantEvent(content="done")
+
+        loop = MagicMock()
+        loop.act = mock_act
+        loop.messages = [LLMMessage(role=Role.assistant, content="done")]
+        with patch("privibe.core.tools.builtins.task.AgentLoop", return_value=loop):
+            await collect_result(
+                task_tool.run(TaskArgs(task="explore", agent="explore"), ctx)
+            )
+        loop.set_nanny.assert_not_called()

@@ -608,6 +608,11 @@ class OutputFormat(StrEnum):
     STREAMING = auto()
 
 
+# (tool_name, args, tool_call_id, required_permissions) -> (response, feedback).
+# When a nanny reviewed the call and did not approve it, the agent loop also
+# passes `review=` (a privibe.core.nanny.NannyReview) as a keyword argument;
+# a callback that serves a nanny-enabled loop must accept it. Without a
+# nanny the call is exactly the four positional arguments.
 type ApprovalCallback = Callable[
     [str, BaseModel, str, list[RequiredPermission] | None],
     Awaitable[tuple[ApprovalResponse, str | None]],

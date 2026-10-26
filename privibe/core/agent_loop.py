@@ -53,6 +53,12 @@ from privibe.core.middleware import (
     plan_agent_exit,
     tool_call_key,
 )
+from privibe.core.nanny import (
+    NannyAskRequest,
+    NannyManager,
+    present_call,
+    present_permissions,
+)
 from privibe.core.plan_session import PlanSession
 from privibe.core.prompts import UtilityPrompt
 from privibe.core.rewind import RewindManager
@@ -287,6 +293,12 @@ class AgentLoop:
         self.stats = AgentStats()
         self.approval_callback: ApprovalCallback | None = None
         self.user_input_callback: UserInputCallback | None = None
+        # The nanny reviews approval prompts before they reach the callback.
+        # A loop owns the nanny it created (the main TUI/console loop); a
+        # subagent or worker only borrows the parent's and must not move its
+        # files on its own session resets.
+        self.nanny: NannyManager | None = None
+        self._nanny_owner: bool = False
         self.entrypoint_metadata = entrypoint_metadata
         self.session_id = str(uuid4())
 
@@ -392,6 +404,10 @@ class AgentLoop:
                 meta=MessageMeta(submitted_at=time.time()),
             )
             self.messages.add(msg)
+            if self.nanny is not None:
+                self.nanny.note_user_prompt(
+                    text, self.agent_profile.name, steering=True
+                )
             events.append(
                 UserMessageEvent(
                     content=text,
@@ -492,6 +508,10 @@ class AgentLoop:
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         self.approval_callback = callback
+
+    def set_nanny(self, nanny: NannyManager | None, *, owner: bool = False) -> None:
+        self.nanny = nanny
+        self._nanny_owner = owner and nanny is not None
 
     def set_user_input_callback(self, callback: UserInputCallback) -> None:
         self.user_input_callback = callback
@@ -873,6 +893,8 @@ class AgentLoop:
         answer_only: bool = False,
     ) -> AsyncGenerator[BaseEvent, None]:
         self._answer_only_turn = answer_only
+        if self.nanny is not None:
+            self.nanny.note_user_prompt(msg, self.agent_profile.name)
         self._cancel_preflight_warmup()
         self._drop_dangling_step_budget_warning()
         self._act_call_count += 1
@@ -1335,6 +1357,7 @@ class AgentLoop:
                     skill_manager=self.skill_manager,
                     undo_stack=self.undo_stack,
                     session_rules=self._session_rules,
+                    nanny=self.nanny,
                 ),
                 **tool_call.args_dict,
             ):
@@ -1758,6 +1781,10 @@ class AgentLoop:
                 self.format_handler.create_tool_response_message(tool_call, text)
             ).model_copy(update={"meta": meta})
         )
+        if self.nanny is not None and status != "skipped":
+            self.nanny.note_outcome(
+                tool_call.call_id, tool_call.tool_name, status, self.agent_profile.name
+            )
 
     def _tool_failure_event(
         self,
@@ -2130,6 +2157,11 @@ class AgentLoop:
                 approval_type=ToolPermission.ASK,
                 feedback="Tool execution not permitted.",
             )
+        nanny = self.nanny
+        if nanny is not None and not any(rp.escalated for rp in required_permissions):
+            return await self._ask_approval_via_nanny(
+                nanny, tool_name, args, tool_call_id, required_permissions
+            )
         asked_at = time.time()
         response, feedback = await self.approval_callback(
             tool_name, args, tool_call_id, required_permissions
@@ -2150,9 +2182,85 @@ class AgentLoop:
             approval_answered_at=answered_at,
         )
 
+    def _nanny_call_context(self, tool_call_id: str) -> tuple[str, list[str]]:
+        """The worker's visible text before the call and its sibling calls in
+        the same assistant message, for the nanny's ask.
+        """
+        for msg in reversed(self.messages[:]):
+            if msg.role != Role.assistant or not msg.tool_calls:
+                continue
+            if not any(tc.id == tool_call_id for tc in msg.tool_calls):
+                continue
+            siblings: list[str] = []
+            for tc in msg.tool_calls:
+                if tc.id == tool_call_id or tc.function is None:
+                    continue
+                arguments = (tc.function.arguments or "").replace("\n", " ")
+                if len(arguments) > 80:  # noqa: PLR2004
+                    arguments = arguments[:80] + "..."
+                siblings.append(f"{tc.function.name} {arguments}".strip())
+            return msg.content or "", siblings
+        return "", []
+
+    async def _ask_approval_via_nanny(
+        self,
+        nanny: NannyManager,
+        tool_name: str,
+        args: BaseModel,
+        tool_call_id: str,
+        required_permissions: list[RequiredPermission],
+    ) -> ToolDecision:
+        """The nanny path of _ask_approval. An approval executes the call
+        without the callback; anything else reaches the callback with the
+        review attached (`review=`), under the nanny lock, so the human can
+        talk to the nanny before deciding.
+        """
+        assert self.approval_callback is not None
+        worker_text, siblings = self._nanny_call_context(tool_call_id)
+        tool_class = self.tool_manager.available_tools.get(tool_name)
+        request = NannyAskRequest(
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            agent=self.agent_profile.name,
+            presentation=present_call(
+                tool_name, tool_class, args, write_full_lines=nanny.write_full_lines
+            ),
+            permissions_text=present_permissions(required_permissions),
+            worker_text=worker_text,
+            siblings=siblings,
+        )
+        asked_at = time.time()
+        async with nanny.review(request) as review:
+            if review.approved:
+                response, feedback = ApprovalResponse.YES, None
+            else:
+                response, feedback = await self.approval_callback(
+                    tool_name, args, tool_call_id, required_permissions, review=review
+                )
+                review.human_decided(response, feedback)
+        answered_at = time.time()
+
+        match response:
+            case ApprovalResponse.YES:
+                verdict = ToolExecutionResponse.EXECUTE
+            case _:
+                verdict = ToolExecutionResponse.SKIP
+
+        return ToolDecision(
+            verdict=verdict,
+            approval_type=ToolPermission.ASK,
+            feedback=feedback,
+            approval_asked_at=asked_at,
+            approval_answered_at=answered_at,
+        )
+
     def _reset_session(self) -> None:
         self.session_id = str(uuid4())
         self.session_logger.reset_session(self.session_id)
+        if self.nanny is not None and self._nanny_owner:
+            self.nanny.on_main_session_reset(
+                self.session_logger.session_dir, self.session_id
+            )
         # Covers the rewind path, which suppresses message reset hooks but ends
         # by calling _reset_session; stale undo versions must not survive it.
         self.undo_stack.clear()

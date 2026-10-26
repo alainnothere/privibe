@@ -31,6 +31,13 @@ from privibe.core.config import (
     cycle_preview_lines,
     load_dotenv_values,
 )
+from privibe.core.nanny import (
+    NannyConfigError,
+    NannyDecision,
+    NannyListener,
+    NannyManager,
+    NannyReview,
+)
 from privibe.core.session.session_loader import SessionLoader
 from privibe.core.skills.parser import SkillParseError
 from privibe.core.skills.render import load_skill_content
@@ -132,6 +139,7 @@ Available commands:
   /llm-calls-per-turn  Cycle the LLM-call budget per message (30 / 60 / 90)
   /ascii     Write policy for non-ASCII in model-written content: /ascii on|off (toggles without an argument)
   /effort    Cycle reasoning effort stamped on new messages (low / medium / xhigh)
+  /ensure-commands-safety  Nanny: a second model that answers approval prompts for you; /ensure-commands-safety <alias>|off|log, or no argument for status
   /exit      Exit (also /quit, or Ctrl+D)
 
 Anything else is sent to the agent. /name runs a skill if one matches.
@@ -139,7 +147,7 @@ Ctrl+C interrupts the agent while it is responding.
 """
 
 
-class ConsoleUI:
+class ConsoleUI(NannyListener):
     """Interactive console frontend on the AgentLoop event seam.
 
     Reads user input line by line, feeds it to AgentLoop.act(), prints
@@ -158,17 +166,21 @@ class ConsoleUI:
         # ends in a blank line; the input prompt then skips its own.
         self._after_separator = False
         self._prompt_session = None  # created lazily; needs a terminal
+        # The nanny reviewing approval prompts, when nanny_model is set.
+        self._nanny: NannyManager | None = None
 
     async def run(
         self, initial_prompt: str | None = None, show_resume_picker: bool = False
     ) -> None:
         self.agent_loop.set_approval_callback(self._approval_callback)
         self.agent_loop.set_user_input_callback(self._user_input_callback)
+        self._start_nanny_from_config()
 
         if show_resume_picker:
             await self._pick_and_resume_session()
         elif len(self.agent_loop.messages) > 1:
             # History restored before we started (--resume <id> / --continue).
+            self._nanny_follow_resume()
             self._print_transcript(_REPLAY_TAIL_ENTRIES)
 
         if initial_prompt:
@@ -501,12 +513,13 @@ class ConsoleUI:
     # Approval callback
     # ------------------------------------------------------------------
 
-    async def _approval_callback(
+    async def _approval_callback(  # noqa: PLR0911, PLR0912
         self,
         tool_name: str,
         args: BaseModel,
         tool_call_id: str,
         required_permissions: list[RequiredPermission] | None,
+        review: NannyReview | None = None,
     ) -> tuple[ApprovalResponse, str | None]:
         # Mirror the TUI: auto-approve only when configured AND the tool is
         # enabled in the main agent, so subagents respect tool restrictions.
@@ -521,39 +534,81 @@ class ConsoleUI:
         self._close_block()
         print(f"\n[approval needed] {tool_name}")
         self._print_approval_details(tool_name, args, required_permissions)
+        if review is not None:
+            self._print_nanny_review(review)
+
+        if review is None:
+            question = "Allow? [y]es once / [a]lways / [n]o / [d]eny for session: "
+            valid = "y, a, n, or d"
+        else:
+            question = (
+                "Allow? [y]es once / [a]lways / [n]o / [d]eny for session / "
+                "[r]efuse with the nanny's reason / [t]alk to the nanny: "
+            )
+            valid = "y, a, n, d, r, or t"
 
         while True:
             try:
-                reply = (
-                    await self._read_reply(
-                        "Allow? [y]es once / [a]lways / [n]o / [d]eny for session: "
-                    )
-                ).lower()
+                reply = (await self._read_reply(question)).lower()
             except (KeyboardInterrupt, EOFError):
                 feedback = str(
                     get_user_cancellation_message(
                         CancellationReason.OPERATION_CANCELLED
                     )
                 )
+                if review is not None:
+                    review.human_choice = "cancelled"
                 return (ApprovalResponse.NO, feedback)
 
             match reply:
                 case "y" | "yes":
+                    if review is not None:
+                        review.human_choice = "allow"
                     return (ApprovalResponse.YES, None)
                 case "a" | "always":
                     self.agent_loop.approve_always(tool_name, required_permissions)
+                    if review is not None:
+                        review.human_choice = "allow_always"
                     return (ApprovalResponse.YES, None)
                 case "n" | "no":
                     feedback = await self._deny_feedback()
+                    if review is not None:
+                        review.human_choice = "no"
                     return (ApprovalResponse.NO, feedback)
                 case "d" | "deny":
                     self.agent_loop.deny_always(tool_name, required_permissions)
+                    if review is not None:
+                        review.human_choice = "deny_always"
                     return (
                         ApprovalResponse.NO,
                         "Denied for this session. Do not attempt this again.",
                     )
+                case "r" | "refuse" if review is not None:
+                    review.human_choice = "refuse"
+                    return (ApprovalResponse.NO, review.refusal_feedback())
+                case "t" | "talk" if review is not None:
+                    await self._talk_to_nanny(review)
                 case _:
-                    print("Please answer y, a, n, or d.")
+                    print(f"Please answer {valid}.")
+
+    def _print_nanny_review(self, review: NannyReview) -> None:
+        if review.failed:
+            print(f"  [nanny] {review.notice}")
+            return
+        print(f"  [nanny] refused: {review.reason}")
+        if review.notice:
+            print(f"  [nanny] {review.notice}")
+
+    async def _talk_to_nanny(self, review: NannyReview) -> None:
+        try:
+            text = await self._read_reply("To the nanny: ")
+        except (KeyboardInterrupt, EOFError):
+            return
+        if not text:
+            return
+        reply = await review.talk(text)
+        for line in reply.splitlines() or [""]:
+            print(f"  [nanny] {line}")
 
     def _print_approval_details(
         self,
@@ -725,6 +780,8 @@ class ConsoleUI:
                 self._command_ascii(parts[1] if len(parts) > 1 else "")
             case "/effort":
                 self._command_effort()
+            case "/ensure-commands-safety":
+                await self._command_nanny(parts[1] if len(parts) > 1 else "")
             case "/replay":
                 self._command_replay()
             case _:
@@ -791,6 +848,113 @@ class ConsoleUI:
         VibeConfig.save_updates({"max_llm_calls_per_turn": new_value})
         self.agent_loop.refresh_config()
         print(f"LLM-call budget set to {new_value} calls per turn.")
+
+    # ------------------------------------------------------------------
+    # Nanny
+    # ------------------------------------------------------------------
+
+    def _start_nanny_from_config(self) -> None:
+        """Build the nanny when nanny_model is set in the config file."""
+        base_config = getattr(self.agent_loop, "base_config", None)
+        if base_config is None or not getattr(base_config, "nanny_model", None):
+            return
+        try:
+            self._attach_nanny(NannyManager.for_loop(self.agent_loop))
+        except NannyConfigError as exc:
+            print(f"[nanny] not started: {exc}")
+
+    def _attach_nanny(self, nanny: NannyManager) -> None:
+        self._nanny = nanny
+        nanny.add_listener(self)
+        self.agent_loop.set_nanny(nanny, owner=True)
+        same = (
+            " (the same model as the worker)"
+            if (nanny.model_alias == str(self.agent_loop.config.active_model))
+            else ""
+        )
+        print(f"[nanny] reviewing approval prompts with {nanny.model_alias}{same}")
+
+    async def _detach_nanny(self) -> None:
+        if self._nanny is None:
+            return
+        await self._nanny.wait_idle()
+        self._nanny.remove_listener(self)
+        self.agent_loop.set_nanny(None)
+        self._nanny = None
+
+    def _nanny_follow_resume(self) -> None:
+        """After a session restore, reload the nanny transcript stored
+        beside it, when there is one.
+        """
+        if self._nanny is None:
+            return
+        session_dir = self.agent_loop.session_logger.session_dir
+        if session_dir is None:
+            return
+        if self._nanny.resume(session_dir, self.agent_loop.session_id):
+            print("[nanny] resumed its conversation for this session")
+
+    def on_nanny_decision(self, decision: NannyDecision) -> None:
+        # Refusals were already shown inside the approval prompt.
+        if decision.approved_by_nanny:
+            print(f"[nanny approved] {decision.tool_name}: {decision.reason}")
+
+    async def _command_nanny(self, arg: str) -> None:
+        arg = arg.strip()
+        config = self.agent_loop.config
+        if not arg:
+            if self._nanny is None:
+                print(
+                    "Nanny: off. /ensure-commands-safety <alias> turns it on; aliases:"
+                )
+                for model in config.models:
+                    print(f"   {model.alias}")
+            else:
+                print(
+                    f"Nanny: on, model {self._nanny.model_alias}, "
+                    f"{len(self._nanny.decisions)} decision(s) this session."
+                )
+                print("/ensure-commands-safety off | <alias> | log")
+            return
+        if arg.lower() == "off":
+            if self._nanny is None:
+                print("Nanny is already off.")
+                return
+            await self._detach_nanny()
+            VibeConfig.save_updates({"nanny_model": None})
+            print("[nanny] off")
+            return
+        if arg.lower() == "log":
+            if self._nanny is None or not self._nanny.decisions:
+                print("No nanny decisions this session.")
+                return
+            for decision in self._nanny.decisions[-20:]:
+                human = (
+                    f" -> you: {decision.human_decision}"
+                    if decision.human_decision
+                    else ""
+                )
+                print(
+                    f"  {decision.verdict:7} {decision.tool_name} {decision.tool_call_id[:8]}: "
+                    f"{decision.reason}{human}"
+                )
+            return
+        alias = arg
+        if alias not in {m.alias for m in config.models}:
+            print(f"Unknown model alias: {alias}")
+            return
+        try:
+            if self._nanny is None:
+                VibeConfig.save_updates({"nanny_model": alias})
+                self.agent_loop.refresh_config()
+                self._attach_nanny(NannyManager.for_loop(self.agent_loop, alias=alias))
+            else:
+                await self._nanny.change_model(alias)
+                VibeConfig.save_updates({"nanny_model": alias})
+                print(f"[nanny] now reviewing with {alias}")
+        except NannyConfigError as exc:
+            VibeConfig.save_updates({"nanny_model": None})
+            print(f"[nanny] not started: {exc}")
 
     async def _command_model(self) -> None:
         config = self.agent_loop.config
@@ -969,6 +1133,7 @@ class ConsoleUI:
         self.agent_loop.session_id = session_id
         self.agent_loop.session_logger.resume_existing_session(session_id, session_path)
         self.agent_loop.messages.restore(session_path)
+        self._nanny_follow_resume()
         print(
             f"Resumed session {session_id} "
             f"with {len(self.agent_loop.messages)} messages."

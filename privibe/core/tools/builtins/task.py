@@ -142,6 +142,8 @@ class Task(
 
         if ctx and ctx.approval_callback:
             subagent_loop.set_approval_callback(ctx.approval_callback)
+        if ctx.nanny is not None:
+            subagent_loop.set_nanny(ctx.nanny)
 
         # Inherit the parent's session-approved rules so the subagent doesn't
         # re-prompt for access the user already granted this session. Rules are

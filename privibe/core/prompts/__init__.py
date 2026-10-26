@@ -73,6 +73,7 @@ class Prompt(StrEnum):
 class SystemPrompt(Prompt):
     CLI = auto()
     EXPLORE = auto()
+    NANNY = auto()
     ORCHESTRATE = auto()
     TESTS = auto()
 
@@ -83,6 +84,10 @@ class UtilityPrompt(Prompt):
     CHAT_REMINDER = auto()
     COMPACT = auto()
     DANGEROUS_DIRECTORY = auto()
+    NANNY_ASK = auto()
+    NANNY_HEADER = auto()
+    NANNY_MORE = auto()
+    NANNY_TALK = auto()
     PLAN_EXIT = auto()
     PLAN_REMINDER = auto()
     PROJECT_CONTEXT = auto()

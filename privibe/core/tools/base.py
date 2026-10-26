@@ -30,6 +30,7 @@ from privibe.core.utils.io import read_safe
 
 if TYPE_CHECKING:
     from privibe.core.agents.manager import AgentManager
+    from privibe.core.nanny.manager import NannyManager
     from privibe.core.rewind.undo_stack import FileUndoStack
     from privibe.core.skills.manager import SkillManager
     from privibe.core.tools.mcp_sampling import MCPSamplingHandler
@@ -64,6 +65,10 @@ class InvokeContext:
     # session. Each rule is scoped by (tool_name, scope, pattern), so it only
     # ever applies to a tool the subagent actually has.
     session_rules: list[ApprovedRule] = field(default_factory=list)
+    # The parent's nanny (reviewer of approval prompts), shared the same way
+    # the approval callback is, so a subagent's or worker's asks go through
+    # the one nanny conversation of the session. None when the nanny is off.
+    nanny: NannyManager | None = field(default=None)
 
 
 class ToolError(Exception):

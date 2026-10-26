@@ -138,6 +138,13 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
   write up and stop (`/llm-calls-per-turn`), and an `/llm-debug` dump toggle.
 - Subagent work is preserved when you cancel mid-execution.
 
+### The nanny: a second model answers approval prompts for you
+
+Pick any configured model as the reviewer with `/ensure-commands-safety`. It
+approves routine calls on your behalf and sends you everything it refuses,
+with its reason; you can talk to it before deciding. Details, config keys and
+the editable prompt files are in [docs/nanny.md](docs/nanny.md).
+
 ### Skills, config, packaging
 - Bundled sample skill (lets-document) with auto-discovery and load-error
   surfacing.

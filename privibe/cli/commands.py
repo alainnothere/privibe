@@ -161,6 +161,12 @@ class CommandRegistry:
                 handler="_select_ascii",
                 takes_args=True,
             ),
+            "ensure_commands_safety": Command(
+                aliases=frozenset(["/ensure-commands-safety"]),
+                description="Nanny: a second model that answers approval prompts for you; /ensure-commands-safety <alias>|off|log, or pick from a menu",
+                handler="_show_nanny_settings",
+                takes_args=True,
+            ),
             "list_tools": Command(
                 aliases=frozenset(["/list-tools"]),
                 description="Show active tools for the current session",
