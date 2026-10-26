@@ -121,7 +121,7 @@ class Task(
         except ValueError as e:
             raise ToolError(f"Unknown agent: {args.agent}") from e
 
-        if agent_profile.agent_type != AgentType.SUBAGENT:
+        if agent_profile.agent_type != AgentType.SUBAGENT or agent_profile.internal:
             raise ToolError(
                 f"Agent '{args.agent}' is a {agent_profile.agent_type.value} agent. "
                 f"Only subagents can be used with the task tool. "

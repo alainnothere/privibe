@@ -114,6 +114,30 @@ class ProjectContextConfig(BaseSettings):
     timeout_seconds: float = 2.0
 
 
+class OrchestrateConfig(BaseSettings):
+    """Knobs for the orchestrate tool's manager/worker loop.
+
+    Every size is in characters and every cap is enforced by the harness when
+    it writes the ledger, so no file feeding a prompt grows across rounds.
+    Efforts are the per-message reasoning_effort stamps (low / medium / xhigh);
+    they only reach the wire on providers with per_message_reasoning_effort.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    max_rounds: int = Field(default=10, ge=1)
+    plan_chars: int = Field(default=4000, ge=500)
+    notes_chars: int = Field(default=8000, ge=500)
+    bundle_bytes: int = Field(default=200_000, ge=1000)
+    verifier_output_chars: int = Field(default=3000, ge=200)
+    worker_llm_calls: int = Field(default=12, ge=1)
+    verifier_timeout_s: float = Field(default=300.0, gt=0)
+    effort_plan: str = "low"
+    effort_brainstorm: str = "medium"
+    effort_manage: str = "low"
+    effort_execute: str = "medium"
+
+
 class PathConfig(BaseSettings):
     """Path translation behaviour for cross-dialect file tools.
 
@@ -647,6 +671,7 @@ class VibeConfig(BaseSettings):
     )
 
     project_context: ProjectContextConfig = Field(default_factory=ProjectContextConfig)
+    orchestrate: OrchestrateConfig = Field(default_factory=OrchestrateConfig)
     session_logging: SessionLoggingConfig = Field(default_factory=SessionLoggingConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
     tools: dict[str, dict[str, Any]] = Field(default_factory=dict)

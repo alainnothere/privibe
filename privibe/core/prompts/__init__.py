@@ -73,6 +73,7 @@ class Prompt(StrEnum):
 class SystemPrompt(Prompt):
     CLI = auto()
     EXPLORE = auto()
+    ORCHESTRATE = auto()
     TESTS = auto()
 
 
