@@ -41,6 +41,7 @@ class BuiltinAgentName(StrEnum):
     ACCEPT_EDITS = "accept-edits"
     AUTO_APPROVE = "auto-approve"
     EXPLORE = "explore"
+    ORCHESTRATE_WORKER = "orchestrate-worker"
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,9 @@ class AgentProfile:
     agent_type: AgentType = AgentType.AGENT
     overrides: dict[str, Any] = field(default_factory=dict)
     install_required: bool = False
+    # Spawned only by harness code (the orchestrate tool), never by the model:
+    # left out of the system prompt's subagent list and refused by `task`.
+    internal: bool = False
 
     def apply_to_config(self, base: VibeConfig) -> VibeConfig:
         from privibe.core.config import VibeConfig as VC
@@ -184,10 +188,47 @@ EXPLORE = AgentProfile(
     overrides={"enabled_tools": ["grep", "read_file", "hashed_read", "find_symbol"], "system_prompt_id": "explore"},
 )
 
+# One profile for every orchestrate role (manager, brainstorm, worker). The
+# role lives in the tail of the user message, not in the system prompt, so
+# all roles share a single KV-cache prefix. The prompt-size flags are off so
+# message 0 depends only on the prompt file and the tools array. Scope
+# (which paths the workers may edit) is per job, so the orchestrate tool
+# merges it into the base config's `tools` table; this profile must not set
+# `tools` or it would win that merge.
+ORCHESTRATE_WORKER = AgentProfile(
+    name=BuiltinAgentName.ORCHESTRATE_WORKER,
+    display_name="Orchestrate Worker",
+    description="Internal role agent for the orchestrate tool",
+    safety=AgentSafety.DESTRUCTIVE,
+    agent_type=AgentType.SUBAGENT,
+    internal=True,
+    overrides={
+        "enabled_tools": [
+            "grep",
+            "read_file",
+            "hashed_read",
+            "find_symbol",
+            "write_file",
+            "search_replace",
+            "hashed_replace_line",
+            "hashed_replace_block",
+            "hashed_delete_line",
+            "hashed_delete_block",
+            "restore_file",
+            "bash",
+        ],
+        "system_prompt_id": "orchestrate",
+        "include_project_context": False,
+        "include_commit_signature": False,
+        "include_model_info": False,
+    },
+)
+
 BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.DEFAULT: DEFAULT,
     BuiltinAgentName.PLAN: PLAN,
     BuiltinAgentName.ACCEPT_EDITS: ACCEPT_EDITS,
     BuiltinAgentName.AUTO_APPROVE: AUTO_APPROVE,
     BuiltinAgentName.EXPLORE: EXPLORE,
+    BuiltinAgentName.ORCHESTRATE_WORKER: ORCHESTRATE_WORKER,
 }

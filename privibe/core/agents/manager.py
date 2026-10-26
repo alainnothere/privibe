@@ -148,7 +148,7 @@ class AgentManager:
         return [
             a
             for a in self.available_agents.values()
-            if a.agent_type == AgentType.SUBAGENT
+            if a.agent_type == AgentType.SUBAGENT and not a.internal
         ]
 
     def get_agent_order(self) -> list[str]:

@@ -182,6 +182,8 @@ class ToolManager:
         runtime_available = {
             name: cls for name, cls in self._available.items() if cls.is_available()
         }
+        if not self._config.orchestrate.enabled:
+            runtime_available.pop("orchestrate", None)
 
         if self._config.enabled_tools:
             return {

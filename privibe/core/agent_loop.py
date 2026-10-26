@@ -223,6 +223,10 @@ class AgentLoop:
     # time.time() of the most recent LLM request; stamped on ToolCallEvents so
     # the UI can show when the call was asked for.
     _llm_requested_at: float | None = None
+    # An act(answer_only=True) turn: every tool call in it is refused, for as
+    # many LLM calls as the turn takes. Used by the orchestrate loop for its
+    # manager and brainstorm calls, which must answer in text.
+    _answer_only_turn: bool = False
 
     def __init__(
         self,
@@ -862,8 +866,13 @@ class AgentLoop:
             logger.debug("debug dump failed: %s", exc)
 
     async def act(
-        self, msg: str, client_message_id: str | None = None
+        self,
+        msg: str,
+        client_message_id: str | None = None,
+        *,
+        answer_only: bool = False,
     ) -> AsyncGenerator[BaseEvent, None]:
+        self._answer_only_turn = answer_only
         self._cancel_preflight_warmup()
         self._drop_dangling_step_budget_warning()
         self._act_call_count += 1
@@ -1131,7 +1140,7 @@ class AgentLoop:
             self._tools_suspended_for_step = False
             return
 
-        if self._tools_suspended_for_step:
+        if self._tools_suspended_for_step or self._answer_only_turn:
             self._tools_suspended_for_step = False
             async for event in self._refuse_tool_calls(resolved):
                 yield self._with_timing(event, last_message)
@@ -1488,11 +1497,18 @@ class AgentLoop:
                 requested_at=self._llm_requested_at,
             )
             self.stats.tool_calls_rejected += 1
-            skip_reason = (
-                f"Not executed: the step budget for this message is spent and "
-                f"this reply was supposed to be your written answer, not a "
-                f"{tc.tool_name} call. The turn ends here."
-            )
+            if self._answer_only_turn:
+                skip_reason = (
+                    f"Not executed: this call takes no tools. Answer in text "
+                    f"in the format your role asks for, not with a "
+                    f"{tc.tool_name} call."
+                )
+            else:
+                skip_reason = (
+                    f"Not executed: the step budget for this message is spent "
+                    f"and this reply was supposed to be your written answer, "
+                    f"not a {tc.tool_name} call. The turn ends here."
+                )
             self._handle_tool_response(tc, skip_reason, "skipped")
             yield ToolResultEvent(
                 tool_name=tc.tool_name,
