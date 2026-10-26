@@ -125,3 +125,13 @@ class TestCommandRegistry:
                 f"command '{name}' -> missing handler '{cmd.handler}' on VibeApp"
             )
 
+
+
+def test_ensure_commands_safety_is_registered() -> None:
+    registry = CommandRegistry()
+    cmd = registry.find_command("/ensure-commands-safety")
+    assert cmd is not None
+    assert cmd.handler == "_show_nanny_settings"
+    assert cmd.takes_args
+    command, args = registry.parse_command("/ensure-commands-safety off")
+    assert command is cmd and args == "off"

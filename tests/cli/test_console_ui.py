@@ -792,3 +792,78 @@ def test_exit_without_saved_session_prints_no_hint(
     monkeypatch.setattr(ConsoleUI, "run", fake_run)
     run_console_ui(loop)  # type: ignore[arg-type]
     assert "--resume" not in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------------
+# Nanny-reviewed approvals
+# ----------------------------------------------------------------------
+
+
+class StubReview:
+    """What ConsoleUI reads from a NannyReview: reason, notices, talk()."""
+
+    def __init__(
+        self, reason: str = "deletes the build dir", failed: bool = False
+    ) -> None:
+        self.reason = reason
+        self.failed = failed
+        self.notice = "nanny did not answer" if failed else None
+        self.human_choice: str | None = None
+        self.talked: list[str] = []
+
+    def refusal_feedback(self) -> str:
+        return f"Refused by the reviewer: {self.reason}"
+
+    async def talk(self, text: str) -> str:
+        self.talked.append(text)
+        return "Understood, only this once."
+
+
+@pytest.mark.asyncio
+async def test_nanny_refuse_option_returns_the_reason_untagged(
+    ui: ConsoleUI, capsys
+) -> None:
+    review = StubReview()
+    queue_replies(ui, ["r"])
+    response, feedback = await ui._approval_callback(
+        "bash", ToolArgs(), "t1", None, review=review
+    )
+    assert response is ApprovalResponse.NO
+    assert feedback == "Refused by the reviewer: deletes the build dir"
+    assert review.human_choice == "refuse"
+    assert "[nanny] refused: deletes the build dir" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_nanny_talk_then_allow(ui: ConsoleUI, capsys) -> None:
+    review = StubReview()
+    queue_replies(ui, ["t", "it is the temp dir, allowed just this once", "y"])
+    response, _ = await ui._approval_callback(
+        "bash", ToolArgs(), "t1", None, review=review
+    )
+    assert response is ApprovalResponse.YES
+    assert review.talked == ["it is the temp dir, allowed just this once"]
+    assert review.human_choice == "allow"
+    assert "[nanny] Understood, only this once." in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_nanny_options_are_rejected_without_a_review(
+    ui: ConsoleUI, capsys
+) -> None:
+    queue_replies(ui, ["r", "t", "y"])
+    response, _ = await ui._approval_callback("bash", ToolArgs(), "t1", None)
+    assert response is ApprovalResponse.YES
+    assert capsys.readouterr().out.count("Please answer y, a, n, or d.") == 2
+
+
+@pytest.mark.asyncio
+async def test_nanny_failure_notice_is_shown(ui: ConsoleUI, capsys) -> None:
+    review = StubReview(failed=True)
+    queue_replies(ui, ["n", ""])
+    response, _ = await ui._approval_callback(
+        "bash", ToolArgs(), "t1", None, review=review
+    )
+    assert response is ApprovalResponse.NO
+    assert review.human_choice == "no"
+    assert "[nanny] nanny did not answer" in capsys.readouterr().out

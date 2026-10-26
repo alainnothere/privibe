@@ -8,7 +8,11 @@ from weakref import WeakKeyDictionary
 from pydantic import BaseModel, ValidationError
 from textual.widget import Widget
 
-from privibe.cli.textual_ui.widgets.messages import AssistantMessage, UserMessage
+from privibe.cli.textual_ui.widgets.messages import (
+    AssistantMessage,
+    NannyMessage,
+    UserMessage,
+)
 from privibe.cli.textual_ui.widgets.tools import ToolCallMessage, ToolResultMessage
 from privibe.core.types import (
     LLMMessage,
@@ -150,8 +154,13 @@ def build_history_widgets(
     tools_collapsed: bool,
     history_widget_indices: WeakKeyDictionary[Widget, int],
     tool_classes: ToolClasses | None = None,
+    nanny_decisions: Mapping[str, Any] | None = None,
 ) -> list[Widget]:
     """Widgets for a batch of stored messages (resume and load-more).
+
+    `nanny_decisions` maps a tool_call_id to the nanny's stored decision on
+    it; a NannyMessage is placed right after that call's widget, rebuilt
+    from the sidecar at render time, never from either conversation.
 
     Tool calls and results are rebuilt into the same events the live path
     mounts, so the same adapter and per-tool widgets draw them. A call
@@ -201,6 +210,15 @@ def build_history_widgets(
                             call_widgets[tool_call.id] = widget
                         widgets.append(widget)
                         history_widget_indices[widget] = history_index
+                        decision = (
+                            nanny_decisions.get(tool_call.id)
+                            if nanny_decisions and tool_call.id
+                            else None
+                        )
+                        if decision is not None:
+                            entry = NannyMessage(decision)
+                            widgets.append(entry)
+                            history_widget_indices[entry] = history_index
 
             case Role.tool:
                 tool_name = msg.name or tool_call_map.get(

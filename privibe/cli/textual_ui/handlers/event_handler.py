@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from textual.widget import Widget
+
 from privibe.cli.textual_ui.widgets.compact import CompactMessage
 from privibe.cli.textual_ui.widgets.messages import (
     AssistantMessage,
@@ -44,6 +46,9 @@ class EventHandler:
         self.on_profile_changed = on_profile_changed
         self.get_reasoning_markdown = get_reasoning_markdown
         self.tool_calls: dict[str, ToolCallMessage] = {}
+        # Nanny entries mounted after a call widget, so the result line
+        # lands after the nanny's verdict rather than between call and verdict.
+        self.nanny_entries: dict[str, Widget] = {}
         self.current_compact: CompactMessage | None = None
         self.current_streaming_message: AssistantMessage | None = None
         self.current_streaming_reasoning: ReasoningMessage | None = None
@@ -137,7 +142,8 @@ class EventHandler:
         )
 
         tool_result = ToolResultMessage(event, call_widget, collapsed=tools_collapsed)
-        await self.mount_callback(tool_result, after=call_widget)
+        anchor = self.nanny_entries.pop(event.tool_call_id, None) or call_widget
+        await self.mount_callback(tool_result, after=anchor)
 
         if event.tool_call_id and event.tool_call_id in self.tool_calls:
             del self.tool_calls[event.tool_call_id]

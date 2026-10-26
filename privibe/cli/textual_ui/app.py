@@ -56,6 +56,7 @@ from privibe.cli.textual_ui.widgets.messages import (
     BashOutputMessage,
     ErrorMessage,
     InterruptMessage,
+    NannyMessage,
     ReasoningMessage,
     StreamingMessageBase,
     UserCommandMessage,
@@ -63,6 +64,7 @@ from privibe.cli.textual_ui.widgets.messages import (
     WarningMessage,
 )
 from privibe.cli.textual_ui.widgets.model_picker import ModelPickerApp
+from privibe.cli.textual_ui.widgets.nanny_status import NannyStatus
 from privibe.cli.textual_ui.widgets.narrator_status import NarratorStatus
 from privibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from privibe.cli.textual_ui.widgets.option_picker import OptionPickerApp
@@ -100,6 +102,14 @@ from privibe.core.config import (
 )
 from privibe.core.config.harness_files._harness_manager import get_harness_files_manager
 from privibe.core.logger import logger, stderr_logging_suspended
+from privibe.core.nanny import (
+    NannyConfigError,
+    NannyDecision,
+    NannyListener,
+    NannyManager,
+    NannyReview,
+    decisions_for,
+)
 from privibe.core.paths import AGENTS_MD_FILENAME, HISTORY_FILE, VIBE_HOME
 from privibe.core.rewind import RewindError
 from privibe.core.session.resume_sessions import (
@@ -300,6 +310,10 @@ class VibeApp(App):  # noqa: PLR0904
 
         self._loading_widget: LoadingWidget | None = None
         self._pending_approval: asyncio.Future | None = None
+        # The nanny review attached to the approval prompt on screen, if any.
+        self._pending_review: NannyReview | None = None
+        # The nanny reviewing approval prompts, when nanny_model is set.
+        self._nanny: NannyManager | None = None
         self._pending_question: asyncio.Future | None = None
         self._user_interaction_lock = asyncio.Lock()
 
@@ -355,6 +369,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         with Horizontal(id="loading-area"):
             yield NarratorStatus(self._narrator_manager)
+            yield NannyStatus(id="nanny-status")
             yield Static(id="loading-area-content")
             yield FeedbackBar()
 
@@ -410,6 +425,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         self.agent_loop.set_approval_callback(self._approval_callback)
         self.agent_loop.set_user_input_callback(self._user_input_callback)
+        await self._start_nanny_from_config()
         self._refresh_profile_widgets()
 
         chat_input_container = self.query_one(ChatInputContainer)
@@ -418,6 +434,7 @@ class VibeApp(App):  # noqa: PLR0904
         # _resume_history_from_messages early-exits if #messages already has
         # children, so a warning/info widget mounted first would silently drop
         # the resumed conversation when --continue / --resume <id> is used.
+        self._nanny_follow_resume()
         await self._resume_history_from_messages()
         await self._show_dangerous_directory_warning()
         await self._show_clipboard_warning()
@@ -516,10 +533,15 @@ class VibeApp(App):  # noqa: PLR0904
 
         await self._handle_user_message(value)
 
+    def _record_human_choice(self, choice: str) -> None:
+        if self._pending_review is not None:
+            self._pending_review.human_choice = choice
+
     async def on_approval_app_approval_granted(
         self, message: ApprovalApp.ApprovalGranted
     ) -> None:
         if self._pending_approval and not self._pending_approval.done():
+            self._record_human_choice("allow")
             self._pending_approval.set_result((ApprovalResponse.YES, None))
 
     async def on_approval_app_approval_granted_always_tool(
@@ -528,6 +550,7 @@ class VibeApp(App):  # noqa: PLR0904
         self.agent_loop.approve_always(message.tool_name, message.required_permissions)
 
         if self._pending_approval and not self._pending_approval.done():
+            self._record_human_choice("allow_always")
             self._pending_approval.set_result((ApprovalResponse.YES, None))
 
     async def on_approval_app_approval_rejected_always_tool(
@@ -536,6 +559,7 @@ class VibeApp(App):  # noqa: PLR0904
         self.agent_loop.deny_always(message.tool_name, message.required_permissions)
 
         if self._pending_approval and not self._pending_approval.done():
+            self._record_human_choice("deny_always")
             self._pending_approval.set_result(
                 (
                     ApprovalResponse.NO,
@@ -550,6 +574,7 @@ class VibeApp(App):  # noqa: PLR0904
         self, message: ApprovalApp.ApprovalRejected
     ) -> None:
         if self._pending_approval and not self._pending_approval.done():
+            self._record_human_choice("no")
             feedback = str(
                 get_user_cancellation_message(CancellationReason.OPERATION_CANCELLED)
             )
@@ -557,6 +582,41 @@ class VibeApp(App):  # noqa: PLR0904
 
         if self._loading_widget and self._loading_widget.parent:
             await self._remove_loading_widget()
+
+    async def on_approval_app_nanny_refused(
+        self, message: ApprovalApp.NannyRefused
+    ) -> None:
+        """Refuse with the nanny's reason: untagged feedback, so the worker
+        reads it and goes on with the turn.
+        """
+        review = self._pending_review
+        if review is None:
+            return
+        if self._pending_approval and not self._pending_approval.done():
+            review.human_choice = "refuse"
+            self._pending_approval.set_result((
+                ApprovalResponse.NO,
+                review.refusal_feedback(),
+            ))
+
+    async def on_approval_app_nanny_talk(self, message: ApprovalApp.NannyTalk) -> None:
+        review = self._pending_review
+        if review is None:
+            return
+        # A nanny turn takes seconds; keep the message pump free.
+        self.run_worker(self._nanny_talk(review, message.text), exclusive=False)
+
+    async def _nanny_talk(self, review: NannyReview, text: str) -> None:
+        try:
+            reply = await review.talk(text)
+        except Exception as exc:  # the prompt must never get stuck
+            reply = f"(nanny error: {exc})"
+        try:
+            approval_app = self.query_one(ApprovalApp)
+        except Exception:
+            return
+        if approval_app.review is review:
+            approval_app.show_nanny_reply(reply)
 
     async def on_question_app_answered(self, message: QuestionApp.Answered) -> None:
         if self._pending_question and not self._pending_question.done():
@@ -759,6 +819,7 @@ class VibeApp(App):  # noqa: PLR0904
             "/scrollback": str(config.message_prune_keep_rows),
             "/llm-calls-per-turn": str(config.max_llm_calls_per_turn),
             "/detect-context-size": detect,
+            "/ensure-commands-safety": self._nanny_status_label(),
         }
 
     def _get_skill_entries(self) -> list[tuple[str, str]]:
@@ -916,6 +977,7 @@ class VibeApp(App):  # noqa: PLR0904
             tools_collapsed=self._tools_collapsed,
             history_widget_indices=self._history_widget_indices,
             tool_classes=self.agent_loop.tool_manager.available_tools,
+            nanny_decisions=self._history_nanny_decisions(),
         )
 
         with self.batch_update():
@@ -938,6 +1000,7 @@ class VibeApp(App):  # noqa: PLR0904
         args: BaseModel,
         tool_call_id: str,
         required_permissions: list[RequiredPermission] | None,
+        review: NannyReview | None = None,
     ) -> tuple[ApprovalResponse, str | None]:
         # Auto-approve only if parent is in auto-approve mode AND tool is enabled
         # This ensures subagents respect the main agent's tool restrictions.
@@ -950,14 +1013,18 @@ class VibeApp(App):  # noqa: PLR0904
 
         async with self._user_interaction_lock:
             self._pending_approval = asyncio.Future()
+            self._pending_review = review
             self._terminal_notifier.notify(NotificationContext.ACTION_REQUIRED)
             try:
                 with paused_timer(self._loading_widget):
-                    await self._switch_to_approval_app(tool, args, required_permissions)
+                    await self._switch_to_approval_app(
+                        tool, args, required_permissions, review
+                    )
                     result = await self._pending_approval
                 return result
             finally:
                 self._pending_approval = None
+                self._pending_review = None
                 await self._switch_to_input_app()
 
     async def _user_input_callback(self, args: BaseModel) -> BaseModel:
@@ -1060,6 +1127,7 @@ class VibeApp(App):  # noqa: PLR0904
         self._interrupt_requested = True
 
         if self._pending_approval and not self._pending_approval.done():
+            self._record_human_choice("cancelled")
             feedback = str(
                 get_user_cancellation_message(CancellationReason.TOOL_INTERRUPTED)
             )
@@ -1106,6 +1174,7 @@ class VibeApp(App):  # noqa: PLR0904
 - **Session Total LLM Tokens**: {stats.session_total_llm_tokens:,}
 - **Last Turn Tokens**: {stats.last_turn_total_tokens:,}
 - **Cost**: ${stats.session_cost:.4f}
+- **Nanny**: {self._nanny_status_label()}
 """
         await self._mount_and_scroll(UserCommandMessage(status_text))
 
@@ -1204,6 +1273,7 @@ class VibeApp(App):  # noqa: PLR0904
             session.session_id, session_path
         )
         self.agent_loop.messages.restore(session_path)
+        self._nanny_follow_resume()
         self._refresh_profile_widgets()
 
         self._reset_ui_state()
@@ -1241,6 +1311,7 @@ class VibeApp(App):  # noqa: PLR0904
 
             notice = await self.agent_loop.apply_runtime_config(base_config=base_config)
             self._narrator_manager.sync()
+            self.run_worker(self._sync_nanny_with_config(base_config), exclusive=False)
 
             if self._banner:
                 self._banner.set_state(
@@ -1464,12 +1535,14 @@ class VibeApp(App):  # noqa: PLR0904
         tool_name: str,
         tool_args: BaseModel,
         required_permissions: list[RequiredPermission] | None = None,
+        review: NannyReview | None = None,
     ) -> None:
         approval_app = ApprovalApp(
             tool_name=tool_name,
             tool_args=tool_args,
             config=self.config,
             required_permissions=required_permissions,
+            review=review,
         )
         await self._switch_from_input(approval_app, scroll=True)
 
@@ -1798,6 +1871,12 @@ class VibeApp(App):  # noqa: PLR0904
 
         for error in restore_errors:
             self.notify(error, severity="warning")
+        if self._nanny is not None:
+            excerpt = message_content.strip().replace("\n", " ")[:80]
+            self._nanny.note_rewind(
+                f"the conversation was rewound to the user message '{excerpt}'; "
+                "calls judged after it were dropped and may be asked again"
+            )
 
         # Remove UI widgets from the selected message onward
         messages_area = self._cached_messages_area or self.query_one("#messages")
@@ -2215,6 +2294,12 @@ class VibeApp(App):  # noqa: PLR0904
                 await self._apply_llm_calls_per_turn(int(event.value))
             case "ascii":
                 await self._apply_ascii(event.value == "on")
+            # Both may wait for an in-flight review, whose human prompt is
+            # answered through this same message pump: never await them here.
+            case "nanny_model":
+                self.run_worker(self._apply_nanny_model(event.value), exclusive=False)
+            case "nanny_action":
+                self.run_worker(self._apply_nanny_action(event.value), exclusive=False)
             case "detect_context_size":
                 match event.value:
                     case "off":
@@ -2339,6 +2424,219 @@ class VibeApp(App):  # noqa: PLR0904
         "utf-8": False,
         "false": False,
     }
+
+    # ------------------------------------------------------------------
+    # Nanny: a second model that answers approval prompts
+    # ------------------------------------------------------------------
+
+    class _NannyBridge(NannyListener):
+        """Routes nanny decisions into the app's message loop."""
+
+        def __init__(self, app: VibeApp) -> None:
+            self._app = app
+
+        def on_nanny_decision(self, decision: NannyDecision) -> None:
+            self._app.call_later(self._app._mount_nanny_entry, decision)
+
+    def _history_nanny_decisions(self) -> dict[str, NannyDecision]:
+        """Decisions to draw next to resumed or backfilled history: the
+        sidecar beside the session, overlaid by the running nanny's own list
+        (which is the same file, plus anything not flushed yet).
+        """
+        session_logger = getattr(self.agent_loop, "session_logger", None)
+        session_dir = getattr(session_logger, "session_dir", None)
+        decisions = decisions_for(session_dir) if session_dir is not None else {}
+        if self._nanny is not None:
+            for decision in self._nanny.decisions:
+                decisions[decision.tool_call_id] = decision
+        return decisions
+
+    def _nanny_status_label(self) -> str:
+        return self._nanny.model_alias if self._nanny is not None else "off"
+
+    async def _start_nanny_from_config(self) -> None:
+        base_config = getattr(self.agent_loop, "base_config", None)
+        if base_config is None or not getattr(base_config, "nanny_model", None):
+            return
+        try:
+            self._attach_nanny(NannyManager.for_loop(self.agent_loop))
+        except NannyConfigError as exc:
+            await self._mount_and_scroll(
+                WarningMessage(f"Nanny not started: {exc}", show_border=False)
+            )
+
+    def _attach_nanny(self, nanny: NannyManager) -> None:
+        self._nanny = nanny
+        self._nanny_bridge = self._NannyBridge(self)
+        nanny.add_listener(self._nanny_bridge)
+        self.agent_loop.set_nanny(nanny, owner=True)
+        try:
+            self.query_one(NannyStatus).attach(nanny)
+        except Exception:
+            pass
+
+    async def _detach_nanny(self) -> None:
+        nanny = self._nanny
+        if nanny is None:
+            return
+        # Never tear the loop down under a running review.
+        await nanny.wait_idle()
+        bridge = getattr(self, "_nanny_bridge", None)
+        if bridge is not None:
+            nanny.remove_listener(bridge)
+        self.agent_loop.set_nanny(None)
+        self._nanny = None
+        try:
+            self.query_one(NannyStatus).attach(None)
+        except Exception:
+            pass
+
+    def _nanny_follow_resume(self) -> None:
+        """After a session restore, reload the nanny transcript stored
+        beside it, when there is one.
+        """
+        if self._nanny is None:
+            return
+        session_dir = self.agent_loop.session_logger.session_dir
+        if session_dir is None:
+            return
+        self._nanny.resume(session_dir, self.agent_loop.session_id)
+
+    async def _sync_nanny_with_config(self, base_config: VibeConfig) -> None:
+        """/reload: follow nanny_model from the config file."""
+        alias = base_config.nanny_model
+        if not alias:
+            if self._nanny is not None:
+                await self._detach_nanny()
+                await self._mount_and_scroll(UserCommandMessage("Nanny off."))
+            return
+        try:
+            if self._nanny is None:
+                self._attach_nanny(NannyManager.for_loop(self.agent_loop))
+            elif self._nanny.model_alias != alias:
+                await self._nanny.change_model(alias)
+        except NannyConfigError as exc:
+            await self._mount_and_scroll(
+                WarningMessage(f"Nanny not started: {exc}", show_border=False)
+            )
+
+    async def _mount_nanny_entry(self, decision: NannyDecision) -> None:
+        entry = NannyMessage(decision)
+        handler = self.event_handler
+        call_widget = handler.tool_calls.get(decision.tool_call_id) if handler else None
+        if handler is not None:
+            handler.nanny_entries[decision.tool_call_id] = entry
+        if call_widget is not None and call_widget.parent is not None:
+            await self._mount_and_scroll(entry, after=call_widget)
+        else:
+            await self._mount_and_scroll(entry)
+
+    async def _show_nanny_settings(self, args: str = "") -> None:
+        arg = args.strip()
+        if arg:
+            # Commands run on the app's message pump while the agent may be
+            # mid-review; turning off or changing the model waits for that
+            # review, and its approval prompt answers through this pump.
+            if arg.lower() == "off":
+                self.run_worker(self._apply_nanny_action("off"), exclusive=False)
+            elif arg.lower() == "log":
+                await self._apply_nanny_action("log")
+            else:
+                self.run_worker(self._apply_nanny_model(arg), exclusive=False)
+            return
+        if self._nanny is None:
+            await self._open_nanny_model_picker()
+            return
+        await self._open_option_picker(
+            setting="nanny_action",
+            title=f"Nanny is on, reviewing with {self._nanny.model_alias}",
+            options=[
+                ("off", "Turn off"),
+                ("change", "Change model"),
+                ("log", "Show recent decisions"),
+            ],
+            current="change",
+        )
+
+    async def _open_nanny_model_picker(self) -> None:
+        aliases = [m.alias for m in self.config.models]
+        current = self._nanny.model_alias if self._nanny is not None else ""
+        await self._open_option_picker(
+            setting="nanny_model",
+            title="Pick the model that answers approval prompts for you",
+            options=[(alias, alias) for alias in aliases],
+            current=current,
+        )
+
+    async def _apply_nanny_action(self, action: str) -> None:
+        match action:
+            case "off":
+                if self._nanny is None:
+                    await self._mount_and_scroll(
+                        UserCommandMessage("Nanny is already off.")
+                    )
+                    return
+                await self._detach_nanny()
+                VibeConfig.save_updates({"nanny_model": None})
+                self.agent_loop.refresh_config()
+                await self._mount_and_scroll(UserCommandMessage("Nanny off."))
+            case "change":
+                await self._open_nanny_model_picker()
+            case "log":
+                if self._nanny is None or not self._nanny.decisions:
+                    await self._mount_and_scroll(
+                        UserCommandMessage("No nanny decisions this session.")
+                    )
+                    return
+                lines = ["## Nanny decisions (last 20)", ""]
+                for decision in self._nanny.decisions[-20:]:
+                    human = (
+                        f" -> you: {decision.human_decision}"
+                        if decision.human_decision
+                        else ""
+                    )
+                    lines.append(
+                        f"- `{decision.verdict}` {decision.tool_name} "
+                        f"`{decision.tool_call_id[:8]}`: {decision.reason}{human}"
+                    )
+                await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
+
+    async def _apply_nanny_model(self, alias: str) -> None:
+        if alias not in {m.alias for m in self.config.models}:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Unknown model alias: {alias}", collapsed=self._tools_collapsed
+                )
+            )
+            return
+        try:
+            if self._nanny is None:
+                VibeConfig.save_updates({"nanny_model": alias})
+                self.agent_loop.refresh_config()
+                self._attach_nanny(NannyManager.for_loop(self.agent_loop, alias=alias))
+            else:
+                await self._nanny.change_model(alias)
+                VibeConfig.save_updates({"nanny_model": alias})
+        except NannyConfigError as exc:
+            VibeConfig.save_updates({"nanny_model": None})
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Nanny not started: {exc}", collapsed=self._tools_collapsed
+                )
+            )
+            return
+        same = (
+            " It is the same model as the worker: a second opinion in a clean "
+            "context, not an independent judge."
+            if alias == str(self.config.active_model)
+            else ""
+        )
+        await self._mount_and_scroll(
+            UserCommandMessage(
+                f"Nanny on: `{alias}` answers approval prompts for you. "
+                f"Refusals reach you with its reason.{same}"
+            )
+        )
 
     async def _select_ascii(self, args: str = "") -> None:
         from privibe.core.utils.asciify import session_ascii_override

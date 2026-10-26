@@ -305,6 +305,8 @@ class Orchestrate(
         )
         if ctx.approval_callback:
             loop.set_approval_callback(ctx.approval_callback)
+        if ctx.nanny is not None:
+            loop.set_nanny(ctx.nanny)
         for rule in ctx.session_rules:
             loop.add_session_rule(rule)
         loop.set_reasoning_effort(effort)

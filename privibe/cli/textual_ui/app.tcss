@@ -1275,3 +1275,79 @@ FeedbackBar {
     height: auto;
     color: ansi_default;
 }
+
+/* Nanny review inside the approval prompt */
+.approval-nanny {
+    height: auto;
+    color: ansi_magenta;
+    margin-top: 1;
+}
+
+.approval-nanny-log {
+    height: auto;
+    color: ansi_default;
+}
+
+.approval-talk-row {
+    width: 100%;
+    height: auto;
+}
+
+.approval-talk-prefix {
+    width: auto;
+    height: auto;
+    color: ansi_magenta;
+}
+
+.approval-talk-input {
+    width: 1fr;
+    height: auto;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+.approval-cursor-selected.approval-option-talk {
+    color: ansi_magenta;
+    text-style: bold;
+}
+
+.approval-option-selected.approval-option-talk {
+    color: ansi_magenta;
+}
+
+/* Nanny decision entries in the conversation */
+.nanny-message {
+    margin-top: 0;
+    margin-bottom: 0;
+    height: auto;
+    width: 100%;
+}
+
+.nanny-container {
+    width: 100%;
+    height: auto;
+    margin: 0;
+    padding: 0;
+}
+
+.nanny-border {
+    width: auto;
+    height: 100%;
+    padding: 0 1 0 2;
+    color: ansi_magenta;
+}
+
+.nanny-content {
+    width: 1fr;
+    height: auto;
+    color: ansi_magenta;
+}
+
+.nanny-approved .nanny-content {
+    color: ansi_bright_black;
+}
+
+.nanny-approved .nanny-border {
+    color: ansi_bright_black;
+}

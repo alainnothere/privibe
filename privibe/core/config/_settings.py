@@ -8,6 +8,7 @@ import re
 import shlex
 import tomllib
 from typing import Annotated, Any, Literal, NamedTuple
+
 from dotenv import dotenv_values
 from pydantic import (
     BaseModel,
@@ -658,6 +659,32 @@ class VibeConfig(BaseSettings):
     providers: list[ProviderConfig] = Field(default_factory=_build_default_providers)
     models: list[ModelConfig] = Field(default_factory=_build_default_models)
     compaction_model: ModelConfig | None = None
+    # The nanny: a second model, named by its alias in `models`, that answers
+    # tool-approval prompts on the user's behalf (see privibe.core.nanny).
+    # None means off. Any alias is valid, the same model as the worker
+    # included; there is deliberately no provider or model validation here.
+    nanny_model: str | None = Field(
+        default=None,
+        description=(
+            "Alias (from `models`) of the model that reviews tool-approval "
+            "prompts on your behalf. Unset means off. Set from the TUI with "
+            "/ensure-commands-safety."
+        ),
+    )
+    nanny_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="Seconds to wait for one nanny answer before the prompt falls back to you.",
+    )
+    nanny_write_full_lines: int = Field(
+        default=80,
+        ge=0,
+        description=(
+            "A write_file content of at most this many lines is shown to the "
+            "nanny whole; longer content is shown as first, middle and last "
+            "ten lines, and the nanny may ask for the rest."
+        ),
+    )
 
     transcribe_providers: list[TranscribeProviderConfig] = Field(
         default_factory=lambda: list(DEFAULT_TRANSCRIBE_PROVIDERS)
@@ -882,6 +909,22 @@ class VibeConfig(BaseSettings):
             f"Tried to load active model '{self.active_model}' but its API key environment "
             f"variable is not set, and no other configured model has its API key environment "
             f"variable set either."
+        )
+
+    def get_nanny_model(self) -> ModelConfig | None:
+        """The configured nanny model, or None when off.
+
+        Unlike get_active_model this never falls back: a nanny alias that
+        names no configured model raises, because the nanny must be exactly
+        the model the user picked.
+        """
+        if not self.nanny_model:
+            return None
+        for model in self.models:
+            if model.alias == self.nanny_model:
+                return model
+        raise ValueError(
+            f"nanny_model '{self.nanny_model}' names no configured model alias."
         )
 
     def model_fallback_notice(self) -> str | None:

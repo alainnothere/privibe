@@ -42,6 +42,7 @@ class BuiltinAgentName(StrEnum):
     AUTO_APPROVE = "auto-approve"
     EXPLORE = "explore"
     ORCHESTRATE_WORKER = "orchestrate-worker"
+    NANNY = "nanny"
 
 
 @dataclass(frozen=True)
@@ -224,6 +225,35 @@ ORCHESTRATE_WORKER = AgentProfile(
     },
 )
 
+# The nanny: a second model that reviews tool-approval prompts. Answer-only:
+# every tool is disabled, no MCP server is started, and the system prompt is
+# the nanny prompt file alone (no project context, no tool prompts), so its
+# KV-cache prefix depends on nothing but that file. `active_model` is set by
+# the manager on the base config it builds from, so the profile stays static.
+# `compaction_model` is blanked because profile application re-runs every
+# VibeConfig validator, and the user's compaction model may be on another
+# provider than the nanny.
+NANNY = AgentProfile(
+    name=BuiltinAgentName.NANNY,
+    display_name="Nanny",
+    description="Internal reviewer of tool-approval prompts",
+    safety=AgentSafety.SAFE,
+    agent_type=AgentType.SUBAGENT,
+    internal=True,
+    overrides={
+        "disabled_tools": ["*"],
+        "mcp_servers": [],
+        "system_prompt_id": "nanny",
+        "include_project_context": False,
+        "include_commit_signature": False,
+        "include_model_info": False,
+        "include_prompt_detail": False,
+        "compaction_model": None,
+        "auto_approve": False,
+        "context_warnings": False,
+    },
+)
+
 BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.DEFAULT: DEFAULT,
     BuiltinAgentName.PLAN: PLAN,
@@ -231,4 +261,5 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.AUTO_APPROVE: AUTO_APPROVE,
     BuiltinAgentName.EXPLORE: EXPLORE,
     BuiltinAgentName.ORCHESTRATE_WORKER: ORCHESTRATE_WORKER,
+    BuiltinAgentName.NANNY: NANNY,
 }

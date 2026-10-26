@@ -428,3 +428,52 @@ class WarningMessage(Static):
             if self._show_border:
                 yield ExpandingBorder(classes="warning-border")
             yield NoMarkupStatic(self._message, classes="warning-content")
+
+
+class NannyMessage(Static):
+    """One nanny decision, placed after the tool call it judged.
+
+    Built from the stored decision at render time: a dim one-liner for an
+    approval, the reason plus the human's side for anything else. Neither
+    conversation is touched to draw it.
+    """
+
+    def __init__(self, decision: Any) -> None:
+        super().__init__()
+        self.decision = decision
+        self.add_class("nanny-message")
+        self.add_class(
+            "nanny-approved" if decision.approved_by_nanny else "nanny-refused"
+        )
+
+    @staticmethod
+    def format_lines(decision: Any) -> list[str]:
+        if decision.approved_by_nanny:
+            return [f"nanny approved: {decision.reason}"]
+        lines: list[str] = []
+        if decision.failed:
+            lines.append(f"nanny: {decision.notice or 'did not answer'}")
+        else:
+            lines.append(f"nanny refused: {decision.reason}")
+        for exchange in decision.talk:
+            lines.append(f"you: {exchange.human}")
+            lines.append(f"nanny: {exchange.nanny}")
+        choice = decision.human_decision
+        if choice:
+            labels = {
+                "allow": "you allowed it once",
+                "allow_always": "you allowed it for this session",
+                "no": "you said no",
+                "deny_always": "you denied it for this session",
+                "refuse": "you refused it with the nanny's reason",
+                "cancelled": "cancelled",
+            }
+            lines.append(labels.get(choice, f"you: {choice}"))
+        return lines
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="nanny-container"):
+            yield ExpandingBorder(classes="nanny-border")
+            yield NoMarkupStatic(
+                "\n".join(self.format_lines(self.decision)), classes="nanny-content"
+            )
