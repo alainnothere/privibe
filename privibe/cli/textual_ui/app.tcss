@@ -991,7 +991,8 @@ ContextProgress {
     color: ansi_bright_black;
 }
 
-NarratorStatus {
+NarratorStatus,
+NannyStatus {
     width: auto;
     height: auto;
     background: transparent;
