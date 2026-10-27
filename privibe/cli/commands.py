@@ -149,6 +149,12 @@ class CommandRegistry:
                 handler="_select_scrollback",
                 takes_args=True,
             ),
+            "set_conversation_name": Command(
+                aliases=frozenset(["/set-conversation-name", "/name"]),
+                description="Name this conversation (shown in the tab title and the UI, kept across rewind/compact, saved with the session); /set-conversation-name <name>, bare to clear",
+                handler="_set_conversation_name",
+                takes_args=True,
+            ),
             "llm_calls_per_turn": Command(
                 aliases=frozenset(["/llm-calls-per-turn"]),
                 description="Set how many LLM calls one message may trigger before the model must write up and stop; /llm-calls-per-turn <n> or pick from a menu",

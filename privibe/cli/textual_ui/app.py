@@ -360,6 +360,7 @@ class VibeApp(App):  # noqa: PLR0904
         return self.agent_loop.config
 
     def compose(self) -> ComposeResult:
+        yield NoMarkupStatic(id="conversation-title-bar")
         with ChatScroll(id="chat"):
             self._banner = Banner(
                 self.config, self.agent_loop.skill_manager, self.agent_loop.mcp_registry
@@ -408,6 +409,7 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
         self._chat_input_container = self.query_one(ChatInputContainer)
+        self._apply_conversation_name_display()
         context_progress = self.query_one(ContextProgress)
 
         def update_context_progress(stats: AgentStats) -> None:
@@ -818,6 +820,7 @@ class VibeApp(App):  # noqa: PLR0904
             "/preview-lines": str(config.tool_result_preview_lines),
             "/scrollback": str(config.message_prune_keep_rows),
             "/llm-calls-per-turn": str(config.max_llm_calls_per_turn),
+            "/set-conversation-name": self.agent_loop.conversation_name or "",
             "/detect-context-size": detect,
             "/ensure-commands-safety": self._nanny_status_label(),
         }
@@ -1275,6 +1278,7 @@ class VibeApp(App):  # noqa: PLR0904
         self.agent_loop.messages.restore(session_path)
         self._nanny_follow_resume()
         self._refresh_profile_widgets()
+        self._apply_conversation_name_display()
 
         self._reset_ui_state()
         await self._load_more.hide()
@@ -1340,6 +1344,7 @@ class VibeApp(App):  # noqa: PLR0904
             if self._chat_input_container:
                 self._chat_input_container.set_custom_border(None)
             await self.agent_loop.clear_history()
+            self._apply_conversation_name_display()
             if self.event_handler:
                 await self.event_handler.finalize_streaming()
             messages_area = self._cached_messages_area or self.query_one("#messages")
@@ -2396,6 +2401,54 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(
             UserCommandMessage(f"Message scrollback set to {new_value} rows.")
         )
+
+    # ------------------------------------------------------------------
+    # Conversation name: /set-conversation-name
+    # ------------------------------------------------------------------
+
+    async def _set_conversation_name(self, args: str = "") -> None:
+        name = args.strip() or None
+        try:
+            await self.agent_loop.set_conversation_name(name)
+        except Exception as e:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Failed to save conversation name: {e}",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        self._apply_conversation_name_display()
+        if name is None:
+            await self._mount_and_scroll(UserCommandMessage("Conversation name cleared."))
+        else:
+            await self._mount_and_scroll(
+                UserCommandMessage(f"Conversation named `{name}`.")
+            )
+
+    def _apply_conversation_name_display(self) -> None:
+        """Paint the conversation name on every surface that shows it.
+
+        Deliberately all of them at once for now (tab title, top bar, the
+        input box border top and bottom, bottom-bar spacer) so the user can
+        pick where it fits; prune once decided.
+        """
+        name = self.agent_loop.conversation_name
+        self._terminal_notifier.set_default_title(
+            f"Privibe - {name}" if name else "Privibe"
+        )
+        try:
+            top_bar = self.query_one("#conversation-title-bar", NoMarkupStatic)
+            top_bar.update(name or "")
+            top_bar.set_class(bool(name), "has-name")
+        except Exception:
+            pass
+        try:
+            self.query_one("#spacer", NoMarkupStatic).update(name or "")
+        except Exception:
+            pass
+        if self._chat_input_container:
+            self._chat_input_container.set_conversation_name(name)
 
     async def _select_llm_calls_per_turn(self, args: str = "") -> None:
         error: str | None = None

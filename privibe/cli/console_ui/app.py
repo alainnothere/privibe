@@ -137,6 +137,7 @@ Available commands:
   /log       Show the current session log directory
   /preview-lines  Cycle how many tool output lines are shown (3 / 5 / 10)
   /llm-calls-per-turn  Cycle the LLM-call budget per message (30 / 60 / 90)
+  /set-conversation-name <name>  Name this conversation (saved with the session; bare clears it)
   /ascii     Write policy for non-ASCII in model-written content: /ascii on|off (toggles without an argument)
   /effort    Cycle reasoning effort stamped on new messages (low / medium / xhigh)
   /ensure-commands-safety  Nanny: a second model that answers approval prompts for you; /ensure-commands-safety <alias>|off|log, or no argument for status
@@ -776,6 +777,10 @@ class ConsoleUI(NannyListener):
                 self._command_preview_lines()
             case "/llm-calls-per-turn":
                 self._command_llm_calls_per_turn()
+            case "/set-conversation-name" | "/name":
+                await self._command_set_conversation_name(
+                    parts[1] if len(parts) > 1 else ""
+                )
             case "/ascii":
                 self._command_ascii(parts[1] if len(parts) > 1 else "")
             case "/effort":
@@ -1013,6 +1018,18 @@ class ConsoleUI(NannyListener):
             return
         print(f"Compacted. Summary:\n{summary}")
 
+    async def _command_set_conversation_name(self, args: str) -> None:
+        name = args.strip() or None
+        try:
+            await self.agent_loop.set_conversation_name(name)
+        except Exception as e:
+            print(f"Failed to save conversation name: {e}")
+            return
+        if name is None:
+            print("Conversation name cleared.")
+        else:
+            print(f"Conversation named: {name}")
+
     async def _command_clear(self) -> None:
         await self.agent_loop.clear_history()
         print("Conversation history cleared.")
@@ -1103,7 +1120,7 @@ class ConsoleUI(NannyListener):
 
         print("\nPrevious sessions (newest first):")
         for i, info in enumerate(sessions, start=1):
-            title = info["title"] or info["session_id"]
+            title = info.get("name") or info["title"] or info["session_id"]
             when = f" ({info['end_time']})" if info["end_time"] else ""
             print(f"  {i}. {title}{when}")
         print("Resuming replaces the current conversation.")

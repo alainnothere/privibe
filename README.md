@@ -131,6 +131,10 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
 - `/resume` session picker showing the folder and a short preview of each
   session, with search: type to filter, `-word` to exclude, results ranked by
   match. Conversation history is re-rendered on resume.
+- `/set-conversation-name <name>` (or `/name`) names the conversation: shown
+  in the terminal tab title and the UI, saved with the session, searchable
+  in `/resume`, kept across rewind and compact, dropped by `/clear`. Bare
+  command clears it.
 - File edits show a diff in the TUI.
 - Model name + tokens/sec in the context footer.
 - Configurable tool-result preview length (`/preview-lines`), scrollback

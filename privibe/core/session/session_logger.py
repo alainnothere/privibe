@@ -72,6 +72,11 @@ class SessionLogger:
         # at every save. Cleared whenever session_dir changes.
         self._persisted_count: int | None = None
         self._persisted_count_dir: Path | None = None
+        # The user-chosen conversation name. Lives here, not only on
+        # session_metadata, because it must survive reset_session (rewind,
+        # compact mint a new session id for the same conversation) and must
+        # exist before the first save creates the session folder.
+        self._conversation_name: str | None = None
 
         if not self.enabled:
             self.save_dir: Path | None = None
@@ -170,7 +175,44 @@ class SessionLogger:
             git_branch=git_branch,
             username=user_name,
             environment={"working_directory": str(Path.cwd())},
+            name=self._conversation_name,
         )
+
+    @property
+    def conversation_name(self) -> str | None:
+        return self._conversation_name
+
+    async def set_conversation_name(self, name: str | None) -> None:
+        """Set (or clear, with None) the conversation name and persist it.
+
+        The name rides in memory until the first save creates meta.json; if
+        meta.json already exists it is rewritten right away, under the save
+        lock, keeping every other key the last save wrote. An empty or
+        whitespace-only name clears it.
+        """
+        if name is not None:
+            name = name.strip() or None
+        self._conversation_name = name
+        if self.session_metadata is not None:
+            self.session_metadata.name = name
+        if not self.enabled or self.session_dir is None:
+            return
+        async with self._save_lock:
+            if not self.metadata_filepath.exists():
+                return
+            try:
+                raw = await read_safe_async(self.metadata_filepath)
+                metadata = json.loads(raw)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to read session metadata at {self.metadata_filepath}: {e}"
+                ) from e
+            if not isinstance(metadata, dict):
+                raise RuntimeError(
+                    f"Session metadata at {self.metadata_filepath} is not an object"
+                )
+            metadata["name"] = name
+            await SessionLogger.persist_metadata(metadata, self.session_dir)
 
     @staticmethod
     def _with_frozen_wire_effort(
@@ -533,6 +575,7 @@ class SessionLogger:
         self.session_id = session_id
         self.session_dir = session_dir
         self.session_metadata = SessionLoader.load_metadata(session_dir)
+        self._conversation_name = self.session_metadata.name
         self._forget_persisted_count()
 
         if self.session_metadata.start_time:

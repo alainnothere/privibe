@@ -681,7 +681,7 @@ class VibeAcpAgentLoop(AcpAgent):
             SessionInfo(
                 session_id=s["session_id"],
                 cwd=s["cwd"],
-                title=s.get("title"),
+                title=s.get("name") or s.get("title"),
                 updated_at=s.get("end_time"),
             )
             for s in sorted(

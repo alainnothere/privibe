@@ -24,6 +24,12 @@ class ResumeSessionInfo:
     end_time: str | None
     status: str | None = None
     session_path: str | None = None
+    name: str | None = None
+
+    @property
+    def display_name(self) -> str | None:
+        """The user-chosen name, else the auto title, else None."""
+        return self.name or self.title
 
     @property
     def option_id(self) -> str:
@@ -47,6 +53,7 @@ def _resume_session_from_info(session: SessionInfo) -> ResumeSessionInfo:
         title=session.get("title"),
         end_time=session.get("end_time"),
         session_path=session.get("session_path"),
+        name=session.get("name"),
     )
 
 

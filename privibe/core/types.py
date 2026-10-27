@@ -136,6 +136,9 @@ class SessionMetadata(BaseModel):
     git_branch: str | None
     environment: dict[str, str | None]
     username: str
+    # User-chosen conversation name (/set-conversation-name). Optional so
+    # meta.json files written before the field existed still validate.
+    name: str | None = None
 
 
 class ClientMetadata(BaseModel):

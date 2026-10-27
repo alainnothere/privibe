@@ -2254,7 +2254,19 @@ class AgentLoop:
             approval_answered_at=answered_at,
         )
 
+    @property
+    def conversation_name(self) -> str | None:
+        return self.session_logger.conversation_name
+
+    async def set_conversation_name(self, name: str | None) -> None:
+        """/set-conversation-name: persisted in meta.json, kept across rewind
+        and compact (same conversation, new session id), dropped by /clear.
+        """
+        await self.session_logger.set_conversation_name(name)
+
     def _reset_session(self) -> None:
+        # Keeps the conversation name: rewind and compact call this for the
+        # same conversation. /clear drops it explicitly in clear_history.
         self.session_id = str(uuid4())
         self.session_logger.reset_session(self.session_id)
         if self.nanny is not None and self._nanny_owner:
@@ -2289,6 +2301,9 @@ class AgentLoop:
         self.middleware_pipeline.reset()
         self.tool_manager.reset_all()
         self._reset_session()
+        # A cleared conversation is a new one; the old session keeps its
+        # name on disk (saved above), the new one starts unnamed.
+        await self.session_logger.set_conversation_name(None)
 
     async def compact(self) -> str:
         try:

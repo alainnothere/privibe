@@ -39,6 +39,16 @@ class TextualNotificationAdapter:
         self._app.bell()
         self._set_title(self._get_notification_title(context))
 
+    def set_default_title(self, title: str) -> None:
+        """Change the base tab title (e.g. "Privibe - <conversation name>").
+
+        Re-applied right away only while focused; a blurred window may be
+        showing a notification suffix, which restore() replaces on focus.
+        """
+        self._default_title = title
+        if self._has_focus:
+            self.restore()
+
     def on_focus(self) -> None:
         self._has_focus = True
         self.restore()

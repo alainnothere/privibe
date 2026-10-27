@@ -28,6 +28,8 @@ class SessionInfo(TypedDict):
     session_id: str
     cwd: str
     title: str | None
+    # User-chosen name; the auto title is the first user message.
+    name: str | None
     end_time: str | None
     session_path: str
 
@@ -254,8 +256,13 @@ class SessionLoader:
                 end_time = None
 
         title = metadata.get("title")
+        name = metadata.get("name")
+        if not isinstance(name, str) or not name.strip():
+            name = None
         search_text: str | None = None
         if search_parts is not None:
+            if name:
+                search_parts.append(name)
             if title:
                 # Auto-generated titles can quote harness-injected text, either
                 # whole or truncated mid-tag; neither belongs in the index.
@@ -268,6 +275,7 @@ class SessionLoader:
             "session_id": session_id,
             "cwd": session_cwd,
             "title": title,
+            "name": name,
             "end_time": end_time,
             "session_path": str(messages_path),
         }

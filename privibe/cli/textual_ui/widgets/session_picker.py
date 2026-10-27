@@ -81,6 +81,8 @@ def _build_option_text(
         text.append(f" ({abs_time})", style="dim")
     text.append("  ")
     text.append(f"{session_id}  ", style="dim")
+    if session.name:
+        text.append(f"{session.name}  ", style="bold")
     text.append(cwd_str, style="bold")
 
     indent = " " * 14

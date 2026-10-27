@@ -62,6 +62,7 @@ class ChatInputContainer(Vertical):
         self._voice_manager = voice_manager
         self._custom_border_label: str | None = None
         self._custom_border_class: str | None = None
+        self._conversation_name: str | None = None
 
         self._completion_manager = MultiCompletionManager([
             SlashCommandController(CommandCompleter(self._get_slash_entries), self),
@@ -92,6 +93,7 @@ class ChatInputContainer(Vertical):
         border_class = self._get_border_class()
         with Vertical(id=self.ID_INPUT_BOX, classes=border_class) as input_box:
             input_box.border_title = self._get_border_title()
+            input_box.border_subtitle = self._get_border_subtitle()
             self._body = ChatInputBody(
                 history_file=self._history_file,
                 id="input-body",
@@ -203,6 +205,10 @@ class ChatInputContainer(Vertical):
         self._agent_name = name
         self._apply_input_box_chrome()
 
+    def set_conversation_name(self, name: str | None) -> None:
+        self._conversation_name = name
+        self._apply_input_box_chrome()
+
     def set_custom_border(
         self, label: str | None, border_class: str | None = None
     ) -> None:
@@ -220,7 +226,12 @@ class ChatInputContainer(Vertical):
     def _get_border_title(self) -> str:
         if self._custom_border_label is not None:
             return self._custom_border_label
+        if self._conversation_name:
+            return f"{self._conversation_name} | {self._agent_name}"
         return self._agent_name
+
+    def _get_border_subtitle(self) -> str:
+        return self._conversation_name or ""
 
     def _apply_input_box_chrome(self) -> None:
         try:
@@ -237,3 +248,4 @@ class ChatInputContainer(Vertical):
             input_box.add_class(border_class)
 
         input_box.border_title = self._get_border_title()
+        input_box.border_subtitle = self._get_border_subtitle()
