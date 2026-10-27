@@ -2427,11 +2427,10 @@ class VibeApp(App):  # noqa: PLR0904
             )
 
     def _apply_conversation_name_display(self) -> None:
-        """Paint the conversation name on every surface that shows it.
-
-        Deliberately all of them at once for now (tab title, top bar, the
-        input box border top and bottom, bottom-bar spacer) so the user can
-        pick where it fits; prune once decided.
+        """Paint the conversation name where it shows: the terminal tab
+        title, the one-line bar above the chat, and the input-box border
+        title next to the agent name. (Border subtitle and bottom-bar spacer
+        were tried and dropped, 2026-10-27.)
         """
         name = self.agent_loop.conversation_name
         self._terminal_notifier.set_default_title(
@@ -2441,10 +2440,6 @@ class VibeApp(App):  # noqa: PLR0904
             top_bar = self.query_one("#conversation-title-bar", NoMarkupStatic)
             top_bar.update(name or "")
             top_bar.set_class(bool(name), "has-name")
-        except Exception:
-            pass
-        try:
-            self.query_one("#spacer", NoMarkupStatic).update(name or "")
         except Exception:
             pass
         if self._chat_input_container:

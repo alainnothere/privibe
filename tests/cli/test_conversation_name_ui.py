@@ -1,7 +1,5 @@
-"""/set-conversation-name in the TUI: every surface the name is painted on.
-
-All surfaces at once on purpose (tab title, top bar, input-box border top
-and bottom, bottom-bar spacer) while the user decides which one stays.
+"""/set-conversation-name in the TUI: the tab title, the loud one-line bar
+above the chat, and the input-box border title next to the agent name.
 """
 
 from __future__ import annotations
@@ -93,16 +91,14 @@ async def test_command_paints_every_surface_and_clears() -> None:
     async with app.run_test() as pilot:
         await pilot.pause(0.1)
         top_bar = app.query_one("#conversation-title-bar", NoMarkupStatic)
-        spacer = app.query_one("#spacer", NoMarkupStatic)
         input_box = app.query_one("#input-box")
         container = app.query_one(ChatInputContainer)
         agent_name = container._agent_name
 
         # Unnamed: nothing painted, top bar hidden.
         assert not top_bar.has_class("has-name")
-        assert str(spacer.content) == ""
+        assert not top_bar.display
         assert input_box.border_title == agent_name
-        assert input_box.border_subtitle == ""
 
         # Typing "/..." into the input opens the completion popup and Enter
         # accepts a completion, so drive the command the way the other
@@ -112,10 +108,13 @@ async def test_command_paints_every_surface_and_clears() -> None:
 
         assert app.agent_loop.conversation_name == "fix the parser"
         assert top_bar.has_class("has-name")
+        assert top_bar.display
         assert str(top_bar.content) == "fix the parser"
-        assert str(spacer.content) == "fix the parser"
+        # Loud on purpose: white bar, black text, one row.
+        assert top_bar.styles.background.hex.lower() == "#ffffff"
+        assert top_bar.styles.color.hex.lower() == "#000000"
+        assert top_bar.size.height == 1
         assert input_box.border_title == f"fix the parser | {agent_name}"
-        assert input_box.border_subtitle == "fix the parser"
         notices = [str(m._content) for m in app.query(UserCommandMessage)]
         assert any("fix the parser" in n for n in notices)
 
@@ -125,9 +124,8 @@ async def test_command_paints_every_surface_and_clears() -> None:
 
         assert app.agent_loop.conversation_name is None
         assert not top_bar.has_class("has-name")
-        assert str(spacer.content) == ""
+        assert not top_bar.display
         assert input_box.border_title == agent_name
-        assert input_box.border_subtitle == ""
 
 
 @pytest.mark.asyncio
@@ -146,8 +144,8 @@ async def test_tab_title_follows_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_custom_border_label_wins_on_top_name_stays_below() -> None:
-    """A recording/remote label replaces the top title; the bottom keeps the name."""
+async def test_custom_border_label_wins_over_name() -> None:
+    """A recording/remote label replaces the title; the name returns after."""
     app = build_test_vibe_app()
     async with app.run_test() as pilot:
         await pilot.pause(0.1)
@@ -157,7 +155,6 @@ async def test_custom_border_label_wins_on_top_name_stays_below() -> None:
         container.set_conversation_name("parser")
         container.set_custom_border("recording", "border-recording")
         assert input_box.border_title == "recording"
-        assert input_box.border_subtitle == "parser"
 
         container.set_custom_border(None)
         assert input_box.border_title == f"parser | {container._agent_name}"

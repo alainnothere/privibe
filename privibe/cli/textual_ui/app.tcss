@@ -70,16 +70,16 @@ TextArea > .text-area--cursor {
     width: 1fr;
     height: auto;
     background: transparent;
-    text-align: center;
-    color: ansi_bright_black;
 }
 
-/* One-line conversation-name bar above the chat; hidden while unnamed. */
+/* One-line conversation-name bar above the chat; hidden while unnamed.
+   Deliberately loud: white on black is the one thing in this UI that
+   is not the terminal's own palette. */
 #conversation-title-bar {
     width: 100%;
     height: 1;
-    background: transparent;
-    color: ansi_bright_black;
+    background: #ffffff;
+    color: #000000;
     text-align: center;
     text-style: bold;
     display: none;
@@ -117,8 +117,6 @@ TextArea > .text-area--cursor {
     border: solid ansi_bright_black;
     border-title-align: right;
     border-title-color: ansi_bright_black;
-    border-subtitle-align: left;
-    border-subtitle-color: ansi_bright_black;
     padding: 0 1;
 
     &.border-warning {

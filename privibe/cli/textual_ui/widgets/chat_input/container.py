@@ -93,7 +93,6 @@ class ChatInputContainer(Vertical):
         border_class = self._get_border_class()
         with Vertical(id=self.ID_INPUT_BOX, classes=border_class) as input_box:
             input_box.border_title = self._get_border_title()
-            input_box.border_subtitle = self._get_border_subtitle()
             self._body = ChatInputBody(
                 history_file=self._history_file,
                 id="input-body",
@@ -230,9 +229,6 @@ class ChatInputContainer(Vertical):
             return f"{self._conversation_name} | {self._agent_name}"
         return self._agent_name
 
-    def _get_border_subtitle(self) -> str:
-        return self._conversation_name or ""
-
     def _apply_input_box_chrome(self) -> None:
         try:
             input_box = self.get_widget_by_id(self.ID_INPUT_BOX)
@@ -248,4 +244,3 @@ class ChatInputContainer(Vertical):
             input_box.add_class(border_class)
 
         input_box.border_title = self._get_border_title()
-        input_box.border_subtitle = self._get_border_subtitle()
