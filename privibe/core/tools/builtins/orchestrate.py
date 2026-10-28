@@ -121,20 +121,25 @@ class Orchestrate(
 
     @classmethod
     def format_call_display(cls, args: OrchestrateArgs) -> ToolCallDisplay:
-        lines = [args.goal.strip(), ""]
-        lines.append("scope: " + (", ".join(args.scope) if args.scope else "(none)"))
-        lines.append("files: " + (", ".join(args.files) if args.files else "(none)"))
+        """The job on the call line itself, like every other tool prints its
+        parameters: the goal's first line, then scope, files and what ends
+        the job on indented lines. The fold-out body is for progress.
+        """
+        goal = summarize_goal(args.goal)
+        lines = [f'orchestrate "{goal}"' if goal else "orchestrate"]
+        lines.append("  scope: " + (", ".join(args.scope) if args.scope else "(none)"))
+        lines.append("  files: " + (", ".join(args.files) if args.files else "(none)"))
         lines.append(
-            "done when: "
+            "  done when: "
             + (
                 f"`{args.done_command}` exits 0"
                 if args.done_command
                 else "the manager says so (unverified)"
             )
         )
-        goal = summarize_goal(args.goal)
-        summary = f"orchestrate: {goal}" if goal else "orchestrate"
-        return ToolCallDisplay(summary=summary, content="\n".join(lines))
+        if args.max_rounds is not None:
+            lines.append(f"  max_rounds: {args.max_rounds}")
+        return ToolCallDisplay(summary="\n".join(lines))
 
     @classmethod
     def format_result_display(cls, result: OrchestrateResult) -> ToolResultDisplay:

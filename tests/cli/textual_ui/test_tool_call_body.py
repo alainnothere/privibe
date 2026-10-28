@@ -6,13 +6,19 @@ worth reading back.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from textual.app import App, ComposeResult
+from textual.css.stylesheet import Stylesheet
 
 from privibe.cli.textual_ui.widgets.tools import ToolCallMessage
 from privibe.core.tools.builtins.bash import Bash, BashArgs
 from privibe.core.tools.builtins.orchestrate import Orchestrate, OrchestrateArgs
+from privibe.core.tools.ui import ToolUIDataAdapter
 from privibe.core.types import ToolCallEvent
+
+_TCSS = Path(__file__).parents[3] / "privibe" / "cli" / "textual_ui" / "app.tcss"
 
 
 def _orchestrate_event() -> ToolCallEvent:
@@ -39,16 +45,20 @@ class _Host(App[None]):
 
 
 @pytest.mark.asyncio
-async def test_body_holds_params_and_full_stream_log() -> None:
+async def test_params_on_the_line_and_full_stream_log_in_the_body() -> None:
     widget = ToolCallMessage(_orchestrate_event())
     async with _Host(widget).run_test():
+        line = str(widget._text_widget.render())
+        assert line.startswith('orchestrate "Make f return 2."\n')
+        assert "orchestrate orchestrate" not in line
+        assert "scope: /src" in line
+        assert "files: /src/a.py" in line
+        assert "`pytest -q` exits 0" in line
         assert widget.collapsed
+        # No ToolCallDisplay.content and no stream yet: nothing to unfold.
         assert widget._body is not None and not widget._body.display
-        assert widget._triangle_widget is not None and widget._triangle_widget.display
-        params = str(widget._params_widget.render())
-        assert "Second line of the goal." in params
-        assert "scope: /src" in params
-        assert "`pytest -q` exits 0" in params
+        assert widget._triangle_widget is not None
+        assert not widget._triangle_widget.display
 
         widget.set_stream_message("manager: planning")
         widget.set_stream_message("brainstorm")
@@ -89,8 +99,46 @@ async def test_no_body_without_params_or_stream() -> None:
 
 def test_orchestrate_summary_carries_the_goal() -> None:
     display = Orchestrate.format_call_display(
-        OrchestrateArgs(goal="\n  Make f return 2.\nmore")
+        OrchestrateArgs(goal="\n  Make f return 2.\nmore", max_rounds=2)
     )
-    assert display.summary == "orchestrate: Make f return 2."
+    first, *rest = display.summary.splitlines()
+    assert first == 'orchestrate "Make f return 2."'
+    assert rest == [
+        "  scope: (none)",
+        "  files: (none)",
+        "  done when: the manager says so (unverified)",
+        "  max_rounds: 2",
+    ]
+    assert display.content is None
     long = Orchestrate.format_call_display(OrchestrateArgs(goal="x" * 200))
-    assert long.summary == "orchestrate: " + "x" * 79 + "…"
+    assert long.summary.splitlines()[0] == 'orchestrate "' + "x" * 79 + '…"'
+
+
+def test_adapter_does_not_double_the_tool_name() -> None:
+    """The adapter prefixes the tool name unless the summary already starts
+    with "<name> ". An "orchestrate: goal" summary once came out as
+    "orchestrate orchestrate: goal" on the call line.
+    """
+    summary = (
+        ToolUIDataAdapter(Orchestrate).get_call_display(_orchestrate_event()).summary
+    )
+    assert summary.startswith('orchestrate "Make f return 2."')
+    assert not summary.startswith("orchestrate orchestrate")
+
+
+def test_tool_call_rules_are_top_level_in_app_tcss() -> None:
+    """A partial stage once landed these rules inside `.tool-result {`,
+    where they style nothing a ToolCallMessage owns.
+    """
+    sheet = Stylesheet()
+    sheet.add_source(_TCSS.read_text(), read_from=(str(_TCSS), ""))
+    sheet.parse()
+    top_level = {rule.selector_set[0].css for rule in sheet.rules if rule.selector_set}
+    for selector in (
+        ".tool-call-triangle",
+        ".tool-call-body",
+        ".tool-call-params",
+        ".tool-call-log",
+        ".tool-result",
+    ):
+        assert selector in top_level, f"{selector} is nested or missing"
