@@ -174,7 +174,8 @@ async def test_more_with_nothing_more_is_a_refusal(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_unreadable_answer_is_a_refusal_with_notice(tmp_path: Path) -> None:
-    nanny = build_nanny(tmp_path, [READY, "sure go ahead"])
+    # Two unreadable replies: the first earns one retry, the second is final.
+    nanny = build_nanny(tmp_path, [READY, "sure go ahead", "still sure"])
     async with nanny.review(ask()) as review:
         assert not review.approved
         assert not review.failed
@@ -297,3 +298,85 @@ async def test_session_reset_moves_the_sidecar(tmp_path: Path) -> None:
     assert nanny.decisions_path == new_dir / "nanny" / "decisions.jsonl"
     assert [d.tool_call_id for d in read_decisions(nanny.decisions_path)] == ["call_1"]
     assert nanny.main_session_id == "main-session-5678"
+
+
+# --- thinking models: reasoning is read, one retry on an unreadable answer ---
+
+
+@pytest.mark.asyncio
+async def test_reason_in_the_reasoning_channel_is_read(tmp_path: Path) -> None:
+    from tests.mock.utils import mock_llm_chunk
+    from privibe.core.nanny.verdict import NO_REASON
+    from tests.stubs.fake_backend import FakeBackend
+
+    backend = FakeBackend([
+        [mock_llm_chunk(content=READY)],
+        [
+            mock_llm_chunk(
+                content="VERDICT: approve\nREASON:",
+                reasoning_content="Approve read-only strings on the mounted log.\n",
+            )
+        ],
+    ])
+    nanny = build_nanny(tmp_path, backend=backend)
+    async with nanny.review(ask()) as review:
+        assert review.approved
+        assert review.reason == "Approve read-only strings on the mounted log."
+        assert review.reason != NO_REASON
+    assert nanny.decisions[-1].reason == "Approve read-only strings on the mounted log."
+
+
+@pytest.mark.asyncio
+async def test_verdict_only_in_the_reasoning_is_read(tmp_path: Path) -> None:
+    from tests.mock.utils import mock_llm_chunk
+    from tests.stubs.fake_backend import FakeBackend
+
+    backend = FakeBackend([
+        [mock_llm_chunk(content=READY)],
+        [mock_llm_chunk(content="VERDICT", reasoning_content="Refuse: deletes /etc.\n")],
+    ])
+    nanny = build_nanny(tmp_path, backend=backend)
+    async with nanny.review(ask()) as review:
+        assert not review.approved
+        assert review.answer.readable
+        assert review.reason == "deletes /etc."
+    # No retry was needed: header, READY, ask, verdict.
+    assert len(nanny.loop.messages) == 5
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_reply_is_not_an_empty_answer(tmp_path: Path) -> None:
+    from tests.mock.utils import mock_llm_chunk
+    from tests.stubs.fake_backend import FakeBackend
+
+    backend = FakeBackend([
+        [mock_llm_chunk(content=READY)],
+        [mock_llm_chunk(content="", reasoning_content="Approve. Lists files.")],
+    ])
+    nanny = build_nanny(tmp_path, backend=backend)
+    async with nanny.review(ask()) as review:
+        assert review.approved and not review.failed
+        assert review.reason == "Lists files."
+
+
+@pytest.mark.asyncio
+async def test_unreadable_answer_gets_one_retry(tmp_path: Path) -> None:
+    nanny = build_nanny(tmp_path, [READY, "hmm, let me see", APPROVE])
+    async with nanny.review(ask()) as review:
+        assert review.approved
+        assert review.answer.readable
+    # header, READY, ask, junk, retry nudge, verdict.
+    assert len(nanny.loop.messages) == 7
+    nudge = nanny.loop.messages[5].content
+    assert "no verdict I could read" in nudge
+    assert nanny.decisions[-1].verdict_index == 6
+
+
+@pytest.mark.asyncio
+async def test_retry_still_unreadable_falls_back_to_the_human(tmp_path: Path) -> None:
+    nanny = build_nanny(tmp_path, [READY, "hmm", "still hmm", APPROVE])
+    async with nanny.review(ask()) as review:
+        assert not review.approved
+        assert not review.answer.readable
+        assert review.notice == "nanny answer could not be read; asking you instead"
+    assert len(nanny.loop.messages) == 7

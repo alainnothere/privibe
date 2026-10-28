@@ -12,11 +12,26 @@ your configured `[[models]]`, that answers those prompts on your behalf.
   confirm, or state a one-off exception. The nanny remembers that for the
   rest of the session.
 
-The nanny never creates session-wide permissions, never sees calls that are
-hard-denied (`protected_paths`, `protect_outside_workdir`, a tool set to
-`never`, a "deny for this session" rule), and never handles escalated
-permissions: those always reach you. If it does not answer (timeout, server
-down, unreadable reply) the prompt simply falls back to you with a notice.
+The nanny never creates session-wide permissions and never sees calls that
+are hard-denied (`protected_paths`, a tool set to `never`, a "deny for this
+session" rule). If it does not answer (timeout, server down, unreadable
+reply) the prompt simply falls back to you with a notice.
+
+**Escalated permissions** (a path outside the working directory under
+`protect_outside_workdir`) reach you by default, nanny or not. The prompt
+then has two extra rows:
+
+- **Ask the nanny about this call** (`g`, or `5`): the nanny judges this one
+  call. If it approves, the call runs; if it refuses, the prompt comes back
+  with its reason, as usual.
+- **Ask the nanny about calls like this for this session** (`G`, or `6`):
+  the same, and every later call needing the same permissions goes to the
+  nanny without stopping at you first. Nothing is granted: the nanny still
+  judges each call and each refusal still reaches you.
+
+To have the nanny take every escalated prompt from the start, set
+`nanny_reviews_escalated = true`. The nanny is told which permissions are
+escalated either way.
 
 Headless (`-p`) mode and ACP do not use the nanny.
 
@@ -29,7 +44,10 @@ In the TUI or console:
 /ensure-commands-safety <alias>    # use that model
 /ensure-commands-safety off
 /ensure-commands-safety log        # the last 20 decisions
+/ensure-commands-safety tell <message>   # a standing instruction, see below
 ```
+
+`/nanny` is the short alias for all of these.
 
 Or in `~/.privibe/config.toml`:
 
@@ -37,7 +55,30 @@ Or in `~/.privibe/config.toml`:
 nanny_model = "reviewer"       # an alias from [[models]]; absent = off
 nanny_timeout_seconds = 60     # wait for one answer before asking you instead
 nanny_write_full_lines = 80    # writes up to this many lines are shown whole
+nanny_reviews_escalated = false  # true: the nanny also answers escalated prompts
+nanny_brief = """
+This session edits a Garmin firmware dump. Reading the mounted device is
+expected; writing to it, or anything under /media, is not.
+"""
 ```
+
+## Briefing the nanny
+
+The nanny knows the session id, the working directory and the agent
+profile, and then only what it sees call by call. Two ways to give it more:
+
+- `nanny_brief` in the config is sent right after the session header, before
+  the first call: what the task is, what to watch for, what is fine. It is
+  part of the nanny's stable prefix, so it costs nothing per call.
+- `/ensure-commands-safety tell <message>` (or `/nanny tell ...`) sends a
+  standing instruction mid-session, outside any approval prompt: "stop
+  approving curl", "pip installs are fine from now on". It waits for a
+  review in flight, then goes into the nanny's conversation like your
+  messages during a prompt do, and the nanny answers with what it
+  understood. The latest instruction wins where two disagree.
+
+Both are the human speaking and carry the same weight as talking to the
+nanny from a refused prompt: an instruction applies until you change it.
 
 Any alias is valid: a model on another llama-server, the same server, or
 the very same model as the worker. The same model in a separate reviewer
@@ -61,7 +102,15 @@ REASON: one short line
 ```
 
 `more` is only for a file write that was shown shortened; the full content
-is sent once and the nanny decides. Anything unreadable counts as a refusal.
+is sent once and the nanny decides.
+
+The nanny may think as much as it likes, out loud or in a reasoning channel.
+The parser reads the visible answer first and the reasoning as a fallback,
+takes the last verdict it finds (a deliberating model lands at the end),
+accepts a bare "Approve." or "Refuse: ..." without the label, and fills a
+missing reason from the reasoning. An answer with no verdict anywhere earns
+one retry nudge; still nothing, and it counts as a refusal, so the prompt
+reaches you. An unreadable answer is never an approval.
 
 Calls are reviewed one at a time. While you decide a refused call or talk
 to the nanny, other calls wait.
@@ -87,7 +136,9 @@ project and edit it):
   KV-cache identity, so keep it stable.
 - `nanny_ask.md`: how one call is presented.
 - `nanny_more.md`: the follow-up for a `more` verdict.
-- `nanny_talk.md`: how your messages reach it.
+- `nanny_retry.md`: the one nudge after an answer with no readable verdict.
+- `nanny_talk.md`: how your messages reach it from a refused prompt.
+- `nanny_tell.md`: how `nanny_brief` and `tell` messages reach it.
 
 ## Trying it without a model
 

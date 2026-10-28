@@ -34,6 +34,7 @@ def build_nanny(
     session_dir: Path | None | str = "default",
     timeout: float = 5.0,
     main_session_id: str = "main-session-1234",
+    brief: str | None = None,
 ) -> NannyManager:
     resolved_backend = backend or nanny_backend(replies)
     resolved_dir = tmp_path / "session" if session_dir == "default" else session_dir
@@ -43,6 +44,7 @@ def build_nanny(
         return build_test_vibe_config(
             nanny_model="devstral-latest",
             nanny_timeout_seconds=timeout,
+            nanny_brief=brief,
             include_project_context=False,
             **overrides,
         )

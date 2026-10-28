@@ -123,8 +123,10 @@ def present_call(
 def present_permissions(required_permissions: list[RequiredPermission] | None) -> str:
     if not required_permissions:
         return ""
-    return (
-        "Permissions this call needs: "
-        + "; ".join(rp.label for rp in required_permissions)
-        + "\n"
-    )
+    labels = [
+        f"{rp.label} (escalated: normally only the human may allow this)"
+        if rp.escalated
+        else rp.label
+        for rp in required_permissions
+    ]
+    return "Permissions this call needs: " + "; ".join(labels) + "\n"

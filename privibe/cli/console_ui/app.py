@@ -140,7 +140,7 @@ Available commands:
   /set-conversation-name <name>  Name this conversation (saved with the session; bare clears it)
   /ascii     Write policy for non-ASCII in model-written content: /ascii on|off (toggles without an argument)
   /effort    Cycle reasoning effort stamped on new messages (low / medium / xhigh)
-  /ensure-commands-safety  Nanny: a second model that answers approval prompts for you; /ensure-commands-safety <alias>|off|log, or no argument for status
+  /ensure-commands-safety  Nanny: a second model that answers approval prompts for you; /nanny <alias>|off|log|tell <message>, or no argument for status
   /exit      Exit (also /quit, or Ctrl+D)
 
 Anything else is sent to the agent. /name runs a skill if one matches.
@@ -538,7 +538,14 @@ class ConsoleUI(NannyListener):
         if review is not None:
             self._print_nanny_review(review)
 
-        if review is None:
+        can_delegate = review is None and self._nanny is not None
+        if can_delegate:
+            question = (
+                "Allow? [y]es once / [a]lways / [n]o / [d]eny for session / "
+                "[g]ive to the nanny / [gs] give calls like this to the nanny for session: "
+            )
+            valid = "y, a, n, d, g, or gs"
+        elif review is None:
             question = "Allow? [y]es once / [a]lways / [n]o / [d]eny for session: "
             valid = "y, a, n, or d"
         else:
@@ -587,6 +594,10 @@ class ConsoleUI(NannyListener):
                 case "r" | "refuse" if review is not None:
                     review.human_choice = "refuse"
                     return (ApprovalResponse.NO, review.refusal_feedback())
+                case "g" | "give" if can_delegate:
+                    return (ApprovalResponse.NANNY, None)
+                case "gs" if can_delegate:
+                    return (ApprovalResponse.NANNY_ALWAYS, None)
                 case "t" | "talk" if review is not None:
                     await self._talk_to_nanny(review)
                 case _:
@@ -785,7 +796,7 @@ class ConsoleUI(NannyListener):
                 self._command_ascii(parts[1] if len(parts) > 1 else "")
             case "/effort":
                 self._command_effort()
-            case "/ensure-commands-safety":
+            case "/ensure-commands-safety" | "/nanny":
                 await self._command_nanny(parts[1] if len(parts) > 1 else "")
             case "/replay":
                 self._command_replay()
@@ -919,7 +930,19 @@ class ConsoleUI(NannyListener):
                     f"Nanny: on, model {self._nanny.model_alias}, "
                     f"{len(self._nanny.decisions)} decision(s) this session."
                 )
-                print("/ensure-commands-safety off | <alias> | log")
+                print("/ensure-commands-safety off | <alias> | log | tell <message>")
+            return
+        if arg.lower() == "tell" or arg.lower().startswith("tell "):
+            text = arg[4:].strip()
+            if self._nanny is None:
+                print("Nanny is off; /ensure-commands-safety <alias> turns it on.")
+                return
+            if not text:
+                print("Usage: /ensure-commands-safety tell <what the nanny should know>")
+                return
+            reply = await self._nanny.tell(text)
+            for line in reply.splitlines() or [""]:
+                print(f"  [nanny] {line}")
             return
         if arg.lower() == "off":
             if self._nanny is None:

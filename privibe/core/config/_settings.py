@@ -685,6 +685,24 @@ class VibeConfig(BaseSettings):
             "ten lines, and the nanny may ask for the rest."
         ),
     )
+    nanny_reviews_escalated: bool = Field(
+        default=False,
+        description=(
+            "Let the nanny answer escalated prompts too (paths outside the "
+            "working directory, protect_outside_workdir). Off, those always "
+            "reach you, with an option to hand one call, or calls like it "
+            "for the session, to the nanny."
+        ),
+    )
+    nanny_brief: str | None = Field(
+        default=None,
+        description=(
+            "Standing instructions sent to the nanny right after its session "
+            "header, before the first call: what to look for, what the task "
+            "is about, what is fine. /ensure-commands-safety tell <text> "
+            "sends more mid-session."
+        ),
+    )
 
     transcribe_providers: list[TranscribeProviderConfig] = Field(
         default_factory=lambda: list(DEFAULT_TRANSCRIBE_PROVIDERS)

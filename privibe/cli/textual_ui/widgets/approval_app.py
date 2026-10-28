@@ -23,16 +23,22 @@ if TYPE_CHECKING:
     from privibe.core.nanny import NannyReview
 
 # Option positions. The first four are the historical prompt and keep their
-# keys and messages; the last two exist only when a nanny review is attached.
+# keys and messages. Positions 4 and 5 are the nanny rows: refuse/talk when a
+# review is attached, or "ask the nanny" (once / for calls like this) when a
+# nanny is on but this prompt reached the human without a review, which is
+# what an escalated permission does.
 OPTION_YES = 0
 OPTION_ALWAYS = 1
 OPTION_NO = 2
 OPTION_DENY = 3
 OPTION_REFUSE = 4
 OPTION_TALK = 5
+OPTION_NANNY_ONCE = 4
+OPTION_NANNY_ALWAYS = 5
 
 HELP_PLAIN = "↑↓ navigate  Enter select  ESC reject"
 HELP_NANNY = "↑↓ navigate  Enter select  ESC reject  (r refuse  t talk to the nanny)"
+HELP_DELEGATE = "↑↓ navigate  Enter select  ESC reject  (g ask the nanny  G for calls like this)"
 HELP_TALK = "Enter send  ESC back to the options"
 
 
@@ -52,9 +58,11 @@ class ApprovalApp(Container):
         Binding("4", "select_4", "Never Session", show=False),
         Binding("d", "select_4", "Never Session", show=False),
         Binding("5", "select_5", "Refuse", show=False),
-        Binding("r", "select_5", "Refuse", show=False),
+        Binding("r", "refuse", "Refuse", show=False),
         Binding("6", "select_6", "Talk to the nanny", show=False),
-        Binding("t", "select_6", "Talk to the nanny", show=False),
+        Binding("t", "talk", "Talk to the nanny", show=False),
+        Binding("g", "delegate_once", "Ask the nanny", show=False),
+        Binding("G", "delegate_always", "Ask the nanny for calls like this", show=False),
     ]
 
     class ApprovalGranted(Message):
@@ -101,6 +109,24 @@ class ApprovalApp(Container):
             self.tool_name = tool_name
             self.tool_args = tool_args
 
+    class NannyDelegate(Message):
+        """Hand this call to the nanny instead of deciding. With `always`,
+        calls needing the same permissions go to the nanny for the session.
+        """
+
+        def __init__(
+            self,
+            tool_name: str,
+            tool_args: BaseModel,
+            required_permissions: list[RequiredPermission],
+            always: bool,
+        ) -> None:
+            super().__init__()
+            self.tool_name = tool_name
+            self.tool_args = tool_args
+            self.required_permissions = required_permissions
+            self.always = always
+
     class NannyTalk(Message):
         """One line from the human to the nanny; the app answers through
         show_nanny_reply.
@@ -117,6 +143,7 @@ class ApprovalApp(Container):
         config: VibeConfig,
         required_permissions: list[RequiredPermission] | None = None,
         review: NannyReview | None = None,
+        nanny_available: bool = False,
     ) -> None:
         super().__init__(id="approval-app")
         self.tool_name = tool_name
@@ -124,6 +151,7 @@ class ApprovalApp(Container):
         self.config = config
         self.required_permissions = required_permissions or []
         self.review = review
+        self.nanny_available = nanny_available
         self.selected_option = 0
         self.talk_mode = False
         self.talk_pending = False
@@ -143,8 +171,20 @@ class ApprovalApp(Container):
         return self.review is not None
 
     @property
+    def has_delegate(self) -> bool:
+        """A nanny is on but did not see this call: offer to hand it over."""
+        return self.nanny_available and self.review is None
+
+    @property
     def option_count(self) -> int:
-        return 6 if self.has_review else 4
+        return 6 if (self.has_review or self.has_delegate) else 4
+
+    def _help_text(self) -> str:
+        if self.has_review:
+            return HELP_NANNY
+        if self.has_delegate:
+            return HELP_DELEGATE
+        return HELP_PLAIN
 
     def compose(self) -> ComposeResult:
         with Vertical(id="approval-options"):
@@ -163,7 +203,7 @@ class ApprovalApp(Container):
                 yield self.talk_input
             yield NoMarkupStatic("")
             self.help_widget = NoMarkupStatic(
-                HELP_NANNY if self.has_review else HELP_PLAIN, classes="approval-help"
+                self._help_text(), classes="approval-help"
             )
             yield self.help_widget
 
@@ -236,6 +276,14 @@ class ApprovalApp(Container):
         if self.has_review:
             options.append(("Refuse, and tell the agent the nanny's reason", "no"))
             options.append(("Talk to the nanny", "talk"))
+        elif self.has_delegate:
+            if self.required_permissions:
+                labels = ", ".join(rp.label for rp in self.required_permissions)
+                always_nanny = f"Ask the nanny about calls like this for this session: {labels}"
+            else:
+                always_nanny = f"Ask the nanny about {self.tool_name} calls for this session"
+            options.append(("Ask the nanny about this call", "talk"))
+            options.append((always_nanny, "talk"))
         return options
 
     def _update_options(self) -> None:
@@ -281,7 +329,7 @@ class ApprovalApp(Container):
         if self.talk_row is not None:
             self.talk_row.display = False
         if self.help_widget:
-            self.help_widget.update(HELP_NANNY if self.has_review else HELP_PLAIN)
+            self.help_widget.update(self._help_text())
         self._update_options()
         self.focus()
 
@@ -360,6 +408,24 @@ class ApprovalApp(Container):
     def action_select_6(self) -> None:
         self._select(OPTION_TALK)
 
+    # Letter keys are tied to a meaning, not a row: r/t only with a review,
+    # g/G only when the nanny can be handed the call.
+    def action_refuse(self) -> None:
+        if self.has_review:
+            self._select(OPTION_REFUSE)
+
+    def action_talk(self) -> None:
+        if self.has_review:
+            self._select(OPTION_TALK)
+
+    def action_delegate_once(self) -> None:
+        if self.has_delegate:
+            self._select(OPTION_NANNY_ONCE)
+
+    def action_delegate_always(self) -> None:
+        if self.has_delegate:
+            self._select(OPTION_NANNY_ALWAYS)
+
     def action_reject(self) -> None:
         """Escape: in talk mode it returns to the options; otherwise it is
         the historical reject.
@@ -401,14 +467,23 @@ class ApprovalApp(Container):
                         required_permissions=self.required_permissions,
                     )
                 )
-            case 4:
+            case 4 if self.has_review:
                 self.post_message(
                     self.NannyRefused(
                         tool_name=self.tool_name, tool_args=self.tool_args
                     )
                 )
-            case 5:
+            case 5 if self.has_review:
                 self._enter_talk_mode()
+            case 4 | 5 if self.has_delegate:
+                self.post_message(
+                    self.NannyDelegate(
+                        tool_name=self.tool_name,
+                        tool_args=self.tool_args,
+                        required_permissions=self.required_permissions,
+                        always=option == OPTION_NANNY_ALWAYS,
+                    )
+                )
 
     def on_blur(self, event: events.Blur) -> None:
         if self.talk_mode and self.talk_input is not None and self.talk_input.has_focus:

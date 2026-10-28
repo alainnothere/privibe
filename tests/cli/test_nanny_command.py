@@ -73,3 +73,40 @@ async def test_unknown_alias_is_reported() -> None:
             await pilot.pause(0.2)
             mock_save.assert_not_called()
         assert app._nanny is None
+
+
+@pytest.mark.asyncio
+async def test_tell_reaches_the_nanny_and_echoes_the_reply() -> None:
+    from privibe.cli.textual_ui.widgets.messages import ErrorMessage, UserCommandMessage
+
+    class StubNanny:
+        model_alias = "reviewer"
+        decisions: list = []
+
+        def __init__(self) -> None:
+            self.told: list[str] = []
+
+        async def tell(self, text: str) -> str:
+            self.told.append(text)
+            return "Understood: no writes to the device."
+
+    app = build_test_vibe_app()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        assert await app._handle_command("/nanny tell no writes to the Garmin")
+        await pilot.pause(0.3)
+        errors = [str(m._error) for m in app.query(ErrorMessage)]
+        assert any("Nanny is off" in e for e in errors)
+
+        nanny = StubNanny()
+        app._nanny = nanny
+        assert await app._handle_command("/nanny tell")
+        await pilot.pause(0.3)
+        errors = [str(m._error) for m in app.query(ErrorMessage)]
+        assert any("Usage:" in e for e in errors)
+
+        assert await app._handle_command("/nanny tell no writes to the Garmin")
+        await pilot.pause(0.3)
+        assert nanny.told == ["no writes to the Garmin"]
+        notes = [str(m._content) for m in app.query(UserCommandMessage)]
+        assert any("Understood: no writes to the device." in n for n in notes)

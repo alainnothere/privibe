@@ -347,6 +347,9 @@ class AgentLoop:
 
         self._session_rules: list[ApprovedRule] = []
         self._session_denials: list[DeniedRule] = []
+        # "Ask the nanny about calls like this for this session": escalated
+        # permissions matched here skip the human and go to the nanny.
+        self._nanny_delegations: list[ApprovedRule] = []
 
         self.session_logger = SessionLogger(config.session_logging, self.session_id)
         self.rewind_manager = RewindManager(
@@ -561,6 +564,46 @@ class AgentLoop:
             and wildcard_match(rp.invocation_pattern, rule.session_pattern)
             for rule in self._session_denials
         )
+
+    def delegate_to_nanny(
+        self,
+        tool_name: str,
+        required_permissions: list[RequiredPermission] | None,
+    ) -> None:
+        """'Ask the nanny about calls like this for this session': later
+        calls whose escalated permissions are all covered go to the nanny
+        without the human seeing them first. Nothing is granted: the nanny
+        still judges each call and a refusal still reaches the human.
+        """
+        for rp in required_permissions or []:
+            self._nanny_delegations.append(
+                ApprovedRule(
+                    tool_name=tool_name,
+                    scope=rp.scope,
+                    session_pattern=rp.session_pattern,
+                )
+            )
+
+    def _is_delegated_to_nanny(self, tool_name: str, rp: RequiredPermission) -> bool:
+        return any(
+            rule.tool_name == tool_name
+            and rule.scope == rp.scope
+            and wildcard_match(rp.invocation_pattern, rule.session_pattern)
+            for rule in self._nanny_delegations
+        )
+
+    def _nanny_may_review(
+        self, tool_name: str, required_permissions: list[RequiredPermission]
+    ) -> bool:
+        """Escalated permissions reach the human unless the config says the
+        nanny reviews them or the human delegated calls like this one.
+        """
+        escalated = [rp for rp in required_permissions if rp.escalated]
+        if not escalated:
+            return True
+        if self.config.nanny_reviews_escalated:
+            return True
+        return all(self._is_delegated_to_nanny(tool_name, rp) for rp in escalated)
 
     def approve_always(
         self,
@@ -2158,7 +2201,7 @@ class AgentLoop:
                 feedback="Tool execution not permitted.",
             )
         nanny = self.nanny
-        if nanny is not None and not any(rp.escalated for rp in required_permissions):
+        if nanny is not None and self._nanny_may_review(tool_name, required_permissions):
             return await self._ask_approval_via_nanny(
                 nanny, tool_name, args, tool_call_id, required_permissions
             )
@@ -2171,6 +2214,17 @@ class AgentLoop:
         match response:
             case ApprovalResponse.YES:
                 verdict = ToolExecutionResponse.EXECUTE
+            case ApprovalResponse.NANNY | ApprovalResponse.NANNY_ALWAYS:
+                if nanny is None:
+                    # No nanny to hand it to: the same as a plain refusal.
+                    verdict = ToolExecutionResponse.SKIP
+                    feedback = feedback or "No nanny is attached; the call was not allowed."
+                else:
+                    if response is ApprovalResponse.NANNY_ALWAYS:
+                        self.delegate_to_nanny(tool_name, required_permissions)
+                    return await self._ask_approval_via_nanny(
+                        nanny, tool_name, args, tool_call_id, required_permissions
+                    )
             case _:
                 verdict = ToolExecutionResponse.SKIP
 

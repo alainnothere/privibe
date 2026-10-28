@@ -168,8 +168,8 @@ class CommandRegistry:
                 takes_args=True,
             ),
             "ensure_commands_safety": Command(
-                aliases=frozenset(["/ensure-commands-safety"]),
-                description="Nanny: a second model that answers approval prompts for you; /ensure-commands-safety <alias>|off|log, or pick from a menu",
+                aliases=frozenset(["/ensure-commands-safety", "/nanny"]),
+                description="Nanny: a second model that answers approval prompts for you; /nanny <alias>|off|log|tell <message>, or pick from a menu",
                 handler="_show_nanny_settings",
                 takes_args=True,
             ),

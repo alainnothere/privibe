@@ -162,6 +162,7 @@ class NannyManager:
         self.model_alias: str = alias
         self.timeout: float = config.nanny_timeout_seconds
         self.write_full_lines: int = config.nanny_write_full_lines
+        self.brief: str | None = (config.nanny_brief or "").strip() or None
         self._backend = backend
         self._enable_streaming = enable_streaming
         self._loop_factory = loop_factory
@@ -414,6 +415,7 @@ class NannyManager:
             self.model_alias = alias
             self.timeout = base.nanny_timeout_seconds
             self.write_full_lines = base.nanny_write_full_lines
+            self.brief = (base.nanny_brief or "").strip() or None
 
     # ------------------------------------------------------------------
     # Turns
@@ -437,8 +439,23 @@ class NannyManager:
             except RuntimeError:
                 pass
 
+    def _reasoning_at(self, reply_index: int) -> str:
+        """The reasoning channel of the stored reply, when the model used one.
+        Read from the stored message rather than the event stream so it is
+        the same with and without streaming.
+        """
+        messages = self._loop.messages
+        if 0 <= reply_index < len(messages):
+            message = messages[reply_index]
+            if message.role == Role.assistant and message.reasoning_content:
+                return str(message.reasoning_content)
+        return ""
+
     async def _turn(self, text: str, state: NannyState) -> tuple[str, int, int]:
-        """One nanny turn. Returns (reply, ask_index, reply_index)."""
+        """One nanny turn. Returns (reply, ask_index, reply_index). The reply
+        is the visible answer; a turn whose only text is reasoning is not an
+        empty answer, the parser reads the reasoning too.
+        """
         loop = self._loop
         ask_index = len(loop.messages)
         pieces: list[str] = []
@@ -469,9 +486,12 @@ class NannyManager:
 
         reply = "".join(pieces).strip()
         reply_index = len(loop.messages) - 1
-        if not reply:
+        if not reply and not self._reasoning_at(reply_index):
             raise NannyUnavailable("empty answer")
         return reply, ask_index, reply_index
+
+    def _parse_reply(self, reply: str, reply_index: int) -> NannyAnswer:
+        return parse_verdict(reply, reasoning=self._reasoning_at(reply_index))
 
     async def _ensure_header(self) -> None:
         if self._header_sent:
@@ -483,6 +503,33 @@ class NannyManager:
         )
         await self._turn(text, NannyState.REVIEWING)
         self._header_sent = True
+        if self.brief:
+            # The standing brief rides right behind the header, so it is in
+            # the nanny's context before the first call and, like the
+            # header, part of its stable KV-cache prefix.
+            await self._turn(self._tell_text(self.brief), NannyState.TALKING)
+
+    def _tell_text(self, text: str) -> str:
+        return Template(UtilityPrompt.NANNY_TELL.read()).safe_substitute(text=text)
+
+    async def tell(self, text: str) -> str:
+        """A standing message from the human outside any review: what to
+        watch for, what is fine for this task. Waits for an in-flight review
+        (the lock), sends the header first if nothing was sent yet, and
+        returns the nanny's confirmation. A nanny that does not answer
+        returns a notice instead of raising; the message is in its
+        transcript either way.
+        """
+        text = text.strip()
+        if not text:
+            raise ValueError("nothing to tell the nanny")
+        async with self._lock:
+            try:
+                await self._ensure_header()
+                reply, _, _ = await self._turn(self._tell_text(text), NannyState.TALKING)
+            except NannyUnavailable as exc:
+                reply = f"(nanny did not answer: {exc})"
+        return reply
 
     def _ask_text(self, request: NannyAskRequest) -> str:
         siblings = ""
@@ -518,7 +565,13 @@ class NannyManager:
             reply, ask_index, reply_index = await self._turn(
                 self._ask_text(request), NannyState.REVIEWING
             )
-            answer = parse_verdict(reply)
+            answer = self._parse_reply(reply, reply_index)
+            if not answer.readable:
+                # One nudge, once. The model owes no format; this just asks
+                # again before the prompt falls back to the human.
+                retry = UtilityPrompt.NANNY_RETRY.read()
+                reply, _, reply_index = await self._turn(retry, NannyState.REVIEWING)
+                answer = self._parse_reply(reply, reply_index)
             if (
                 answer.verdict is NannyVerdict.MORE
                 and request.presentation.full_text is not None
@@ -527,7 +580,7 @@ class NannyManager:
                     content=request.presentation.full_text
                 )
                 reply, _, reply_index = await self._turn(more, NannyState.REVIEWING)
-                answer = parse_verdict(reply)
+                answer = self._parse_reply(reply, reply_index)
             if answer.verdict is NannyVerdict.MORE:
                 # Nothing more to show, or asked twice: a refusal.
                 answer = NannyAnswer(

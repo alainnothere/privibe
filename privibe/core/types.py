@@ -214,6 +214,14 @@ class Role(StrEnum):
 class ApprovalResponse(StrEnum):
     YES = "y"
     NO = "n"
+    # The human hands the call to the nanny instead of deciding. Only
+    # meaningful when a nanny is attached and the prompt reached the human
+    # without a review (an escalated permission); the loop then runs the
+    # nanny path and, if the nanny refuses, asks the human again with the
+    # review. NANNY_ALWAYS also records a session rule so later calls needing
+    # the same permissions go to the nanny without asking.
+    NANNY = "nanny"
+    NANNY_ALWAYS = "nanny_always"
 
 
 class FileDiff(BaseModel):

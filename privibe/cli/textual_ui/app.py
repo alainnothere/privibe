@@ -601,6 +601,21 @@ class VibeApp(App):  # noqa: PLR0904
                 review.refusal_feedback(),
             ))
 
+    async def on_approval_app_nanny_delegate(
+        self, message: ApprovalApp.NannyDelegate
+    ) -> None:
+        """The human hands an escalated call to the nanny. The loop runs
+        the nanny path from the response; NANNY_ALWAYS also records the
+        session delegation there.
+        """
+        if self._pending_approval and not self._pending_approval.done():
+            response = (
+                ApprovalResponse.NANNY_ALWAYS
+                if message.always
+                else ApprovalResponse.NANNY
+            )
+            self._pending_approval.set_result((response, None))
+
     async def on_approval_app_nanny_talk(self, message: ApprovalApp.NannyTalk) -> None:
         review = self._pending_review
         if review is None:
@@ -1548,6 +1563,7 @@ class VibeApp(App):  # noqa: PLR0904
             config=self.config,
             required_permissions=required_permissions,
             review=review,
+            nanny_available=self._nanny is not None,
         )
         await self._switch_from_input(approval_app, scroll=True)
 
@@ -2589,6 +2605,8 @@ class VibeApp(App):  # noqa: PLR0904
                 self.run_worker(self._apply_nanny_action("off"), exclusive=False)
             elif arg.lower() == "log":
                 await self._apply_nanny_action("log")
+            elif arg.lower() == "tell" or arg.lower().startswith("tell "):
+                self.run_worker(self._nanny_tell(arg[4:].strip()), exclusive=False)
             else:
                 self.run_worker(self._apply_nanny_model(arg), exclusive=False)
             return
@@ -2604,6 +2622,32 @@ class VibeApp(App):  # noqa: PLR0904
                 ("log", "Show recent decisions"),
             ],
             current="change",
+        )
+
+    async def _nanny_tell(self, text: str) -> None:
+        """/ensure-commands-safety tell <text>: a standing message to the
+        nanny outside any review. Runs in a worker because it waits for an
+        in-flight review, whose prompt answers through the message pump.
+        """
+        if self._nanny is None:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "Nanny is off; /ensure-commands-safety <alias> turns it on.",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        if not text:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "Usage: /ensure-commands-safety tell <what the nanny should know>",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        reply = await self._nanny.tell(text)
+        await self._mount_and_scroll(
+            UserCommandMessage(f"**To the nanny:** {text}\n\n**Nanny:** {reply}")
         )
 
     async def _open_nanny_model_picker(self) -> None:
