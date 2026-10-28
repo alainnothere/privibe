@@ -60,6 +60,7 @@ from privibe.core.types import (
     Role,
     ToolCallEvent,
     ToolResultEvent,
+    UserMessageEvent,
     ToolStreamEvent,
     WaitingForInputEvent,
 )
@@ -139,6 +140,8 @@ Available commands:
   /llm-calls-per-turn  Cycle the LLM-call budget per message (30 / 60 / 90)
   /set-conversation-name <name>  Name this conversation (saved with the session; bare clears it)
   /ascii     Write policy for non-ASCII in model-written content: /ascii on|off (toggles without an argument)
+  /continue  Tell the model to go on from where it stopped
+  /auto-continue  Nudge the model on by itself when it stops unfinished: off|truncated|heuristic
   /effort    Cycle reasoning effort stamped on new messages (low / medium / xhigh)
   /ensure-commands-safety  Nanny: a second model that answers approval prompts for you; /nanny <alias>|off|log|tell <message>, or no argument for status
   /exit      Exit (also /quit, or Ctrl+D)
@@ -355,6 +358,10 @@ class ConsoleUI(NannyListener):
                 self._close_block()
                 print(self._result_line(event), flush=True)
                 self._print_result_body(event)
+
+            case UserMessageEvent() if event.auto_continue:
+                self._close_block()
+                print(f"[auto-continue] {event.content}", flush=True)
 
             case CompactStartEvent():
                 self._close_block()
@@ -794,6 +801,10 @@ class ConsoleUI(NannyListener):
                 )
             case "/ascii":
                 self._command_ascii(parts[1] if len(parts) > 1 else "")
+            case "/continue":
+                await self._run_turn("Continue.")
+            case "/auto-continue":
+                self._command_auto_continue(parts[1] if len(parts) > 1 else "")
             case "/effort":
                 self._command_effort()
             case "/ensure-commands-safety" | "/nanny":
@@ -836,6 +847,23 @@ class ConsoleUI(NannyListener):
         VibeConfig.save_updates({"tool_result_preview_lines": new_value})
         self.agent_loop.refresh_config()
         print(f"Tool result preview set to {new_value} lines.")
+
+    def _command_auto_continue(self, arg: str) -> None:
+        config = self.agent_loop.config
+        mode = arg.strip().lower()
+        if not mode:
+            print(
+                f"Auto-continue: {config.auto_continue} "
+                f"(up to {config.auto_continue_max} nudges per message). "
+                "/auto-continue off|truncated|heuristic"
+            )
+            return
+        if mode not in {"off", "truncated", "heuristic"}:
+            print(f"'{arg}' is not an auto-continue mode (off, truncated, heuristic).")
+            return
+        VibeConfig.save_updates({"auto_continue": mode})
+        self.agent_loop.refresh_config()
+        print(f"Auto-continue: {mode}.")
 
     def _command_ascii(self, arg: str) -> None:
         from privibe.core.utils.asciify import session_ascii_override

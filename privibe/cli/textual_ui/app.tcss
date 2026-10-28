@@ -236,6 +236,15 @@ Markdown {
     height: auto;
 }
 
+/* An auto-continue nudge: a real user message the loop wrote itself. */
+.user-message.auto-continue {
+    .user-message-content {
+        text-style: italic;
+        color: ansi_bright_black;
+        border-left: heavy ansi_bright_black;
+    }
+}
+
 .user-message-prompt {
     width: auto;
     height: 100%;

@@ -131,6 +131,10 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
 - `/resume` session picker showing the folder and a short preview of each
   session, with search: type to filter, `-word` to exclude, results ranked by
   match. Conversation history is re-rendered on resume.
+- `/auto-continue off|truncated|heuristic`: when a model stops without
+  finishing (cut off at the server's token cap, or "I'll now do X." and
+  silence), privibe appends a visible nudge and lets it go on, up to
+  `auto_continue_max` times per message. `/continue` is the manual one.
 - `/set-conversation-name <name>` (or `/name`) names the conversation: shown
   in the terminal tab title and the UI, saved with the session, searchable
   in `/resume`, kept across rewind and compact, dropped by `/clear`. Bare

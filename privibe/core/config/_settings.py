@@ -634,6 +634,26 @@ class VibeConfig(BaseSettings):
         default_factory=lambda: list(LLM_CALLS_PER_TURN_OPTIONS),
         description="Values /llm-calls-per-turn offers (positive ints).",
     )
+    auto_continue: Literal["off", "truncated", "heuristic"] = Field(
+        default="off",
+        description=(
+            "When the model stops without finishing, privibe appends a visible "
+            "'continue' nudge and lets it go on. 'truncated': only when the "
+            "server reports it cut the reply at the token cap. 'heuristic': "
+            "also when the reply announces a step and stops (\"I'll now ...\", "
+            "a trailing colon, an open code fence). A reply that asks you "
+            "something is never nudged. Set from the TUI with /auto-continue."
+        ),
+    )
+    auto_continue_max: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Nudges per user message before auto-continue gives up and the "
+            "turn ends normally. Each nudge is one more LLM call against "
+            "max_llm_calls_per_turn."
+        ),
+    )
     ascii_default: bool = Field(
         default=True,
         description=(

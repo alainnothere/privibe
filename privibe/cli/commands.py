@@ -106,7 +106,7 @@ class CommandRegistry:
                 handler="_show_proxy_setup",
             ),
             "resume": Command(
-                aliases=frozenset(["/resume", "/continue"]),
+                aliases=frozenset(["/resume"]),
                 description="Browse and resume past sessions",
                 handler="_show_session_picker",
             ),
@@ -159,6 +159,17 @@ class CommandRegistry:
                 aliases=frozenset(["/llm-calls-per-turn"]),
                 description="Set how many LLM calls one message may trigger before the model must write up and stop; /llm-calls-per-turn <n> or pick from a menu",
                 handler="_select_llm_calls_per_turn",
+                takes_args=True,
+            ),
+            "continue": Command(
+                aliases=frozenset(["/continue"]),
+                description="Tell the model to go on from where it stopped (a plain 'Continue.' message)",
+                handler="_continue_turn",
+            ),
+            "auto_continue": Command(
+                aliases=frozenset(["/auto-continue"]),
+                description="Nudge the model on by itself when it stops unfinished; /auto-continue off|truncated|heuristic, or pick from a menu",
+                handler="_select_auto_continue",
                 takes_args=True,
             ),
             "ascii": Command(

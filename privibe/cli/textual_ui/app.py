@@ -836,6 +836,7 @@ class VibeApp(App):  # noqa: PLR0904
             "/scrollback": str(config.message_prune_keep_rows),
             "/llm-calls-per-turn": str(config.max_llm_calls_per_turn),
             "/set-conversation-name": self.agent_loop.conversation_name or "",
+            "/auto-continue": config.auto_continue,
             "/detect-context-size": detect,
             "/ensure-commands-safety": self._nanny_status_label(),
         }
@@ -1081,6 +1082,7 @@ class VibeApp(App):  # noqa: PLR0904
                 if (
                     isinstance(event, UserMessageEvent)
                     and not event.steering
+                    and not event.auto_continue
                     and self._pending_user_widget is not None
                 ):
                     self._pending_user_widget.message_index = event.message_index
@@ -2315,6 +2317,8 @@ class VibeApp(App):  # noqa: PLR0904
                 await self._apply_llm_calls_per_turn(int(event.value))
             case "ascii":
                 await self._apply_ascii(event.value == "on")
+            case "auto_continue":
+                await self._apply_auto_continue(event.value)
             # Both may wait for an in-flight review, whose human prompt is
             # answered through this same message pump: never await them here.
             case "nanny_model":
@@ -2729,6 +2733,50 @@ class VibeApp(App):  # noqa: PLR0904
                 f"Refusals reach you with its reason.{same}"
             )
         )
+
+    _AUTO_CONTINUE_OPTIONS: ClassVar[list[tuple[str, str]]] = [
+        ("off", "Off: the turn ends whenever the model stops"),
+        ("truncated", "Nudge only when the server cut the reply at its token cap"),
+        ("heuristic", "Also nudge when the reply announces a step and stops"),
+    ]
+
+    async def _select_auto_continue(self, args: str = "") -> None:
+        error: str | None = None
+        if args:
+            value = args.strip().lower()
+            if value in {v for v, _ in self._AUTO_CONTINUE_OPTIONS}:
+                await self._apply_auto_continue(value)
+                return
+            error = f"'{args}' is not an auto-continue mode (off, truncated, heuristic)."
+        await self._open_option_picker(
+            setting="auto_continue",
+            title=(
+                "Auto-continue when the model stops without finishing "
+                f"(up to {self.config.auto_continue_max} nudges per message)"
+            ),
+            options=list(self._AUTO_CONTINUE_OPTIONS),
+            current=self.config.auto_continue,
+            error=error,
+        )
+
+    async def _apply_auto_continue(self, mode: str) -> None:
+        VibeConfig.save_updates({"auto_continue": mode})
+        self.agent_loop.refresh_config()
+        await self._mount_and_scroll(
+            UserCommandMessage(f"Auto-continue: {mode}.")
+        )
+
+    async def _continue_turn(self) -> None:
+        """/continue: the manual nudge, a plain user message."""
+        if self._agent_running:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "The agent is still running; /continue is for after it stops.",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        await self._handle_user_message("Continue.")
 
     async def _select_ascii(self, args: str = "") -> None:
         from privibe.core.utils.asciify import session_ascii_override

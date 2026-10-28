@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from privibe.core.config import ProviderConfig
 from privibe.core.llm.backend.base import APIAdapter, PreparedRequest
+from privibe.core.llm.backend.finish import anthropic_finish_reason
 from privibe.core.types import (
     AvailableTool,
     FunctionCall,
@@ -187,6 +188,7 @@ class AnthropicMapper:
                 tool_calls=tuple(tool_calls) if tool_calls else None,
             ),
             usage=usage,
+            finish_reason=anthropic_finish_reason(data.get("stop_reason")),
         )
 
     def parse_streaming_event(
@@ -283,13 +285,15 @@ class AnthropicMapper:
         self, data: dict[str, Any], current_index: int
     ) -> tuple[LLMChunk | None, int]:
         usage_data = data.get("usage", {})
-        if not usage_data:
+        stop_reason = (data.get("delta") or {}).get("stop_reason")
+        if not usage_data and not stop_reason:
             return None, current_index
         chunk = LLMChunk(
             message=LLMMessage(role=Role.assistant),
             usage=LLMUsage(
                 prompt_tokens=0, completion_tokens=usage_data.get("output_tokens", 0)
             ),
+            finish_reason=anthropic_finish_reason(stop_reason),
         )
         return chunk, current_index
 
@@ -635,11 +639,16 @@ class AnthropicAdapter(APIAdapter):
 
     def _parse_message_delta(self, data: dict[str, Any]) -> LLMChunk:
         usage_data = data.get("usage", {})
+        finish = anthropic_finish_reason((data.get("delta") or {}).get("stop_reason"))
         if not usage_data:
-            return LLMChunk(message=LLMMessage(role=Role.assistant, content=None))
+            return LLMChunk(
+                message=LLMMessage(role=Role.assistant, content=None),
+                finish_reason=finish,
+            )
         return LLMChunk(
             message=LLMMessage(role=Role.assistant, content=None),
             usage=LLMUsage(
                 prompt_tokens=0, completion_tokens=usage_data.get("output_tokens", 0)
             ),
+            finish_reason=finish,
         )

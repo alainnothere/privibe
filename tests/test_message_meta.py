@@ -52,6 +52,7 @@ META_FIELDS = {
     "first_chunk_at",
     "response_done_at",
     "server_timings",
+    "finish_reason",
     "approval_asked_at",
     "approval_answered_at",
     "tool_started_at",

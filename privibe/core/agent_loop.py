@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from privibe.core.agents.manager import AgentManager
 from privibe.core.agents.models import AgentProfile, BuiltinAgentName
 from privibe.core.config import ModelConfig, ProviderConfig, VibeConfig
+from privibe.core.auto_continue import AutoContinueMode, NudgeKind, nudge_kind
 from privibe.core.conversation import ConversationList, is_step_budget_warning
 from privibe.core.llm.backend.factory import BACKEND_FACTORY
 from privibe.core.llm.backend.generic import GenericBackend
@@ -347,6 +348,9 @@ class AgentLoop:
 
         self._session_rules: list[ApprovedRule] = []
         self._session_denials: list[DeniedRule] = []
+        # Auto-continue nudges appended during the current user turn; capped
+        # by config.auto_continue_max, reset when act() starts a turn.
+        self._auto_continues_this_turn = 0
         # "Ask the nanny about calls like this for this session": escalated
         # permissions matched here skip the human and go to the nanny.
         self._nanny_delegations: list[ApprovedRule] = []
@@ -388,6 +392,58 @@ class AgentLoop:
         self._steering_queue.append(message)
 
     # agent steering — Drain and return all queued steering messages.
+    def _auto_continue_event(self, last_message: LLMMessage) -> UserMessageEvent | None:
+        """Append an auto-continue nudge when the turn is ending unfinished.
+
+        Decides with privibe.core.auto_continue; owns the per-turn cap, the
+        step-budget exception (a forced write-up is meant to end the turn)
+        and the appending. The nudge is a real user message, flagged
+        auto_continue so the UI draws it dim, and gets its own checkpoint
+        like a steering message. Returns the event the UI mounts, or None.
+        """
+        mode = self.config.auto_continue
+        if mode == AutoContinueMode.OFF or last_message.role != Role.assistant:
+            return None
+        if self._auto_continues_this_turn >= self.config.auto_continue_max:
+            return None
+        # The step budget just asked for a write-up: that reply ends the
+        # turn on purpose, however unfinished it reads.
+        if len(self.messages) >= 2 and is_step_budget_warning(self.messages[-2]):
+            return None
+        kind = nudge_kind(last_message, mode)
+        if kind is None:
+            return None
+        prompt = (
+            UtilityPrompt.AUTO_CONTINUE_TRUNCATED
+            if kind is NudgeKind.TRUNCATED
+            else UtilityPrompt.AUTO_CONTINUE_UNFINISHED
+        )
+        text = prompt.read()
+        self._auto_continues_this_turn += 1
+        logger.info(
+            "auto-continue %d/%d (%s) after assistant message %s",
+            self._auto_continues_this_turn,
+            self.config.auto_continue_max,
+            kind.value,
+            last_message.message_id,
+        )
+        self.rewind_manager.create_checkpoint()
+        message_index = len(self.messages)
+        msg = LLMMessage(
+            role=Role.user,
+            content=text,
+            auto_continue=True,
+            reasoning_effort=self.current_reasoning_effort(),
+            meta=MessageMeta(submitted_at=time.time()),
+        )
+        self.messages.add(msg)
+        return UserMessageEvent(
+            content=text,
+            message_id=msg.message_id or "",
+            message_index=message_index,
+            auto_continue=True,
+        )
+
     def _flush_steering_queue(self) -> list[UserMessageEvent]:
         """Append queued steering messages as real user messages.
 
@@ -936,6 +992,7 @@ class AgentLoop:
         answer_only: bool = False,
     ) -> AsyncGenerator[BaseEvent, None]:
         self._answer_only_turn = answer_only
+        self._auto_continues_this_turn = 0
         if self.nanny is not None:
             self.nanny.note_user_prompt(msg, self.agent_profile.name)
         self._cancel_preflight_warmup()
@@ -1175,6 +1232,13 @@ class AgentLoop:
 
                 if user_cancelled:
                     return
+
+                if should_break_loop and not self._answer_only_turn:
+                    nudge = self._auto_continue_event(last_message)
+                    if nudge is not None:
+                        yield nudge
+                        await self._save_messages()
+                        should_break_loop = False
 
                 if not should_break_loop:
                     # agent steering — the tool batch is complete and the next
@@ -1965,11 +2029,16 @@ class AgentLoop:
                         request_sent_at=self._llm_requested_at,
                         response_done_at=time.time(),
                         server_timings=result.usage.server_timings,
+                        finish_reason=result.finish_reason,
                     )
                 }
             )
             self.messages.add(processed_message)
-            return LLMChunk(message=processed_message, usage=result.usage)
+            return LLMChunk(
+                message=processed_message,
+                usage=result.usage,
+                finish_reason=result.finish_reason,
+            )
 
         except Exception as e:
             if _should_raise_rate_limit_error(e):
@@ -2037,7 +2106,11 @@ class AgentLoop:
                 processed_message = self.format_handler.process_api_response_message(
                     chunk.message
                 )
-                processed_chunk = LLMChunk(message=processed_message, usage=chunk.usage)
+                processed_chunk = LLMChunk(
+                    message=processed_message,
+                    usage=chunk.usage,
+                    finish_reason=chunk.finish_reason,
+                )
                 chunk_agg = (
                     processed_chunk
                     if chunk_agg is None
@@ -2091,6 +2164,7 @@ class AgentLoop:
                             first_chunk_at=first_chunk_at,
                             response_done_at=time.time(),
                             server_timings=usage.server_timings,
+                            finish_reason=chunk_agg.finish_reason,
                         )
                     }
                 )

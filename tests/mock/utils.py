@@ -29,6 +29,7 @@ def mock_llm_chunk(
     # elapsed), which varies run-to-run and breaks exact-match UI snapshots.
     tokens_per_second: float = 50.0,
     prompt_tokens_per_second: float = 100.0,
+    finish_reason: str | None = None,
 ) -> LLMChunk:
     message = LLMMessage(
         role=role,
@@ -46,6 +47,7 @@ def mock_llm_chunk(
             tokens_per_second=tokens_per_second,
             prompt_tokens_per_second=prompt_tokens_per_second,
         ),
+        finish_reason=finish_reason,
     )
 
 

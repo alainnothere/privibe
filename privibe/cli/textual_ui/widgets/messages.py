@@ -41,12 +41,21 @@ class ExpandingBorder(NonSelectableStatic):
 
 class UserMessage(Static):
     def __init__(
-        self, content: str, pending: bool = False, message_index: int | None = None
+        self,
+        content: str,
+        pending: bool = False,
+        message_index: int | None = None,
+        auto_continue: bool = False,
     ) -> None:
         super().__init__()
         self.add_class("user-message")
+        if auto_continue:
+            # Appended by the loop, not typed: drawn dim with a label so the
+            # user sees privibe spoke for them, and why.
+            self.add_class("auto-continue")
         self._content = content
         self._pending = pending
+        self.auto_continue = auto_continue
         self.message_index: int | None = message_index
 
     def get_content(self) -> str:

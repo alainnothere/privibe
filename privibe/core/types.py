@@ -299,6 +299,10 @@ class MessageMeta(BaseModel):
     first_chunk_at: float | None = None
     response_done_at: float | None = None
     server_timings: ServerTimings | None = None
+    # Why the server stopped generating, normalised to the OpenAI words:
+    # "stop", "length" (token cap hit), "tool_calls"; None when the backend
+    # did not say. Display and auto-continue read it; the model never does.
+    finish_reason: str | None = None
 
     approval_asked_at: float | None = None
     approval_answered_at: float | None = None
@@ -326,6 +330,11 @@ class LLMMessage(BaseModel):
     # builder wraps it in the steering envelope (prompts/steering.md) so the
     # model treats it as a mid-task instruction rather than a fresh turn.
     steering: bool = False
+    # A nudge the harness appended on its own when the model stopped
+    # without finishing (cut off at the token cap, or announced work it did
+    # not do). A real user message on the wire; the flag only lets the UI
+    # draw it dim and the loop count it against auto_continue_max.
+    auto_continue: bool = False
     reasoning_content: Content | None = None
     reasoning_signature: str | None = None
     reasoning_message_id: str | None = None
@@ -493,6 +502,10 @@ class LLMChunk(BaseModel):
     # OpenAI-compatible response). Used to notice a model swap behind a static
     # endpoint. None for backends that don't report it.
     served_model: str | None = None
+    # The server's finish reason for this response, normalised: "stop",
+    # "length", "tool_calls", or None. Streaming: set on the chunk that
+    # carried it, usually the last; __add__ keeps the latest non-None.
+    finish_reason: str | None = None
 
     def __add__(self, other: LLMChunk) -> LLMChunk:
         if self.usage is None and other.usage is None:
@@ -504,6 +517,7 @@ class LLMChunk(BaseModel):
             usage=new_usage,
             correlation_id=other.correlation_id or self.correlation_id,
             served_model=other.served_model or self.served_model,
+            finish_reason=other.finish_reason or self.finish_reason,
         )
 
 
@@ -521,6 +535,9 @@ class UserMessageEvent(BaseEvent):
     # appended itself; the UI mounts that bubble from the event.
     message_index: int | None = None
     steering: bool = False
+    # Appended by the loop itself as an auto-continue nudge (see
+    # LLMMessage.auto_continue); the UI mounts it dim, like steering.
+    auto_continue: bool = False
 
 
 class AssistantEvent(BaseEvent):

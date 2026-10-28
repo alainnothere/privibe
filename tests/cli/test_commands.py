@@ -55,7 +55,8 @@ class TestCommandRegistry:
     def test_resume_command_registration(self) -> None:
         registry = CommandRegistry()
         assert registry.get_command_name("/resume") == "resume"
-        assert registry.get_command_name("/continue") == "resume"
+        # /continue used to be a resume alias; it now nudges the model on.
+        assert registry.get_command_name("/continue") == "continue"
         cmd = registry.find_command("/resume")
         assert cmd is not None
         assert cmd.handler == "_show_session_picker"

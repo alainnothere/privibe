@@ -84,12 +84,17 @@ class EventHandler:
                     self.on_profile_changed()
             case UserMessageEvent():
                 await self.finalize_streaming()
-                if event.steering:
-                    # The loop appended this one itself (typed mid-turn); the
-                    # app never mounted a bubble for it the way it does for a
-                    # submitted message, so do it here with the rewind index.
+                if event.steering or event.auto_continue:
+                    # The loop appended this one itself (typed mid-turn, or
+                    # an auto-continue nudge); the app never mounted a bubble
+                    # for it the way it does for a submitted message, so do
+                    # it here with the rewind index.
                     await self.mount_callback(
-                        UserMessage(event.content, message_index=event.message_index)
+                        UserMessage(
+                            event.content,
+                            message_index=event.message_index,
+                            auto_continue=event.auto_continue,
+                        )
                     )
             case WaitingForInputEvent():
                 await self.finalize_streaming()

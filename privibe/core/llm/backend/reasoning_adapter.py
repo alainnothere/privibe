@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 
 from privibe.core.config import ProviderConfig
 from privibe.core.llm.backend.base import APIAdapter, PreparedRequest
+from privibe.core.llm.backend.finish import finish_reason_of
 from privibe.core.llm.message_utils import (
     merge_consecutive_user_messages,
     strip_reasoning,
@@ -238,4 +239,4 @@ class ReasoningAdapter(APIAdapter):
             server_timings=ServerTimings.model_validate(timings) if timings else None,
         )
 
-        return LLMChunk(message=message, usage=usage)
+        return LLMChunk(message=message, usage=usage, finish_reason=finish_reason_of(data))

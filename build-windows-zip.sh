@@ -16,12 +16,17 @@ cd "${REPO_ROOT}"
 STAMP="$(date -u +%y%m%d%H%M)"
 OUT="${REPO_ROOT}/privibe-source-${STAMP}.zip"
 
-# Snapshot the working tree (includes uncommitted changes to tracked files like uv.lock).
-# Falls back to HEAD if there is nothing to stash.
-SNAPSHOT="$(git stash create || true)"
-SNAPSHOT="${SNAPSHOT:-HEAD}"
+# Snapshot the working tree: tracked files as they are on disk, plus untracked
+# files git does not ignore. Done through a scratch index because `git stash
+# create` takes only tracked files: a new module imported by a modified one
+# shipped without itself once, and the zip crashed on import.
+# .gitignore still rules, so .venv, .git, *.deb, dist/, build/ etc. stay out.
+TMP_INDEX="$(mktemp)"
+cp "$(git rev-parse --git-path index)" "${TMP_INDEX}"
+GIT_INDEX_FILE="${TMP_INDEX}" git add -A
+SNAPSHOT="$(GIT_INDEX_FILE="${TMP_INDEX}" git write-tree)"
+rm -f "${TMP_INDEX}"
 
-# Only ship tracked files: skips .venv, .git, *.deb, dist/, build/, pyinstaller artifacts, etc.
 git archive --format=zip --prefix=privibe/ -o "${OUT}" "${SNAPSHOT}"
 
 # Drop a Windows quickstart inside the archive.
@@ -66,3 +71,5 @@ ln -sfn "$(basename "${OUT}")" "${LATEST}"
 echo "Built:  ${OUT}"
 echo "Size:   $(du -h "${OUT}" | cut -f1)"
 echo "Latest: ${LATEST} -> $(basename "${OUT}")"
+
+cp  "$(basename "${OUT}")" ~/sharedViaLlama.cpp/privibe-source-latest.zip 

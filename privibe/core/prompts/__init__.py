@@ -80,6 +80,8 @@ class SystemPrompt(Prompt):
 
 class UtilityPrompt(Prompt):
     AGENTS_DOC = auto()
+    AUTO_CONTINUE_TRUNCATED = auto()
+    AUTO_CONTINUE_UNFINISHED = auto()
     CHAT_EXIT = auto()
     CHAT_REMINDER = auto()
     COMPACT = auto()

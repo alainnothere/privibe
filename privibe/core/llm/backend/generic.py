@@ -10,6 +10,7 @@ import httpx
 
 from privibe.core.llm.backend.anthropic import AnthropicAdapter
 from privibe.core.llm.backend.base import APIAdapter, PreparedRequest
+from privibe.core.llm.backend.finish import finish_reason_of, parse_openai_message
 from privibe.core.llm.backend.reasoning_adapter import ReasoningAdapter
 from privibe.core.llm.backend.vertex import VertexAnthropicAdapter
 from privibe.core.llm.exceptions import BackendErrorBuilder
@@ -220,24 +221,7 @@ class OpenAIAdapter(APIAdapter):
     def _parse_message(
         self, data: dict[str, Any], field_name: str
     ) -> LLMMessage | None:
-        if data.get("choices"):
-            choice = data["choices"][0]
-            if "message" in choice:
-                msg_dict = self._reasoning_from_api(choice["message"], field_name)
-                return LLMMessage.model_validate(msg_dict)
-            if "delta" in choice:
-                msg_dict = self._reasoning_from_api(choice["delta"], field_name)
-                return LLMMessage.model_validate(msg_dict)
-            raise ValueError("Invalid response data: missing message or delta")
-
-        if "message" in data:
-            msg_dict = self._reasoning_from_api(data["message"], field_name)
-            return LLMMessage.model_validate(msg_dict)
-        if "delta" in data:
-            msg_dict = self._reasoning_from_api(data["delta"], field_name)
-            return LLMMessage.model_validate(msg_dict)
-
-        return None
+        return parse_openai_message(data, field_name, self._reasoning_from_api)
 
     def parse_response(
         self, data: dict[str, Any], provider: ProviderConfig
@@ -258,7 +242,12 @@ class OpenAIAdapter(APIAdapter):
             prompt_tokens_per_second=timings.get("prompt_per_second"),
         )
 
-        return LLMChunk(message=message, usage=usage, served_model=data.get("model"))
+        return LLMChunk(
+            message=message,
+            usage=usage,
+            served_model=data.get("model"),
+            finish_reason=finish_reason_of(data),
+        )
 
 
 ADAPTERS: dict[str, APIAdapter] = {
@@ -277,6 +266,7 @@ _LOCAL_ONLY_FIELDS: set[str] = {
     "reasoning_message_id",
     "injected",
     "steering",
+    "auto_continue",
 }
 
 
