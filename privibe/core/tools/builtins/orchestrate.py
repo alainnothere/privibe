@@ -42,6 +42,7 @@ from privibe.core.tools.utils import is_path_within_workdir, is_protected_path
 from privibe.core.types import (
     AssistantEvent,
     Role as MessageRole,
+    ToolCallEvent,
     ToolResultEvent,
     ToolStreamEvent,
 )
@@ -50,6 +51,17 @@ from privibe.core.utils.tags import VIBE_STOP_EVENT_TAG
 # The file tools whose writes the job's scope limits. bash is left to its own
 # permission config: its allowlist is command patterns, not paths.
 _SCOPED_TOOLS = [t for t in MUTATING_TOOLS if t != "bash"]
+
+# The call line shows this much of the goal; the body shows all of it.
+_SUMMARY_GOAL_CHARS = 80
+
+
+def summarize_goal(goal: str, limit: int = _SUMMARY_GOAL_CHARS) -> str:
+    """The goal's first non-empty line, cut to `limit` characters."""
+    first = next((ln.strip() for ln in goal.splitlines() if ln.strip()), "")
+    if len(first) > limit:
+        return first[: limit - 1].rstrip() + "…"
+    return first
 
 
 class OrchestrateArgs(BaseModel):
@@ -120,7 +132,9 @@ class Orchestrate(
                 else "the manager says so (unverified)"
             )
         )
-        return ToolCallDisplay(summary="orchestrate", content="\n".join(lines))
+        goal = summarize_goal(args.goal)
+        summary = f"orchestrate: {goal}" if goal else "orchestrate"
+        return ToolCallDisplay(summary=summary, content="\n".join(lines))
 
     @classmethod
     def format_result_display(cls, result: OrchestrateResult) -> ToolResultDisplay:
@@ -311,24 +325,28 @@ class Orchestrate(
             loop.add_session_rule(rule)
         loop.set_reasoning_effort(effort)
 
+        async def progress(text: str) -> None:
+            await queue.put(
+                ToolStreamEvent(
+                    tool_name=self.get_name(),
+                    message=f"{role.value}: {text}",
+                    tool_call_id=ctx.tool_call_id,
+                )
+            )
+
         async for event in loop.act(message, answer_only=answer_only):
-            if isinstance(event, ToolResultEvent) and event.result and event.tool_class:
+            if isinstance(event, ToolCallEvent) and event.args is not None:
+                display = ToolUIDataAdapter(event.tool_class).get_call_display(event)
+                await progress(display.summary)
+            elif (
+                isinstance(event, ToolResultEvent) and event.result and event.tool_class
+            ):
                 display = ToolUIDataAdapter(event.tool_class).get_result_display(event)
-                await queue.put(
-                    ToolStreamEvent(
-                        tool_name=self.get_name(),
-                        message=f"{role.value}: {display.message}",
-                        tool_call_id=ctx.tool_call_id,
-                    )
-                )
+                await progress(display.message)
+            elif isinstance(event, ToolResultEvent) and event.error:
+                await progress(f"{event.tool_name} error: {event.error}")
             elif isinstance(event, AssistantEvent) and event.stopped_by_middleware:
-                await queue.put(
-                    ToolStreamEvent(
-                        tool_name=self.get_name(),
-                        message=f"{role.value}: stopped by middleware",
-                        tool_call_id=ctx.tool_call_id,
-                    )
-                )
+                await progress("stopped by middleware")
 
         for msg in reversed(loop.messages[:]):
             if msg.role == MessageRole.assistant and msg.content:

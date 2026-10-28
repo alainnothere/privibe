@@ -41,6 +41,12 @@ class ToolCallMessage(StatusMessage):
         self._is_history = history or event is None
         self._stream_widget: NoMarkupStatic | None = None
         self._hint_widget: NoMarkupStatic | None = None
+        self._triangle_widget: NonSelectableStatic | None = None
+        self._body: Vertical | None = None
+        self._params_widget: NoMarkupStatic | None = None
+        self._log_widget: NoMarkupStatic | None = None
+        self._log: list[str] = []
+        self.collapsed = True
         self._start_time: float | None = None
         self._last_elapsed: int = -1
 
@@ -70,9 +76,57 @@ class ToolCallMessage(StatusMessage):
                 yield self._text_widget
                 self._hint_widget = NoMarkupStatic("", classes="loading-hint")
                 yield self._hint_widget
+                self._triangle_widget = NonSelectableStatic(
+                    "▶" if self.collapsed else "▼", classes="tool-call-triangle"
+                )
+                self._triangle_widget.display = self._has_body()
+                yield self._triangle_widget
             self._stream_widget = NoMarkupStatic("", classes="tool-stream-message")
             self._stream_widget.display = False
             yield self._stream_widget
+            self._body = Vertical(classes="tool-call-body")
+            self._body.display = not self.collapsed and self._has_body()
+            with self._body:
+                self._params_widget = NoMarkupStatic(
+                    self._params_text(), classes="tool-call-params"
+                )
+                self._params_widget.display = bool(self._params_text())
+                yield self._params_widget
+                self._log_widget = NoMarkupStatic("", classes="tool-call-log")
+                self._log_widget.display = False
+                yield self._log_widget
+
+    def _params_text(self) -> str:
+        """The call's parameters as the tool chose to show them: the
+        ToolCallDisplay content, which only the collapsible body renders.
+        """
+        if self._event is None or self._event.tool_class is None:
+            return ""
+        display = ToolUIDataAdapter(self._event.tool_class).get_call_display(
+            self._event
+        )
+        return (display.content or "").rstrip()
+
+    def _has_body(self) -> bool:
+        return bool(self._params_text()) or bool(self._log)
+
+    def apply_height_cap(self, screen_height: int | None = None) -> None:
+        """Clamp the body to half the screen, in cells (see half_viewport_cap)."""
+        if self._body is not None:
+            self._body.styles.max_height = half_viewport_cap(
+                screen_height if screen_height is not None else self.app.size.height
+            )
+
+    async def on_click(self) -> None:
+        await self.set_collapsed(not self.collapsed)
+
+    async def set_collapsed(self, collapsed: bool) -> None:
+        self.collapsed = collapsed
+        if self._triangle_widget:
+            self._triangle_widget.update("▶" if collapsed else "▼")
+            self._triangle_widget.display = self._has_body()
+        if self._body:
+            self._body.display = not collapsed and self._has_body()
 
     def update_display(self) -> None:
         super().update_display()
@@ -91,6 +145,7 @@ class ToolCallMessage(StatusMessage):
     def on_mount(self) -> None:
         if not self._is_history:
             self._start_time = time()
+        self.apply_height_cap()
         super().on_mount()
         siblings = list(self.parent.children) if self.parent else []
         idx = siblings.index(self) if self in siblings else -1
@@ -115,12 +170,35 @@ class ToolCallMessage(StatusMessage):
         self._tool_name = event.tool_name
         if self._text_widget:
             self._text_widget.update(self.get_content())
+        if self._params_widget:
+            params = self._params_text()
+            self._params_widget.update(params)
+            self._params_widget.display = bool(params)
+        if self._triangle_widget:
+            self._triangle_widget.display = self._has_body()
+        if self._body:
+            self._body.display = not self.collapsed and self._has_body()
+
+    @property
+    def stream_log(self) -> list[str]:
+        """Every stream message this call has shown, oldest first."""
+        return list(self._log)
 
     def set_stream_message(self, message: str) -> None:
-        """Update the stream message displayed below the tool call indicator."""
+        """Show the latest stream message under the call line and append it
+        to the log the collapsible body holds.
+        """
+        self._log.append(message)
         if self._stream_widget:
             self._stream_widget.update(f"→ {message}")
             self._stream_widget.display = True
+        if self._log_widget:
+            self._log_widget.update("\n".join(self._log))
+            self._log_widget.display = True
+        if self._triangle_widget:
+            self._triangle_widget.display = True
+        if self._body:
+            self._body.display = not self.collapsed
 
     def stop_spinning(self, success: bool = True) -> None:
         """Stop the spinner while keeping stream row stable to avoid layout jumps."""

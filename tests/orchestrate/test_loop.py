@@ -230,7 +230,8 @@ async def test_rounds_exhausted_and_notes_kept_when_worker_omits_them(
     assert ledger.log_path.read_text().count("notes kept") == 2
     progress = [e.message for e in events if isinstance(e, Progress)]
     assert progress[0] == "manager: planning"
-    assert "round 2/2: worker on task 2" in progress
+    assert any(p.startswith("round 2/2: worker on task 2: ") for p in progress)
+    assert "plan: 2 tasks" in progress
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from privibe.core.tools.builtins.ask_user_question import AskUserQuestionResult
 from privibe.core.tools.builtins.bash import BashArgs, BashResult
 from privibe.core.tools.builtins.grep import GrepArgs, GrepResult
 from privibe.core.tools.builtins.hashed_read import HashedReadArgs
+from privibe.core.tools.builtins.orchestrate import OrchestrateArgs
 from privibe.core.tools.builtins.read_file import ReadFileArgs, ReadFileResult
 from privibe.core.tools.builtins.search_replace import (
     SEARCH_REPLACE_BLOCK_RE,
@@ -378,6 +379,33 @@ class GrepResultWidget(ToolResultWidget[GrepResult]):
         yield from self._footer(truncation_info)
 
 
+class OrchestrateApprovalWidget(ToolApprovalWidget[OrchestrateArgs]):
+    """The whole job as the workers will see it: the goal in full, then the
+    scope, the pre-fed files and what ends the job.
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Markdown(self.args.goal.strip())
+        yield NoMarkupStatic(
+            "scope: " + (", ".join(self.args.scope) if self.args.scope else "(none)"),
+            classes="approval-description",
+        )
+        yield NoMarkupStatic(
+            "files: " + (", ".join(self.args.files) if self.args.files else "(none)"),
+            classes="approval-description",
+        )
+        done = (
+            f"`{self.args.done_command}` exits 0"
+            if self.args.done_command
+            else "the manager says so (unverified)"
+        )
+        yield NoMarkupStatic(f"done when: {done}", classes="approval-description")
+        if self.args.max_rounds is not None:
+            yield NoMarkupStatic(
+                f"max_rounds: {self.args.max_rounds}", classes="approval-description"
+            )
+
+
 class AskUserQuestionResultWidget(ToolResultWidget[AskUserQuestionResult]):
     def compose(self) -> ComposeResult:
         if self.collapsed or not self.result:
@@ -400,6 +428,7 @@ APPROVAL_WIDGETS: dict[str, type[ToolApprovalWidget]] = {
     "search_replace": SearchReplaceApprovalWidget,
     "grep": GrepApprovalWidget,
     "todo": TodoApprovalWidget,
+    "orchestrate": OrchestrateApprovalWidget,
 }
 
 RESULT_WIDGETS: dict[str, type[ToolResultWidget]] = {

@@ -74,7 +74,7 @@ from privibe.cli.textual_ui.widgets.question_app import QuestionApp
 from privibe.cli.textual_ui.widgets.rewind_app import RewindApp
 from privibe.cli.textual_ui.widgets.session_picker import SessionPickerApp
 from privibe.cli.textual_ui.widgets.tool_widgets import half_viewport_cap
-from privibe.cli.textual_ui.widgets.tools import ToolResultMessage
+from privibe.cli.textual_ui.widgets.tools import ToolCallMessage, ToolResultMessage
 from privibe.cli.textual_ui.widgets.voice_app import VoiceApp
 from privibe.cli.textual_ui.windowing import (
     HISTORY_RESUME_TAIL_MESSAGES,
@@ -487,6 +487,8 @@ class VibeApp(App):  # noqa: PLR0904
         """
         for message in self.query(ToolResultMessage):
             message.apply_height_cap(event.size.height)
+        for call in self.query(ToolCallMessage):
+            call.apply_height_cap(event.size.height)
         for scroll in self.query(".approval-tool-info-scroll"):
             scroll.styles.max_height = half_viewport_cap(event.size.height)
 
@@ -2050,6 +2052,9 @@ class VibeApp(App):  # noqa: PLR0904
 
         for result in self.query(ToolResultMessage):
             await result.set_collapsed(self._tools_collapsed)
+
+        for call in self.query(ToolCallMessage):
+            await call.set_collapsed(self._tools_collapsed)
 
         for reasoning in self.query(ReasoningMessage):
             await reasoning.set_collapsed(self._tools_collapsed)

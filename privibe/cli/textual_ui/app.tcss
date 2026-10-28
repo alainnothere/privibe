@@ -523,6 +523,35 @@ StatusMessage {
     padding-left: 2;
 }
 
+.tool-call-triangle {
+    width: auto;
+    height: auto;
+    color: ansi_bright_black;
+    text-style: italic;
+    margin-left: 1;
+}
+
+.tool-call-body {
+    width: 100%;
+    height: auto;
+    /* max-height (50% of screen) is set in cells from ToolCallMessage; see
+       .tool-result-content for why not vh. */
+    overflow-y: auto;
+    padding-left: 2;
+    color: ansi_bright_black;
+}
+
+.tool-call-params,
+.tool-call-log {
+    width: 100%;
+    height: auto;
+    color: ansi_bright_black;
+}
+
+.tool-call-log {
+    margin-top: 1;
+}
+
 .tool-result {
     width: 100%;
     height: auto;

@@ -199,6 +199,9 @@ async def run_orchestration(
     run.tasks = plan_answer.tasks
     ledger.write_tasks(run.tasks)
     ledger.log(f"plan written, {len(run.tasks)} seed tasks")
+    yield Progress(f"plan: {len(run.tasks)} tasks")
+    for item in run.tasks:
+        yield Progress(f"  {item.render()}")
 
     # 2. brainstorm
     yield Progress("brainstorm")
@@ -254,7 +257,7 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
             return
         run.last_task_text = task.text
 
-        yield Progress(f"{tag}: worker on task {task.id}")
+        yield Progress(f"{tag}: worker on task {task.id}: {task.text}")
         report = await run.ask(
             Role.EXECUTE, config.effort_execute, answer_only=False, task=task.render()
         )

@@ -26,6 +26,7 @@ from privibe.core.tools.builtins.ask_user_question import Answer, AskUserQuestio
 from privibe.core.tools.builtins.bash import BashArgs, BashResult
 from privibe.core.tools.builtins.grep import GrepArgs, GrepResult
 from privibe.core.tools.builtins.hashed_read import HashedReadArgs
+from privibe.core.tools.builtins.orchestrate import OrchestrateArgs
 from privibe.core.tools.builtins.read_file import ReadFileArgs, ReadFileResult
 from privibe.core.tools.builtins.search_replace import (
     SearchReplaceArgs,
@@ -46,6 +47,13 @@ APPROVAL_ARGS: dict[str, BaseModel] = {
     ),
     "grep": GrepArgs(pattern="TODO", path="src"),
     "todo": TodoArgs(action="write", todos=[TodoItem(id="1", content="do it")]),
+    "orchestrate": OrchestrateArgs(
+        goal="Make f return 2.\n\nKeep the tests green.",
+        files=["/src/a.py"],
+        scope=["/src"],
+        done_command="pytest -q",
+        max_rounds=3,
+    ),
 }
 
 # One real result instance per registered result widget.
