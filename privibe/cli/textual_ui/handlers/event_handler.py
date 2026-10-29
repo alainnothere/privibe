@@ -128,7 +128,7 @@ class EventHandler:
             existing_tool_call.update_event(event)
             tool_call = existing_tool_call
         else:
-            tool_call = ToolCallMessage(event)
+            tool_call = ToolCallMessage(event, collapsed=self.get_tools_collapsed())
             if tool_call_id:
                 self.tool_calls[tool_call_id] = tool_call
             await self.mount_callback(tool_call)
@@ -156,7 +156,7 @@ class EventHandler:
     async def _handle_tool_stream(self, event: ToolStreamEvent) -> None:
         tool_call = self.tool_calls.get(event.tool_call_id)
         if tool_call:
-            tool_call.set_stream_message(event.message)
+            tool_call.set_stream_message(event.message, event.entry_id)
 
     async def _handle_assistant_message(self, event: AssistantEvent) -> None:
         if self.current_streaming_reasoning is not None:

@@ -28,10 +28,12 @@ class ToolCallMessage(StatusMessage):
         *,
         tool_name: str | None = None,
         history: bool = False,
+        collapsed: bool = True,
     ) -> None:
         """A tool call line. Live: built from the event as it streams in.
         History (resume / load-more): built from the stored message, with an
         event when the tool is known and without one otherwise; never spins.
+        `collapsed` is the fold-out body's initial state (ctrl+o's global one).
         """
         if event is None and tool_name is None:
             raise ValueError("Either event or tool_name must be provided")
@@ -45,8 +47,11 @@ class ToolCallMessage(StatusMessage):
         self._body: Vertical | None = None
         self._params_widget: NoMarkupStatic | None = None
         self._log_widget: NoMarkupStatic | None = None
-        self._log: list[str] = []
-        self.collapsed = True
+        # The body's entries in order: (entry id or None, text). An entry
+        # with an id is replaced in place when another arrives with the same
+        # id (a running nested call becoming its result).
+        self._log: list[tuple[str | None, str]] = []
+        self.collapsed = collapsed
         self._start_time: float | None = None
         self._last_elapsed: int = -1
 
@@ -181,19 +186,28 @@ class ToolCallMessage(StatusMessage):
 
     @property
     def stream_log(self) -> list[str]:
-        """Every stream message this call has shown, oldest first."""
-        return list(self._log)
+        """Every entry of the body, oldest first, as currently shown."""
+        return [text for _, text in self._log]
 
-    def set_stream_message(self, message: str) -> None:
-        """Show the latest stream message under the call line and append it
-        to the log the collapsible body holds.
+    def set_stream_message(self, message: str, entry_id: str | None = None) -> None:
+        """Show the latest stream message under the call line and add it to
+        the body: appended, or replacing the entry with the same id.
         """
-        self._log.append(message)
+        replaced = False
+        if entry_id is not None:
+            for i, (eid, _) in enumerate(self._log):
+                if eid == entry_id:
+                    self._log[i] = (entry_id, message)
+                    replaced = True
+                    break
+        if not replaced:
+            self._log.append((entry_id, message))
         if self._stream_widget:
-            self._stream_widget.update(f"→ {message}")
+            first_line = message.strip().splitlines()[0] if message.strip() else ""
+            self._stream_widget.update(f"→ {first_line}")
             self._stream_widget.display = True
         if self._log_widget:
-            self._log_widget.update("\n".join(self._log))
+            self._log_widget.update("\n".join(text for _, text in self._log))
             self._log_widget.display = True
         if self._triangle_widget:
             self._triangle_widget.display = True

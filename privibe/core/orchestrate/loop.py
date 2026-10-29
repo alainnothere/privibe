@@ -71,6 +71,8 @@ class Outcome:
 @dataclass(frozen=True)
 class Progress:
     message: str
+    # A role call is starting: the tool opens a section in its trace.
+    section: bool = False
 
 
 @dataclass
@@ -190,7 +192,7 @@ async def run_orchestration(
     )
 
     # 1. plan
-    yield Progress("manager: planning")
+    yield Progress("manager · plan", section=True)
     plan_answer = await run.plan()
     if plan_answer is None:
         yield run.outcome(OutcomeStatus.STALLED, "manager's plan could not be parsed")
@@ -199,12 +201,9 @@ async def run_orchestration(
     run.tasks = plan_answer.tasks
     ledger.write_tasks(run.tasks)
     ledger.log(f"plan written, {len(run.tasks)} seed tasks")
-    yield Progress(f"plan: {len(run.tasks)} tasks")
-    for item in run.tasks:
-        yield Progress(f"  {item.render()}")
 
     # 2. brainstorm
-    yield Progress("brainstorm")
+    yield Progress("brainstorm", section=True)
     notes = await run.ask(Role.BRAINSTORM, config.effort_brainstorm, answer_only=True)
     ledger.write_notes(notes)
     ledger.log("brainstorm written to notes")
@@ -219,7 +218,7 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
     while run.rounds < run.max_rounds:
         run.rounds += 1
         tag = f"round {run.rounds}/{run.max_rounds}"
-        yield Progress(f"{tag}: manager")
+        yield Progress(f"manager · {tag}", section=True)
         decision = await run.manage()
         if decision is None:
             yield run.outcome(
@@ -236,8 +235,9 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
                 )
                 return
             if run.verifier is None:
-                yield Progress(f"{tag}: verifier (manager declared done)")
+                yield Progress(f"verifier · {tag} (manager declared done)")
                 await run.verify()
+                yield _verifier_progress(run.verifier)
             if run.verifier is not None and run.verifier.passed:
                 yield run.outcome(OutcomeStatus.DONE)
                 return
@@ -257,7 +257,7 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
             return
         run.last_task_text = task.text
 
-        yield Progress(f"{tag}: worker on task {task.id}: {task.text}")
+        yield Progress(f"worker · {tag} · task {task.id}: {task.text}", section=True)
         report = await run.ask(
             Role.EXECUTE, config.effort_execute, answer_only=False, task=task.render()
         )
@@ -269,10 +269,23 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
             ledger.log("worker gave no '## Notes' section; notes kept")
 
         if job.done_command:
-            yield Progress(f"{tag}: verifier")
+            yield Progress(f"verifier · {tag}")
             await run.verify()
+            yield _verifier_progress(run.verifier)
 
     yield run.outcome(OutcomeStatus.ROUNDS_EXHAUSTED, f"{run.max_rounds} rounds used")
+
+
+def _verifier_progress(result: VerifierResult | None) -> Progress:
+    if result is None:
+        return Progress("verifier: not run")
+    mark = "✓" if result.passed else "✕"
+    head = f"{mark} verifier exit {result.exit_code}"
+    if result.timed_out:
+        head += " (timeout)"
+    tail = result.output.rstrip().splitlines()[-3:]
+    body = "\n".join("  " + line for line in tail)
+    return Progress(head + ("\n" + body if body else ""))
 
 
 def _retry_note(error: str, previous: str) -> str:

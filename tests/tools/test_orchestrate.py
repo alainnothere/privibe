@@ -234,8 +234,17 @@ class TestRun:
         assert (ledger / "calls" / "003-manage.md").is_file()
         # Progress reached the UI stream.
         stream = [e.message for e in events[:-1]]
-        assert "manager: planning" in stream
-        assert any("worker on task 1" in m for m in stream)
+        assert stream[0].startswith("── manager · plan ")
+        assert any("worker · round 1/10 · task 1: make f return 2" in m for m in stream)
+        # The stamp lands on the header of the call that just ended.
+        stamped = [
+            m
+            for m in stream
+            if m.startswith("── worker")
+            and "call" not in m
+            and m.rstrip("─ ").endswith("s")
+        ]
+        assert stamped
         # Role calls: efforts and answer-only flags.
         assert loops.efforts == ["low", "medium", "low", "medium", "low"]
         assert loops.answer_only_flags == [True, True, True, False, True]

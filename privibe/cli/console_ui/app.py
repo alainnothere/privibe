@@ -60,8 +60,8 @@ from privibe.core.types import (
     Role,
     ToolCallEvent,
     ToolResultEvent,
-    UserMessageEvent,
     ToolStreamEvent,
+    UserMessageEvent,
     WaitingForInputEvent,
 )
 from privibe.core.utils.tags import (
@@ -352,7 +352,8 @@ class ConsoleUI(NannyListener):
 
             case ToolStreamEvent():
                 self._close_block()
-                print(f"  | {event.message}", flush=True)
+                for line in event.message.splitlines() or [""]:
+                    print(f"  | {line}", flush=True)
 
             case ToolResultEvent():
                 self._close_block()

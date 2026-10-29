@@ -32,20 +32,10 @@ from privibe.core.tools.base import (
 )
 from privibe.core.tools.builtins.bash import _extract_commands, _find_protected_token
 from privibe.core.tools.permissions import PermissionContext
-from privibe.core.tools.ui import (
-    ToolCallDisplay,
-    ToolResultDisplay,
-    ToolUIData,
-    ToolUIDataAdapter,
-)
+from privibe.core.tools.subagent_trace import Tracer
+from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import is_path_within_workdir, is_protected_path
-from privibe.core.types import (
-    AssistantEvent,
-    Role as MessageRole,
-    ToolCallEvent,
-    ToolResultEvent,
-    ToolStreamEvent,
-)
+from privibe.core.types import Role as MessageRole, ToolStreamEvent
 from privibe.core.utils.tags import VIBE_STOP_EVENT_TAG
 
 # The file tools whose writes the job's scope limits. bash is left to its own
@@ -179,7 +169,7 @@ class Orchestrate(
                 )
         return None
 
-    async def run(
+    async def run(  # noqa: PLR0914, PLR0915
         self, args: OrchestrateArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | OrchestrateResult, None]:
         if not ctx or not ctx.agent_manager:
@@ -220,14 +210,28 @@ class Orchestrate(
             max_rounds=args.max_rounds,
         )
         worker_config = self._worker_config(ctx, parent_config, scope)
-        queue: asyncio.Queue[ToolStreamEvent | Progress | Outcome] = asyncio.Queue()
+        queue: asyncio.Queue[ToolStreamEvent | Outcome] = asyncio.Queue()
+        tracer = Tracer(
+            self.get_name(), ctx.tool_call_id, parent_config.tool_result_preview_lines
+        )
+        transcripts = str(ledger.root / "calls")
 
         async def call(role: Role, message: str, effort: str, answer_only: bool) -> str:
             return await self._call_role(
-                ctx, worker_config, queue, role, message, effort, answer_only
+                ctx,
+                worker_config,
+                queue,
+                tracer,
+                transcripts,
+                message,
+                effort,
+                answer_only,
             )
 
         async def drive() -> None:
+            # Progress is turned into trace entries here, on the producer
+            # side, so a section is open before the role call it announces
+            # starts feeding the tracer; the consumer only forwards.
             async for event in run_orchestration(
                 job,
                 bundle=bundle,
@@ -236,7 +240,16 @@ class Orchestrate(
                 config=settings,
                 cwd=Path.cwd(),
             ):
-                await queue.put(event)
+                if isinstance(event, Progress):
+                    entries = (
+                        tracer.start_section(event.message)
+                        if event.section
+                        else tracer.line(event.message)
+                    )
+                    for entry in entries:
+                        await queue.put(entry)
+                else:
+                    await queue.put(event)
 
         driver = asyncio.create_task(drive())
         try:
@@ -254,12 +267,6 @@ class Orchestrate(
                     raise ToolError("orchestration ended without a result")
                 if isinstance(item, ToolStreamEvent):
                     yield item
-                elif isinstance(item, Progress):
-                    yield ToolStreamEvent(
-                        tool_name=self.get_name(),
-                        message=item.message,
-                        tool_call_id=ctx.tool_call_id,
-                    )
                 else:
                     await driver
                     yield _to_result(item)
@@ -310,13 +317,16 @@ class Orchestrate(
         self,
         ctx: InvokeContext,
         worker_config: VibeConfig,
-        queue: asyncio.Queue[ToolStreamEvent | Progress | Outcome],
-        role: Role,
+        queue: asyncio.Queue[ToolStreamEvent | Outcome],
+        tracer: Tracer,
+        transcripts: str,
         message: str,
         effort: str,
         answer_only: bool,
     ) -> str:
-        """One role call: a fresh AgentLoop, one act(), the final answer text."""
+        """One role call: a fresh AgentLoop, one act(), the final answer text.
+        Everything the loop does is traced into the parent's tool call body.
+        """
         loop = AgentLoop(
             config=worker_config,
             agent_name=BuiltinAgentName.ORCHESTRATE_WORKER,
@@ -330,35 +340,20 @@ class Orchestrate(
             loop.add_session_rule(rule)
         loop.set_reasoning_effort(effort)
 
-        async def progress(text: str) -> None:
-            await queue.put(
-                ToolStreamEvent(
-                    tool_name=self.get_name(),
-                    message=f"{role.value}: {text}",
-                    tool_call_id=ctx.tool_call_id,
-                )
-            )
-
         async for event in loop.act(message, answer_only=answer_only):
-            if isinstance(event, ToolCallEvent) and event.args is not None:
-                display = ToolUIDataAdapter(event.tool_class).get_call_display(event)
-                await progress(display.summary)
-            elif (
-                isinstance(event, ToolResultEvent) and event.result and event.tool_class
-            ):
-                display = ToolUIDataAdapter(event.tool_class).get_result_display(event)
-                await progress(display.message)
-            elif isinstance(event, ToolResultEvent) and event.error:
-                await progress(f"{event.tool_name} error: {event.error}")
-            elif isinstance(event, AssistantEvent) and event.stopped_by_middleware:
-                await progress("stopped by middleware")
+            for entry in tracer.on_event(event):
+                await queue.put(entry)
 
+        answer = ""
         for msg in reversed(loop.messages[:]):
             if msg.role == MessageRole.assistant and msg.content:
                 text = str(msg.content)
                 if f"<{VIBE_STOP_EVENT_TAG}>" not in text:
-                    return text
-        return ""
+                    answer = text
+                    break
+        for entry in tracer.end_section(answer, more=f"full text in {transcripts}"):
+            await queue.put(entry)
+        return answer
 
 
 def _to_result(outcome: Outcome) -> OrchestrateResult:

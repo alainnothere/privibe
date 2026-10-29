@@ -19,12 +19,8 @@ from privibe.core.tools.base import (
     ToolPermission,
 )
 from privibe.core.tools.permissions import PermissionContext
-from privibe.core.tools.ui import (
-    ToolCallDisplay,
-    ToolResultDisplay,
-    ToolUIData,
-    ToolUIDataAdapter,
-)
+from privibe.core.tools.subagent_trace import Tracer
+from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.types import (
     AssistantEvent,
     Role,
@@ -155,23 +151,26 @@ class Task(
 
         accumulated_response: list[str] = []
         completed = True
+        tracer = Tracer(
+            self.get_name(),
+            ctx.tool_call_id,
+            agent_manager.config.tool_result_preview_lines,
+        )
+        for entry in tracer.start_section(f"{args.agent} · {args.task.strip()}"):
+            yield entry
         try:
             async for event in subagent_loop.act(args.task):
                 if isinstance(event, AssistantEvent) and event.content:
                     accumulated_response.append(event.content)
                     if event.stopped_by_middleware:
                         completed = False
-                elif isinstance(event, ToolResultEvent):
-                    if event.skipped:
-                        completed = False
-                    elif event.result and event.tool_class:
-                        adapter = ToolUIDataAdapter(event.tool_class)
-                        display = adapter.get_result_display(event)
-                        yield ToolStreamEvent(
-                            tool_name=self.get_name(),
-                            message=display.message,
-                            tool_call_id=ctx.tool_call_id,
-                        )
+                elif isinstance(event, ToolResultEvent) and event.skipped:
+                    completed = False
+                for entry in tracer.on_event(event):
+                    yield entry
+            # The answer is the result itself; the section only gets its stamp.
+            for entry in tracer.end_section(""):
+                yield entry
 
             turns_used = sum(
                 msg.role == Role.assistant for msg in subagent_loop.messages

@@ -595,6 +595,10 @@ class ToolStreamEvent(BaseEvent):
     tool_name: str
     message: str
     tool_call_id: str
+    # Entries with the same id replace each other in the tool call's body
+    # (a running nested call becomes its result; a section header gets its
+    # timing). None appends. Display only.
+    entry_id: str | None = None
 
 
 class WaitingForInputEvent(BaseEvent):
