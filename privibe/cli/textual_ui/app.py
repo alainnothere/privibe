@@ -2458,9 +2458,7 @@ class VibeApp(App):  # noqa: PLR0904
         were tried and dropped, 2026-10-27.)
         """
         name = self.agent_loop.conversation_name
-        self._terminal_notifier.set_default_title(
-            f"Privibe - {name}" if name else "Privibe"
-        )
+        self._terminal_notifier.set_default_title(name or "Privibe")
         try:
             top_bar = self.query_one("#conversation-title-bar", NoMarkupStatic)
             top_bar.update(name or "")

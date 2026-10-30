@@ -137,7 +137,7 @@ async def test_tab_title_follows_name() -> None:
         notifier.set_default_title.assert_called_with("Privibe")
 
         assert await app._handle_command("/name parser")
-        notifier.set_default_title.assert_called_with("Privibe - parser")
+        notifier.set_default_title.assert_called_with("parser")
 
         assert await app._handle_command("/name")
         notifier.set_default_title.assert_called_with("Privibe")
