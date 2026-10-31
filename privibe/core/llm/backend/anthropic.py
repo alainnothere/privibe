@@ -405,7 +405,6 @@ class AnthropicAdapter(APIAdapter):
         thinking_level = thinking
 
         if thinking_level == "off" and not has_thinking:
-            payload["temperature"] = temperature
             if max_tokens is not None:
                 payload["max_tokens"] = max_tokens
             else:
@@ -425,7 +424,6 @@ class AnthropicAdapter(APIAdapter):
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
             default_max = budget + self.DEFAULT_MAX_TOKENS
 
-        payload["temperature"] = 1
         payload["max_tokens"] = max_tokens if max_tokens is not None else default_max
 
     def _build_payload(

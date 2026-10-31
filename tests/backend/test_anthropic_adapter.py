@@ -315,7 +315,7 @@ class TestAdapterPrepareRequest:
         payload = json.loads(req.body)
         assert payload["model"] == "claude-sonnet-4-20250514"
         assert payload["max_tokens"] == 1024
-        assert payload["temperature"] == 0.5
+        assert "temperature" not in payload
         assert req.endpoint == "/v1/messages"
         assert req.headers["anthropic-version"] == "2023-06-01"
 
@@ -394,7 +394,7 @@ class TestAdapterPrepareRequest:
         payload = json.loads(req.body)
         assert payload["thinking"] == {"type": "enabled", "budget_tokens": 10000}
         assert payload["max_tokens"] == 1024
-        assert payload["temperature"] == 1
+        assert "temperature" not in payload
 
     def test_system_cached(self, adapter, provider):
         messages = [
@@ -462,7 +462,7 @@ class TestAdapterPrepareRequest:
             "type": "enabled",
             "budget_tokens": expected_budget,
         }
-        assert payload["temperature"] == 1
+        assert "temperature" not in payload
         assert payload["max_tokens"] == expected_budget + 8192
 
     @pytest.mark.parametrize("level", ["low", "medium", "high"])
@@ -482,7 +482,7 @@ class TestAdapterPrepareRequest:
         payload = json.loads(req.body)
         assert payload["thinking"] == {"type": "adaptive"}
         assert payload["output_config"] == {"effort": level}
-        assert payload["temperature"] == 1
+        assert "temperature" not in payload
         assert payload["max_tokens"] == 32_768
 
     def test_history_forced_thinking_budget_model(self, adapter, provider):
@@ -508,7 +508,7 @@ class TestAdapterPrepareRequest:
         )
         payload = json.loads(req.body)
         assert payload["thinking"] == {"type": "enabled", "budget_tokens": 10_000}
-        assert payload["temperature"] == 1
+        assert "temperature" not in payload
         assert payload["max_tokens"] == 18_192
 
     def test_history_forced_thinking_adaptive_model(self, adapter, provider):
