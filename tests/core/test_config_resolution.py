@@ -511,3 +511,47 @@ class TestActiveModelFallback:
             match="no other configured model has its API key",
         ):
             cfg.get_active_model()
+
+
+class TestSaveUpdatesWritesWholeFileOrNothing:
+    """2026-10-30: `nanny_model = None` reached tomli_w, which has no null,
+    after config.toml had already been opened for writing; the file was
+    left truncated at that key, providers and models gone.
+    """
+
+    def _setup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.setenv("PRIVIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "active_model": "local",
+            "nanny_model": "reviewer",
+            "models": [{"name": "m", "provider": "p", "alias": "local"}],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        return config_file
+
+    def test_none_removes_the_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_file = self._setup(tmp_path, monkeypatch)
+        VibeConfig.save_updates({"nanny_model": None})
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        assert "nanny_model" not in result
+        assert result["active_model"] == "local"
+        assert result["models"][0]["alias"] == "local"
+
+    def test_serializer_error_leaves_the_file_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_file = self._setup(tmp_path, monkeypatch)
+        before = config_file.read_bytes()
+        with pytest.raises(TypeError):
+            # An object tomli_w cannot write; fallback=str does not cover
+            # None, and nothing else inside a list either.
+            VibeConfig.dump_config({"active_model": "local", "broken": [None]})
+        assert config_file.read_bytes() == before
+        assert list(tmp_path.glob("config.toml.tmp-*")) == []

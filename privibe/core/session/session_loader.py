@@ -30,6 +30,8 @@ class SessionInfo(TypedDict):
     title: str | None
     # User-chosen name; the auto title is the first user message.
     name: str | None
+    # Context file associated with the conversation (/set-context-file).
+    context_file: str | None
     end_time: str | None
     session_path: str
 
@@ -259,6 +261,9 @@ class SessionLoader:
         name = metadata.get("name")
         if not isinstance(name, str) or not name.strip():
             name = None
+        context_file = metadata.get("context_file")
+        if not isinstance(context_file, str) or not context_file.strip():
+            context_file = None
         search_text: str | None = None
         if search_parts is not None:
             if name:
@@ -276,6 +281,7 @@ class SessionLoader:
             "cwd": session_cwd,
             "title": title,
             "name": name,
+            "context_file": context_file,
             "end_time": end_time,
             "session_path": str(messages_path),
         }

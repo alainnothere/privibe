@@ -25,6 +25,11 @@ from privibe.cli.clipboard import (
     copy_selection_to_clipboard,
     is_reliable_clipboard_available,
 )
+from privibe.cli.continuation import (
+    continuation_name,
+    read_context_file_prompt,
+    resolve_context_file,
+)
 from privibe.cli.commands import CommandRegistry, effort_cycle_notice
 from privibe.cli.narrator_manager import (
     NarratorManager,
@@ -436,7 +441,7 @@ class VibeApp(App):  # noqa: PLR0904
         # _resume_history_from_messages early-exits if #messages already has
         # children, so a warning/info widget mounted first would silently drop
         # the resumed conversation when --continue / --resume <id> is used.
-        self._nanny_follow_resume()
+        await self._nanny_follow_session()
         await self._resume_history_from_messages()
         await self._show_dangerous_directory_warning()
         await self._show_clipboard_warning()
@@ -1295,7 +1300,7 @@ class VibeApp(App):  # noqa: PLR0904
             session.session_id, session_path
         )
         self.agent_loop.messages.restore(session_path)
-        self._nanny_follow_resume()
+        await self._nanny_follow_session()
         self._refresh_profile_widgets()
         self._apply_conversation_name_display()
 
@@ -2451,6 +2456,97 @@ class VibeApp(App):  # noqa: PLR0904
                 UserCommandMessage(f"Conversation named `{name}`.")
             )
 
+    async def _set_context_file(self, args: str = "") -> None:
+        raw = args.strip()
+        if not raw:
+            await self.agent_loop.set_context_file(None)
+            await self._mount_and_scroll(UserCommandMessage("Context file cleared."))
+            return
+        try:
+            path = resolve_context_file(raw)
+        except FileNotFoundError as e:
+            await self._mount_and_scroll(
+                ErrorMessage(str(e), collapsed=self._tools_collapsed)
+            )
+            return
+        try:
+            await self.agent_loop.set_context_file(str(path))
+        except Exception as e:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Failed to save context file: {e}",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        await self._mount_and_scroll(
+            UserCommandMessage(f"Context file for this conversation: `{path}`")
+        )
+
+    async def _resume_from_context_file(self) -> None:
+        """Start a continuation: /clear, then the same context file, the
+        name with a "-- continuation <time>" tail, and "Read <file>" left in
+        the input box for the user to send. Refuses, and preloads the
+        missing command, when the conversation has no name or no file.
+        """
+        name = self.agent_loop.conversation_name
+        context_file = self.agent_loop.context_file
+        if not name:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "This conversation has no name yet; name it first "
+                    "(/set-conversation-name <name>), then resume.",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            self._prefill_input("/set-conversation-name ")
+            return
+        if not context_file:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "This conversation has no context file yet; associate one "
+                    "first (/set-context-file <path>), then resume.",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            self._prefill_input("/set-context-file ")
+            return
+        if not Path(context_file).is_file():
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Context file is gone: {context_file}. Point "
+                    "/set-context-file at it again before resuming.",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        new_name = continuation_name(name)
+        await self._clear_history()
+        await self.agent_loop.set_conversation_name(new_name)
+        await self.agent_loop.set_context_file(context_file)
+        self._apply_conversation_name_display()
+        await self._mount_and_scroll(
+            UserCommandMessage(
+                f"Continuation of `{name}`, now `{new_name}`. Context file "
+                f"`{context_file}`. Press Enter to have it read."
+            )
+        )
+        self._prefill_input(read_context_file_prompt(context_file))
+
+    def _prefill_input(self, text: str) -> None:
+        """Put text in the input box, cursor at the end, nothing sent."""
+        container = self._chat_input_container
+        body = container._body if container else None
+        widget = body.input_widget if body else None
+        if widget is None:
+            return
+        widget.clear_text()
+        if text.startswith("/"):
+            widget.set_mode("/")
+            text = text[1:]
+        widget.insert(text)
+        container.focus_input()
+
     def _apply_conversation_name_display(self) -> None:
         """Paint the conversation name where it shows: the terminal tab
         title, the one-line bar above the chat, and the input-box border
@@ -2530,13 +2626,13 @@ class VibeApp(App):  # noqa: PLR0904
         if base_config is None or not getattr(base_config, "nanny_model", None):
             return
         try:
-            self._attach_nanny(NannyManager.for_loop(self.agent_loop))
+            await self._attach_nanny(NannyManager.for_loop(self.agent_loop))
         except NannyConfigError as exc:
             await self._mount_and_scroll(
                 WarningMessage(f"Nanny not started: {exc}", show_border=False)
             )
 
-    def _attach_nanny(self, nanny: NannyManager) -> None:
+    async def _attach_nanny(self, nanny: NannyManager) -> None:
         self._nanny = nanny
         self._nanny_bridge = self._NannyBridge(self)
         nanny.add_listener(self._nanny_bridge)
@@ -2545,6 +2641,7 @@ class VibeApp(App):  # noqa: PLR0904
             self.query_one(NannyStatus).attach(nanny)
         except Exception:
             pass
+        await self.agent_loop.set_session_nanny_model(nanny.model_alias)
 
     async def _detach_nanny(self) -> None:
         nanny = self._nanny
@@ -2561,11 +2658,31 @@ class VibeApp(App):  # noqa: PLR0904
             self.query_one(NannyStatus).attach(None)
         except Exception:
             pass
+        await self.agent_loop.set_session_nanny_model(None)
 
-    def _nanny_follow_resume(self) -> None:
-        """After a session restore, reload the nanny transcript stored
-        beside it, when there is one.
+    async def _nanny_follow_session(self) -> None:
+        """After a session restore: the nanny recorded in the session's
+        meta.json wins over the config default (attach or switch to it), then
+        the nanny transcript stored beside the session is reloaded, when
+        there is one. A session with no record keeps whatever is running.
         """
+        alias = self.agent_loop.session_nanny_model
+        if alias:
+            try:
+                if self._nanny is None:
+                    await self._attach_nanny(
+                        NannyManager.for_loop(self.agent_loop, alias=alias)
+                    )
+                elif self._nanny.model_alias != alias:
+                    await self._nanny.change_model(alias)
+                    await self.agent_loop.set_session_nanny_model(alias)
+            except NannyConfigError as exc:
+                await self._mount_and_scroll(
+                    WarningMessage(
+                        f"Nanny ({alias}) from this session not started: {exc}",
+                        show_border=False,
+                    )
+                )
         if self._nanny is None:
             return
         session_dir = self.agent_loop.session_logger.session_dir
@@ -2574,18 +2691,15 @@ class VibeApp(App):  # noqa: PLR0904
         self._nanny.resume(session_dir, self.agent_loop.session_id)
 
     async def _sync_nanny_with_config(self, base_config: VibeConfig) -> None:
-        """/reload: follow nanny_model from the config file."""
+        """/reload: a nanny_model in the config file starts the nanny when
+        none is running. A nanny chosen in this session is left alone; the
+        file is a default, not a remote control.
+        """
         alias = base_config.nanny_model
-        if not alias:
-            if self._nanny is not None:
-                await self._detach_nanny()
-                await self._mount_and_scroll(UserCommandMessage("Nanny off."))
+        if not alias or self._nanny is not None:
             return
         try:
-            if self._nanny is None:
-                self._attach_nanny(NannyManager.for_loop(self.agent_loop))
-            elif self._nanny.model_alias != alias:
-                await self._nanny.change_model(alias)
+            await self._attach_nanny(NannyManager.for_loop(self.agent_loop))
         except NannyConfigError as exc:
             await self._mount_and_scroll(
                 WarningMessage(f"Nanny not started: {exc}", show_border=False)
@@ -2676,8 +2790,6 @@ class VibeApp(App):  # noqa: PLR0904
                     )
                     return
                 await self._detach_nanny()
-                VibeConfig.save_updates({"nanny_model": None})
-                self.agent_loop.refresh_config()
                 await self._mount_and_scroll(UserCommandMessage("Nanny off."))
             case "change":
                 await self._open_nanny_model_picker()
@@ -2708,16 +2820,18 @@ class VibeApp(App):  # noqa: PLR0904
                 )
             )
             return
+        # The choice lives in this conversation only (meta.json, beside the
+        # name); nanny_model in config.toml is a hand-written default, never
+        # written from here (2026-10-30).
         try:
             if self._nanny is None:
-                VibeConfig.save_updates({"nanny_model": alias})
-                self.agent_loop.refresh_config()
-                self._attach_nanny(NannyManager.for_loop(self.agent_loop, alias=alias))
+                await self._attach_nanny(
+                    NannyManager.for_loop(self.agent_loop, alias=alias)
+                )
             else:
                 await self._nanny.change_model(alias)
-                VibeConfig.save_updates({"nanny_model": alias})
+                await self.agent_loop.set_session_nanny_model(alias)
         except NannyConfigError as exc:
-            VibeConfig.save_updates({"nanny_model": None})
             await self._mount_and_scroll(
                 ErrorMessage(
                     f"Nanny not started: {exc}", collapsed=self._tools_collapsed

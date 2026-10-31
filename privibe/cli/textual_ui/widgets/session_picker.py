@@ -89,6 +89,10 @@ def _build_option_text(
     if session.session_path:
         text.append(f"\n{indent}")
         text.append(_shorten_path(session.session_path), style="dim")
+    if session.context_file:
+        text.append(f"\n{indent}")
+        text.append("context: ", style="dim")
+        text.append(_shorten_path(session.context_file))
 
     role_labels = {"user": "You", "assistant": "AI "}
     for role, msg_text in messages:

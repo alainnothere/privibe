@@ -77,6 +77,13 @@ class SessionLogger:
         # compact mint a new session id for the same conversation) and must
         # exist before the first save creates the session folder.
         self._conversation_name: str | None = None
+        # The nanny chosen for this conversation (alias, None = off). Same
+        # life as the name: in memory until the first save, then meta.json,
+        # kept across reset_session, restored on resume. (2026-10-30)
+        self._nanny_model: str | None = None
+        # The context file associated with this conversation (absolute path,
+        # None = none). Same life as the name.
+        self._context_file: str | None = None
 
         if not self.enabled:
             self.save_dir: Path | None = None
@@ -176,6 +183,8 @@ class SessionLogger:
             username=user_name,
             environment={"working_directory": str(Path.cwd())},
             name=self._conversation_name,
+            nanny_model=self._nanny_model,
+            context_file=self._context_file,
         )
 
     @property
@@ -193,8 +202,38 @@ class SessionLogger:
         if name is not None:
             name = name.strip() or None
         self._conversation_name = name
+        await self._persist_meta_field("name", name)
+
+    @property
+    def nanny_model(self) -> str | None:
+        return self._nanny_model
+
+    async def set_nanny_model(self, alias: str | None) -> None:
+        """Record the nanny reviewing this conversation (None = off), with
+        the same on-disk life as the conversation name.
+        """
+        if alias is not None:
+            alias = alias.strip() or None
+        self._nanny_model = alias
+        await self._persist_meta_field("nanny_model", alias)
+
+    @property
+    def context_file(self) -> str | None:
+        return self._context_file
+
+    async def set_context_file(self, path: str | None) -> None:
+        """Associate a context file with this conversation (None clears),
+        with the same on-disk life as the conversation name. The caller
+        resolves the path; this stores the string as given.
+        """
+        if path is not None:
+            path = path.strip() or None
+        self._context_file = path
+        await self._persist_meta_field("context_file", path)
+
+    async def _persist_meta_field(self, key: str, value: str | None) -> None:
         if self.session_metadata is not None:
-            self.session_metadata.name = name
+            setattr(self.session_metadata, key, value)
         if not self.enabled or self.session_dir is None:
             return
         async with self._save_lock:
@@ -211,7 +250,7 @@ class SessionLogger:
                 raise RuntimeError(
                     f"Session metadata at {self.metadata_filepath} is not an object"
                 )
-            metadata["name"] = name
+            metadata[key] = value
             await SessionLogger.persist_metadata(metadata, self.session_dir)
 
     @staticmethod
@@ -576,6 +615,8 @@ class SessionLogger:
         self.session_dir = session_dir
         self.session_metadata = SessionLoader.load_metadata(session_dir)
         self._conversation_name = self.session_metadata.name
+        self._nanny_model = self.session_metadata.nanny_model
+        self._context_file = self.session_metadata.context_file
         self._forget_persisted_count()
 
         if self.session_metadata.start_time:

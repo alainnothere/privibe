@@ -139,6 +139,13 @@ class SessionMetadata(BaseModel):
     # User-chosen conversation name (/set-conversation-name). Optional so
     # meta.json files written before the field existed still validate.
     name: str | None = None
+    # Alias of the nanny reviewing this conversation (/ensure-commands-safety),
+    # None when off. Per conversation, like the name; never in config.toml.
+    nanny_model: str | None = None
+    # Absolute path of the context file this conversation works from
+    # (/set-context-file). Per conversation, like the name; /resume-from-
+    # context-file starts a continuation that keeps it.
+    context_file: str | None = None
 
 
 class ClientMetadata(BaseModel):

@@ -45,6 +45,8 @@ class StubAgentLoop:
         self.approved_always: list[tuple[str, Any]] = []
         self.acted_prompts: list[str] = []
         self.act_events: list[Any] = []
+        # The nanny recorded for the conversation (meta.json); None = off.
+        self.session_nanny_model: str | None = None
 
     def set_approval_callback(self, callback: Any) -> None:
         self.approval_callback = callback

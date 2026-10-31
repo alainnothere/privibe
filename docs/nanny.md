@@ -47,9 +47,12 @@ In the TUI or console:
 /ensure-commands-safety tell <message>   # a standing instruction, see below
 ```
 
-`/nanny` is the short alias for all of these.
+`/nanny` is the short alias for all of these. The choice belongs to the
+conversation: it is recorded in the session's `meta.json` beside the
+conversation name, never in `config.toml`, and comes back on `--continue`
+or `--resume`.
 
-Or in `~/.privibe/config.toml`:
+Or, as a default for every new session, in `~/.privibe/config.toml`:
 
 ```toml
 nanny_model = "reviewer"       # an alias from [[models]]; absent = off
@@ -118,8 +121,9 @@ to the nanny, other calls wait.
 Everything is stored beside the session: the nanny's own transcript under
 `<session>/nanny/`, and `<session>/nanny/decisions.jsonl`, one line per
 reviewed call, keyed by the main conversation's tool call id. Resuming a
-session resumes the nanny with it. Rewinding the main conversation does not
-rewind the nanny's; it is told what was dropped.
+session brings back the nanny it had (the alias in `meta.json` wins over
+the `config.toml` default) and its transcript with it. Rewinding the main
+conversation does not rewind the nanny's; it is told what was dropped.
 
 ## The prompts are yours to edit
 

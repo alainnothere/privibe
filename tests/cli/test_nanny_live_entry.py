@@ -47,7 +47,7 @@ async def test_nanny_entry_mounts_between_call_and_result(tmp_path: Path) -> Non
     app = build_test_vibe_app(config=config, agent_loop=loop)
     async with app.run_test() as pilot:
         await pilot.pause(0.1)
-        app._attach_nanny(build_nanny(tmp_path, [READY, APPROVE]))
+        await app._attach_nanny(build_nanny(tmp_path, [READY, APPROVE]))
         await app._handle_agent_loop_turn("what is on my list?")
         await pilot.pause(0.5)
 

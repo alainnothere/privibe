@@ -28,8 +28,8 @@ async def test_command_when_off_opens_the_model_picker_and_attaches() -> None:
         with patch("privibe.cli.textual_ui.app.VibeConfig.save_updates") as mock_save:
             await pilot.press("enter")
             await pilot.pause(0.4)
-            mock_save.assert_called_once()
-            assert mock_save.call_args.args[0] == {"nanny_model": "devstral-latest"}
+            # Session-only: config.toml is never written by the nanny command.
+            mock_save.assert_not_called()
 
         assert app._nanny is not None
         assert app.agent_loop.nanny is app._nanny
@@ -110,3 +110,31 @@ async def test_tell_reaches_the_nanny_and_echoes_the_reply() -> None:
         assert nanny.told == ["no writes to the Garmin"]
         notes = [str(m._content) for m in app.query(UserCommandMessage)]
         assert any("Understood: no writes to the device." in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_nanny_choice_is_recorded_beside_the_conversation_name() -> None:
+    app = build_test_vibe_app()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        assert app.agent_loop.session_nanny_model is None
+        await app._apply_nanny_model("devstral-latest")
+        await pilot.pause(0.2)
+        assert app.agent_loop.session_nanny_model == "devstral-latest"
+        assert await app._handle_command("/ensure-commands-safety off")
+        await pilot.pause(0.3)
+        assert app.agent_loop.session_nanny_model is None
+
+
+@pytest.mark.asyncio
+async def test_session_recorded_nanny_is_attached_on_startup() -> None:
+    """A resumed conversation that had a nanny gets it back, from meta.json,
+    with nothing in config.toml.
+    """
+    app = build_test_vibe_app()
+    await app.agent_loop.set_session_nanny_model("devstral-latest")
+    async with app.run_test() as pilot:
+        await pilot.pause(0.3)
+        assert app._nanny is not None
+        assert app._nanny.model_alias == "devstral-latest"
+        assert app.agent_loop.nanny is app._nanny

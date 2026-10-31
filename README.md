@@ -139,6 +139,12 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
   in the terminal tab title and the UI, saved with the session, searchable
   in `/resume`, kept across rewind and compact, dropped by `/clear`. Bare
   command clears it.
+- `/set-context-file <path>` associates a context file with the conversation,
+  saved beside the name and shown in `/resume`. `/resume-from-context-file`
+  then starts a continuation: fresh history named
+  `<name> -- continuation <time>`, same context file, and `Read <file>`
+  waiting in the input box for Enter. It refuses until the conversation has
+  both a name and a file.
 - File edits show a diff in the TUI.
 - Model name + tokens/sec in the context footer.
 - Configurable tool-result preview length (`/preview-lines`), scrollback

@@ -31,6 +31,11 @@ from privibe.core.config import (
     cycle_preview_lines,
     load_dotenv_values,
 )
+from privibe.cli.continuation import (
+    continuation_name,
+    read_context_file_prompt,
+    resolve_context_file,
+)
 from privibe.core.nanny import (
     NannyConfigError,
     NannyDecision,
@@ -139,6 +144,8 @@ Available commands:
   /preview-lines  Cycle how many tool output lines are shown (3 / 5 / 10)
   /llm-calls-per-turn  Cycle the LLM-call budget per message (30 / 60 / 90)
   /set-conversation-name <name>  Name this conversation (saved with the session; bare clears it)
+  /set-context-file <path>  Associate a context file with this conversation (saved with the session; bare clears it)
+  /resume-from-context-file  Continuation: new history named '<name> -- continuation <time>', same context file, 'Read <file>' preloaded at the prompt
   /ascii     Write policy for non-ASCII in model-written content: /ascii on|off (toggles without an argument)
   /continue  Tell the model to go on from where it stopped
   /auto-continue  Nudge the model on by itself when it stops unfinished: off|truncated|heuristic
@@ -171,6 +178,8 @@ class ConsoleUI(NannyListener):
         self._after_separator = False
         self._prompt_session = None  # created lazily; needs a terminal
         # The nanny reviewing approval prompts, when nanny_model is set.
+        # Text preloaded at the next prompt (continuation flow); consumed once.
+        self._next_input_default = ""
         self._nanny: NannyManager | None = None
 
     async def run(
@@ -178,13 +187,13 @@ class ConsoleUI(NannyListener):
     ) -> None:
         self.agent_loop.set_approval_callback(self._approval_callback)
         self.agent_loop.set_user_input_callback(self._user_input_callback)
-        self._start_nanny_from_config()
+        await self._start_nanny_from_config()
 
         if show_resume_picker:
             await self._pick_and_resume_session()
         elif len(self.agent_loop.messages) > 1:
             # History restored before we started (--resume <id> / --continue).
-            self._nanny_follow_resume()
+            await self._nanny_follow_session()
             self._print_transcript(_REPLAY_TAIL_ENTRIES)
 
         if initial_prompt:
@@ -222,7 +231,8 @@ class ConsoleUI(NannyListener):
             from prompt_toolkit import PromptSession
 
             self._prompt_session = PromptSession()
-        return await self._prompt_session.prompt_async(prompt)
+        default, self._next_input_default = self._next_input_default, ""
+        return await self._prompt_session.prompt_async(prompt, default=default)
 
     async def _read_reply(self, prompt: str) -> str:
         """Read a short reply for approvals/questions, without polluting the
@@ -800,6 +810,12 @@ class ConsoleUI(NannyListener):
                 await self._command_set_conversation_name(
                     parts[1] if len(parts) > 1 else ""
                 )
+            case "/set-context-file" | "/context-file":
+                await self._command_set_context_file(
+                    parts[1] if len(parts) > 1 else ""
+                )
+            case "/resume-from-context-file" | "/resume_from_context_file":
+                await self._command_resume_from_context_file()
             case "/ascii":
                 self._command_ascii(parts[1] if len(parts) > 1 else "")
             case "/continue":
@@ -898,20 +914,21 @@ class ConsoleUI(NannyListener):
     # Nanny
     # ------------------------------------------------------------------
 
-    def _start_nanny_from_config(self) -> None:
+    async def _start_nanny_from_config(self) -> None:
         """Build the nanny when nanny_model is set in the config file."""
         base_config = getattr(self.agent_loop, "base_config", None)
         if base_config is None or not getattr(base_config, "nanny_model", None):
             return
         try:
-            self._attach_nanny(NannyManager.for_loop(self.agent_loop))
+            await self._attach_nanny(NannyManager.for_loop(self.agent_loop))
         except NannyConfigError as exc:
             print(f"[nanny] not started: {exc}")
 
-    def _attach_nanny(self, nanny: NannyManager) -> None:
+    async def _attach_nanny(self, nanny: NannyManager) -> None:
         self._nanny = nanny
         nanny.add_listener(self)
         self.agent_loop.set_nanny(nanny, owner=True)
+        await self.agent_loop.set_session_nanny_model(nanny.model_alias)
         same = (
             " (the same model as the worker)"
             if (nanny.model_alias == str(self.agent_loop.config.active_model))
@@ -926,11 +943,26 @@ class ConsoleUI(NannyListener):
         self._nanny.remove_listener(self)
         self.agent_loop.set_nanny(None)
         self._nanny = None
+        await self.agent_loop.set_session_nanny_model(None)
 
-    def _nanny_follow_resume(self) -> None:
-        """After a session restore, reload the nanny transcript stored
-        beside it, when there is one.
+    async def _nanny_follow_session(self) -> None:
+        """After a session restore: the nanny recorded in the session's
+        meta.json wins over the config default, then its transcript stored
+        beside the session is reloaded, when there is one.
         """
+        alias = self.agent_loop.session_nanny_model
+        if alias:
+            try:
+                if self._nanny is None:
+                    await self._attach_nanny(
+                        NannyManager.for_loop(self.agent_loop, alias=alias)
+                    )
+                elif self._nanny.model_alias != alias:
+                    await self._nanny.change_model(alias)
+                    await self.agent_loop.set_session_nanny_model(alias)
+                    print(f"[nanny] now reviewing with {alias} (from this session)")
+            except NannyConfigError as exc:
+                print(f"[nanny] ({alias}) from this session not started: {exc}")
         if self._nanny is None:
             return
         session_dir = self.agent_loop.session_logger.session_dir
@@ -978,7 +1010,6 @@ class ConsoleUI(NannyListener):
                 print("Nanny is already off.")
                 return
             await self._detach_nanny()
-            VibeConfig.save_updates({"nanny_model": None})
             print("[nanny] off")
             return
         if arg.lower() == "log":
@@ -1000,17 +1031,18 @@ class ConsoleUI(NannyListener):
         if alias not in {m.alias for m in config.models}:
             print(f"Unknown model alias: {alias}")
             return
+        # Session-only, like the TUI: config.toml's nanny_model is a default
+        # for new sessions and is never written from here.
         try:
             if self._nanny is None:
-                VibeConfig.save_updates({"nanny_model": alias})
-                self.agent_loop.refresh_config()
-                self._attach_nanny(NannyManager.for_loop(self.agent_loop, alias=alias))
+                await self._attach_nanny(
+                    NannyManager.for_loop(self.agent_loop, alias=alias)
+                )
             else:
                 await self._nanny.change_model(alias)
-                VibeConfig.save_updates({"nanny_model": alias})
+                await self.agent_loop.set_session_nanny_model(alias)
                 print(f"[nanny] now reviewing with {alias}")
         except NannyConfigError as exc:
-            VibeConfig.save_updates({"nanny_model": None})
             print(f"[nanny] not started: {exc}")
 
     async def _command_model(self) -> None:
@@ -1081,6 +1113,57 @@ class ConsoleUI(NannyListener):
             print("Conversation name cleared.")
         else:
             print(f"Conversation named: {name}")
+
+    async def _command_set_context_file(self, args: str) -> None:
+        raw = args.strip()
+        if not raw:
+            await self.agent_loop.set_context_file(None)
+            print("Context file cleared.")
+            return
+        try:
+            path = resolve_context_file(raw)
+        except FileNotFoundError as e:
+            print(str(e))
+            return
+        try:
+            await self.agent_loop.set_context_file(str(path))
+        except Exception as e:
+            print(f"Failed to save context file: {e}")
+            return
+        print(f"Context file for this conversation: {path}")
+
+    async def _command_resume_from_context_file(self) -> None:
+        name = self.agent_loop.conversation_name
+        context_file = self.agent_loop.context_file
+        if not name:
+            print(
+                "This conversation has no name yet; name it first "
+                "(/set-conversation-name <name>), then resume."
+            )
+            self._next_input_default = "/set-conversation-name "
+            return
+        if not context_file:
+            print(
+                "This conversation has no context file yet; associate one first "
+                "(/set-context-file <path>), then resume."
+            )
+            self._next_input_default = "/set-context-file "
+            return
+        if not Path(context_file).is_file():
+            print(
+                f"Context file is gone: {context_file}. Point /set-context-file "
+                "at it again before resuming."
+            )
+            return
+        new_name = continuation_name(name)
+        await self.agent_loop.clear_history()
+        await self.agent_loop.set_conversation_name(new_name)
+        await self.agent_loop.set_context_file(context_file)
+        print(
+            f"Continuation of '{name}', now '{new_name}'. Context file "
+            f"{context_file}. Press Enter to have it read."
+        )
+        self._next_input_default = read_context_file_prompt(context_file)
 
     async def _command_clear(self) -> None:
         await self.agent_loop.clear_history()
@@ -1175,6 +1258,8 @@ class ConsoleUI(NannyListener):
             title = info.get("name") or info["title"] or info["session_id"]
             when = f" ({info['end_time']})" if info["end_time"] else ""
             print(f"  {i}. {title}{when}")
+            if info.get("context_file"):
+                print(f"       context: {info['context_file']}")
         print("Resuming replaces the current conversation.")
 
         try:
@@ -1202,7 +1287,7 @@ class ConsoleUI(NannyListener):
         self.agent_loop.session_id = session_id
         self.agent_loop.session_logger.resume_existing_session(session_id, session_path)
         self.agent_loop.messages.restore(session_path)
-        self._nanny_follow_resume()
+        await self._nanny_follow_session()
         print(
             f"Resumed session {session_id} "
             f"with {len(self.agent_loop.messages)} messages."

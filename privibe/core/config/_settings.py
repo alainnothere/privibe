@@ -687,8 +687,9 @@ class VibeConfig(BaseSettings):
         default=None,
         description=(
             "Alias (from `models`) of the model that reviews tool-approval "
-            "prompts on your behalf. Unset means off. Set from the TUI with "
-            "/ensure-commands-safety."
+            "prompts on your behalf. Unset means off. This is a default for "
+            "new sessions; /ensure-commands-safety in the TUI picks or drops "
+            "a nanny for the current session only and never writes it here."
         ),
     )
     nanny_timeout_seconds: float = Field(
@@ -1228,6 +1229,10 @@ class VibeConfig(BaseSettings):
                         target[key] = value
                     else:
                         target[key] = list(set(value + target[key]))
+                elif value is None:
+                    # None means "back to the default": TOML has no null, so
+                    # the key is removed rather than written.
+                    target.pop(key, None)
                 else:
                     target[key] = value
 
@@ -1241,8 +1246,18 @@ class VibeConfig(BaseSettings):
             return
         target = mgr.config_file or mgr.user_config_file
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("wb") as f:
-            tomli_w.dump(to_jsonable_python(config, exclude_none=True, fallback=str), f)
+        # Serialize before touching the file, and swap the finished file in:
+        # a serializer error used to leave config.toml truncated at the key
+        # it choked on (2026-10-30, nanny_model = None).
+        payload = tomli_w.dumps(
+            to_jsonable_python(config, exclude_none=True, fallback=str)
+        ).encode()
+        tmp = target.with_name(f"{target.name}.tmp-{os.getpid()}")
+        try:
+            tmp.write_bytes(payload)
+            os.replace(tmp, target)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     @classmethod
     def _migrate(cls) -> None:

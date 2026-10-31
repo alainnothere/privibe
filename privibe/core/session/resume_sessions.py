@@ -25,6 +25,7 @@ class ResumeSessionInfo:
     status: str | None = None
     session_path: str | None = None
     name: str | None = None
+    context_file: str | None = None
 
     @property
     def display_name(self) -> str | None:
@@ -54,6 +55,7 @@ def _resume_session_from_info(session: SessionInfo) -> ResumeSessionInfo:
         end_time=session.get("end_time"),
         session_path=session.get("session_path"),
         name=session.get("name"),
+        context_file=session.get("context_file"),
     )
 
 

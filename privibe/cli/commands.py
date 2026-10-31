@@ -155,6 +155,20 @@ class CommandRegistry:
                 handler="_set_conversation_name",
                 takes_args=True,
             ),
+            "set_context_file": Command(
+                aliases=frozenset(["/set-context-file", "/context-file"]),
+                description="Associate a context file with this conversation (saved with the session, shown on resume); /set-context-file <path>, bare to clear",
+                handler="_set_context_file",
+                takes_args=True,
+            ),
+            "resume_from_context_file": Command(
+                aliases=frozenset([
+                    "/resume-from-context-file",
+                    "/resume_from_context_file",
+                ]),
+                description="Start a continuation of this conversation: new history named '<name> -- continuation <time>', same context file, and 'Read <context file>' ready in the input box",
+                handler="_resume_from_context_file",
+            ),
             "llm_calls_per_turn": Command(
                 aliases=frozenset(["/llm-calls-per-turn"]),
                 description="Set how many LLM calls one message may trigger before the model must write up and stop; /llm-calls-per-turn <n> or pick from a menu",

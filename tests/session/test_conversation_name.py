@@ -332,3 +332,64 @@ class TestAgentLoopIntegration:
         assert agent.conversation_name is None
         # The old session kept its name on disk.
         assert json.loads((old_dir / "meta.json").read_text())["name"] == "doomed"
+
+
+class TestNannyModelBesideTheName:
+    """2026-10-30: the nanny is per conversation, recorded in meta.json like
+    the name (never in config.toml), restored on resume.
+    """
+
+    def test_old_meta_json_without_nanny_validates(self, tmp_path: Path) -> None:
+        legacy = {
+            "session_id": "abc",
+            "start_time": "2026-01-01T00:00:00+00:00",
+            "end_time": None,
+            "git_commit": None,
+            "git_branch": None,
+            "environment": {},
+            "username": "u",
+        }
+        (tmp_path / "meta.json").write_text(json.dumps(legacy), encoding="utf-8")
+        assert SessionLoader.load_metadata(tmp_path).nanny_model is None
+
+    @pytest.mark.asyncio
+    async def test_rides_in_memory_then_lands_and_is_rewritten_live(
+        self, session_config, vibe_config, tool_manager, profile
+    ) -> None:
+        logger = SessionLogger(session_config, "sess-1")
+        await logger.set_nanny_model("reviewer")
+        assert not logger.metadata_filepath.exists()
+        assert logger.nanny_model == "reviewer"
+
+        await _save(logger, vibe_config, tool_manager, profile)
+        before = _meta(logger)
+        assert before["nanny_model"] == "reviewer"
+
+        await logger.set_nanny_model(None)
+        after = _meta(logger)
+        assert after["nanny_model"] is None
+        for key in ("title", "total_messages", "stats", "config"):
+            assert after[key] == before[key], key
+
+    @pytest.mark.asyncio
+    async def test_survives_reset_and_comes_back_on_resume(
+        self, session_config, vibe_config, tool_manager, profile
+    ) -> None:
+        first = SessionLogger(session_config, "sess-1")
+        await first.set_nanny_model("reviewer")
+        first.reset_session("sess-2")
+        assert first.nanny_model == "reviewer"
+        await _save(first, vibe_config, tool_manager, profile)
+        assert _meta(first)["nanny_model"] == "reviewer"
+
+        second = SessionLogger(session_config, "sess-3")
+        await second.set_nanny_model("stale")
+        second.resume_existing_session("sess-2", first.session_dir)
+        assert second.nanny_model == "reviewer"
+
+        third = SessionLogger(session_config, "sess-4")
+        await _save(third, vibe_config, tool_manager, profile)
+        fourth = SessionLogger(session_config, "sess-5")
+        await fourth.set_nanny_model("stale")
+        fourth.resume_existing_session("sess-4", third.session_dir)
+        assert fourth.nanny_model is None

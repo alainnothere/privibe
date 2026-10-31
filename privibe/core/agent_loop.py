@@ -2392,6 +2392,30 @@ class AgentLoop:
         """
         await self.session_logger.set_conversation_name(name)
 
+    @property
+    def context_file(self) -> str | None:
+        """Absolute path of the context file associated with this
+        conversation (/set-context-file), or None."""
+        return self.session_logger.context_file
+
+    async def set_context_file(self, path: str | None) -> None:
+        """Persisted in meta.json beside the name; same life as the name
+        (kept across rewind/compact, dropped by /clear).
+        """
+        await self.session_logger.set_context_file(path)
+
+    @property
+    def session_nanny_model(self) -> str | None:
+        """The nanny alias recorded for this conversation in meta.json."""
+        return self.session_logger.nanny_model
+
+    async def set_session_nanny_model(self, alias: str | None) -> None:
+        """Record the nanny for this conversation beside its name: kept across
+        rewind and compact, restored on resume. Not /clear-dropped: the nanny
+        object stays attached through a /clear, so the record stays true.
+        """
+        await self.session_logger.set_nanny_model(alias)
+
     def _reset_session(self) -> None:
         # Keeps the conversation name: rewind and compact call this for the
         # same conversation. /clear drops it explicitly in clear_history.
@@ -2432,6 +2456,7 @@ class AgentLoop:
         # A cleared conversation is a new one; the old session keeps its
         # name on disk (saved above), the new one starts unnamed.
         await self.session_logger.set_conversation_name(None)
+        await self.session_logger.set_context_file(None)
 
     async def compact(self) -> str:
         try:
