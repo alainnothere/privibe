@@ -28,6 +28,9 @@ from privibe.core.types import (
 )
 
 SECTION_WIDTH = 60
+# A section label longer than this is cut: the label is a heading, and a
+# worker's whole task text in it wrapped the rule onto two or three rows.
+LABEL_CHARS = 48
 _MINUTE = 60
 ANSWER_LINES = 40
 # Tools whose result body is the file itself: the top level shows a diff
@@ -35,8 +38,16 @@ ANSWER_LINES = 40
 _NO_PREVIEW = {"read_file", "hashed_read", "write_file", "todo"}
 
 
+def fit_label(label: str, limit: int = LABEL_CHARS) -> str:
+    """The label's first non-empty line, cut to `limit` characters."""
+    first = next((ln.strip() for ln in label.splitlines() if ln.strip()), "")
+    if len(first) > limit:
+        return first[: limit - 1].rstrip() + "…"
+    return first
+
+
 def section_line(label: str, stamp: str = "") -> str:
-    head = f"── {label} "
+    head = f"── {fit_label(label)} "
     tail = f" {stamp}" if stamp else ""
     fill = max(2, SECTION_WIDTH - len(head) - len(tail))
     return head + "─" * fill + tail
@@ -58,15 +69,20 @@ def _cap(text: str, max_lines: int, more: str = "") -> str:
     return "\n".join([*lines[:max_lines], tail])
 
 
-def _preview_text(result: BaseModel) -> str:
+def _preview_text(result: BaseModel, shown: str = "") -> str:
     """The result's biggest text field: stdout for bash, matches for grep,
-    whatever a tool calls its body. Empty when nothing is text.
+    whatever a tool calls its body. Empty when nothing is text. A field whose
+    value is already in `shown` (bash's command, an edit's path: the head
+    line printed it) is not a body, so it is skipped.
     """
     best = ""
     for name in type(result).model_fields:
         value = getattr(result, name, None)
-        if isinstance(value, str) and len(value) > len(best):
-            best = value
+        if not isinstance(value, str) or len(value) <= len(best):
+            continue
+        if value.strip() and value.strip() in shown:
+            continue
+        best = value
     return best
 
 
@@ -146,9 +162,13 @@ class Tracer:
             # The one-liner says what happened; the call summary said what
             # was asked. Both when they differ, which is nearly always.
             summary = display.message if display.message else summary
-            if event.tool_name not in _NO_PREVIEW:
-                body = _preview_text(event.result)
         head = f"{mark} {summary}"
+        if (
+            event.tool_class is not None
+            and event.result is not None
+            and event.tool_name not in _NO_PREVIEW
+        ):
+            body = _preview_text(event.result, shown=head)
         if event.duration is not None and event.duration >= 1:
             head += f" ({_secs(event.duration)})"
         if body.strip():
@@ -172,3 +192,15 @@ class Tracer:
         if answer.strip():
             events.append(self._event(_cap(answer, ANSWER_LINES, more)))
         return events
+
+    def close(
+        self, label: str, stamp: str = "", detail: str = ""
+    ) -> list[ToolStreamEvent]:
+        """The trace's last entry: a rule naming how the run ended, with the
+        detail under it. Without it the body ended on whatever the last role
+        did and the outcome lived only on the line above the fold-out.
+        """
+        text = section_line(label, stamp)
+        if detail.strip():
+            text += "\n" + _indent(detail.strip())
+        return self.line(text)

@@ -86,6 +86,15 @@ class ToolUIData[TArgs: BaseModel, TResult: BaseModel](ABC):
         return cls.format_result_display(cast(TResult, event.result))
 
     @classmethod
+    def format_finished_text(cls, args: TArgs, result_message: str) -> str:
+        """What the call line says once the tool is done. The TUI replaces the
+        call line with the result line, so a tool whose parameters are worth
+        keeping on screen (a long job description, say) overrides this to
+        put them back under the outcome. The default is the result line alone.
+        """
+        return result_message
+
+    @classmethod
     @abstractmethod
     def get_status_text(cls) -> str: ...
 
@@ -111,6 +120,20 @@ class ToolUIDataAdapter:
         )
         args_str = ", ".join(f"{k}={v!r}" for k, v in list(args_dict.items())[:3])
         return ToolCallDisplay(summary=f"{event.tool_name}({args_str})")
+
+    def get_finished_text(self, call_event: ToolCallEvent, result_message: str) -> str:
+        """The call line's text after the result landed: `result_message`,
+        plus whatever the tool wants kept from its call. Never raises; any
+        trouble leaves the plain result message.
+        """
+        if self.ui_data_class is None or call_event.args is None:
+            return result_message
+        try:
+            return self.ui_data_class.format_finished_text(
+                call_event.args, result_message
+            )
+        except Exception:
+            return result_message
 
     def get_result_display(self, event: ToolResultEvent) -> ToolResultDisplay:
         """The one-line result every UI shows. Always starts with the tool

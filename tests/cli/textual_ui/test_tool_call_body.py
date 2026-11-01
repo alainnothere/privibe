@@ -55,10 +55,15 @@ async def test_params_on_the_line_and_full_stream_log_in_the_body() -> None:
         assert "files: /src/a.py" in line
         assert "`pytest -q` exits 0" in line
         assert widget.collapsed
-        # No ToolCallDisplay.content and no stream yet: nothing to unfold.
+        # The goal has a second line the call line cannot show, so it is the
+        # call's content: the fold-out has something to open from the start.
         assert widget._body is not None and not widget._body.display
         assert widget._triangle_widget is not None
-        assert not widget._triangle_widget.display
+        assert widget._triangle_widget.display
+        assert (
+            str(widget._params_widget.render())
+            == "Make f return 2.\nSecond line of the goal."
+        )
 
         widget.set_stream_message("manager: planning")
         widget.set_stream_message("brainstorm")
@@ -109,9 +114,21 @@ def test_orchestrate_summary_carries_the_goal() -> None:
         "  done when: the manager says so (unverified)",
         "  max_rounds: 2",
     ]
+    # The goal in full rides along as content: the line only holds its first line.
+    assert display.content == "Make f return 2.\nmore"
+    long = Orchestrate.format_call_display(OrchestrateArgs(goal="x" * 400))
+    assert long.summary.splitlines()[0] == 'orchestrate "' + "x" * 299 + '…"'
+    assert long.content == "x" * 400
+
+
+def test_one_line_goal_has_no_content_to_repeat() -> None:
+    """A goal the call line already shows whole is not printed a second time."""
+    display = Orchestrate.format_call_display(
+        OrchestrateArgs(goal="  Make f return 2. ")
+    )
+    assert display.summary.splitlines()[0] == 'orchestrate "Make f return 2."'
     assert display.content is None
-    long = Orchestrate.format_call_display(OrchestrateArgs(goal="x" * 200))
-    assert long.summary.splitlines()[0] == 'orchestrate "' + "x" * 79 + '…"'
+    assert Orchestrate.format_call_display(OrchestrateArgs(goal="")).content is None
 
 
 def test_adapter_does_not_double_the_tool_name() -> None:

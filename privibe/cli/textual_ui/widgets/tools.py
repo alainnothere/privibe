@@ -222,6 +222,17 @@ class ToolCallMessage(StatusMessage):
         if self._text_widget:
             self._text_widget.update(text)
 
+    def finished_text(self, result_text: str) -> str:
+        """`result_text` plus whatever the tool keeps from its own call (see
+        ToolUIData.format_finished_text). Plain `result_text` when the call
+        is not known (a history line for a tool this process no longer has).
+        """
+        if self._event is None or self._event.tool_class is None:
+            return result_text
+        return ToolUIDataAdapter(self._event.tool_class).get_finished_text(
+            self._event, result_text
+        )
+
     def set_finished_hint(self, result: ToolResultEvent | None) -> None:
         """Replace the frozen elapsed counter with where the time went: the
         LLM request behind this call, the approval wait, and the run.
@@ -391,7 +402,9 @@ class ToolResultMessage(Static):
             success = self._determine_success()
             self._call_widget.stop_spinning(success=success)
             result_text = self._get_result_text()
-            self._call_widget.set_result_text(result_text)
+            self._call_widget.set_result_text(
+                self._call_widget.finished_text(result_text)
+            )
             self._call_widget.set_finished_hint(self._event)
         await self._render_result()
 

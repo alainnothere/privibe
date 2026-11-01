@@ -248,6 +248,11 @@ class TestRun:
             and m.rstrip("─ ").endswith("s")
         ]
         assert stamped
+        # The trace ends on a rule that says how the run ended, with the detail.
+        assert stream[-1].startswith("── end · done ")
+        assert stream[-1].rstrip().endswith(
+            " 1 round · 4 calls\n  verifier passes after a worker"
+        )
         # Role calls: efforts and answer-only flags.
         assert loops.efforts == ["low", "medium", "low", "medium"]
         assert loops.answer_only_flags == [True, True, True, False]

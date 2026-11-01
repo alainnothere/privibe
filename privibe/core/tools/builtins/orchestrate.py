@@ -42,8 +42,9 @@ from privibe.core.utils.tags import VIBE_STOP_EVENT_TAG
 # permission config: its allowlist is command patterns, not paths.
 _SCOPED_TOOLS = [t for t in MUTATING_TOOLS if t != "bash"]
 
-# The call line shows this much of the goal; the body shows all of it.
-_SUMMARY_GOAL_CHARS = 80
+# The call line and the finished line show this much of the goal's first line;
+# the fold-out body shows all of it.
+_SUMMARY_GOAL_CHARS = 300
 
 
 def summarize_goal(goal: str, limit: int = _SUMMARY_GOAL_CHARS) -> str:
@@ -110,14 +111,11 @@ class Orchestrate(
     )
 
     @classmethod
-    def format_call_display(cls, args: OrchestrateArgs) -> ToolCallDisplay:
-        """The job on the call line itself, like every other tool prints its
-        parameters: the goal's first line, then scope, files and what ends
-        the job on indented lines. The fold-out body is for progress.
+    def _parameter_lines(cls, args: OrchestrateArgs) -> list[str]:
+        """Scope, files, what ends the job and the round cap, indented: the
+        part of the call that is the same however long the goal is.
         """
-        goal = summarize_goal(args.goal)
-        lines = [f'orchestrate "{goal}"' if goal else "orchestrate"]
-        lines.append("  scope: " + (", ".join(args.scope) if args.scope else "(none)"))
+        lines = ["  scope: " + (", ".join(args.scope) if args.scope else "(none)")]
         lines.append("  files: " + (", ".join(args.files) if args.files else "(none)"))
         lines.append(
             "  done when: "
@@ -129,12 +127,45 @@ class Orchestrate(
         )
         if args.max_rounds is not None:
             lines.append(f"  max_rounds: {args.max_rounds}")
-        return ToolCallDisplay(summary="\n".join(lines))
+        return lines
+
+    @classmethod
+    def format_call_display(cls, args: OrchestrateArgs) -> ToolCallDisplay:
+        """The job on the call line itself, like every other tool prints its
+        parameters: the goal's first line, then scope, files and what ends
+        the job on indented lines. The goal in full is the content, which the
+        fold-out body shows (and the console approval prompt prints); it is
+        left out when the first line already is the whole goal.
+        """
+        goal = summarize_goal(args.goal)
+        lines = [f'orchestrate "{goal}"' if goal else "orchestrate"]
+        lines.extend(cls._parameter_lines(args))
+        full_goal = args.goal.strip()
+        content = full_goal if full_goal and full_goal != goal else None
+        return ToolCallDisplay(summary="\n".join(lines), content=content)
+
+    @classmethod
+    def format_finished_text(cls, args: OrchestrateArgs, result_message: str) -> str:
+        """The outcome, then the job it was for. The TUI swaps the call line
+        for this when the result lands, so the goal, scope, files and
+        done-command stay on screen after the run instead of vanishing.
+        """
+        goal = summarize_goal(args.goal)
+        lines = [result_message]
+        if goal:
+            lines.append(f'  goal: "{goal}"')
+        lines.extend(cls._parameter_lines(args))
+        return "\n".join(lines)
 
     @classmethod
     def format_result_display(cls, result: OrchestrateResult) -> ToolResultDisplay:
         ok = result.status in {OutcomeStatus.DONE, OutcomeStatus.DONE_UNVERIFIED}
-        message = f"orchestrate {result.status} after {result.rounds} rounds, {result.calls} calls"
+        round_word = "round" if result.rounds == 1 else "rounds"
+        call_word = "call" if result.calls == 1 else "calls"
+        message = (
+            f"orchestrate {result.status} after {result.rounds} {round_word}, "
+            f"{result.calls} {call_word}"
+        )
         if result.detail:
             message += f": {result.detail}"
         return ToolResultDisplay(success=ok, message=message)
@@ -249,6 +280,8 @@ class Orchestrate(
                     for entry in entries:
                         await queue.put(entry)
                 else:
+                    for entry in tracer.close(*_closing_entry(event)):
+                        await queue.put(entry)
                     await queue.put(event)
 
         driver = asyncio.create_task(drive())
@@ -274,6 +307,10 @@ class Orchestrate(
         except asyncio.CancelledError:
             driver.cancel()
             ledger.log("end cancelled")
+            for entry in tracer.close(
+                "end · cancelled", detail="cancelled by the user"
+            ):
+                yield entry
             yield OrchestrateResult(
                 status=OutcomeStatus.CANCELLED,
                 detail="cancelled by the user",
@@ -361,6 +398,16 @@ class Orchestrate(
         for entry in tracer.end_section(answer, more=f"full text in {transcripts}"):
             await queue.put(entry)
         return answer
+
+
+def _closing_entry(outcome: Outcome) -> tuple[str, str, str]:
+    """Label, stamp and detail for the trace's last rule: how the run ended,
+    its size, and the loop's own reason.
+    """
+    round_word = "round" if outcome.rounds == 1 else "rounds"
+    call_word = "call" if outcome.calls == 1 else "calls"
+    stamp = f"{outcome.rounds} {round_word} · {outcome.calls} {call_word}"
+    return f"end · {outcome.status}", stamp, outcome.detail
 
 
 def _to_result(outcome: Outcome) -> OrchestrateResult:
