@@ -203,12 +203,12 @@ def _get_os_system_prompt(config: VibeConfig | None = None) -> str:
     if (hint := dialect_hint()) is not None:
         prompt += "\n" + hint
 
-    # The datetime is rendered ONCE, at session creation, and becomes a fixed
-    # historical fact of the session: message 0 is never regenerated. Fresh
-    # datetimes reach the model via the context_refresh tail message on resume.
-    now = datetime.now().strftime("%B %d, %Y %I:%M %p")
-    prompt += f"\nThe current date and time is {now} (local time)"
-
+    # No clock here. Message 0 is the KV-cache prefix shared by every session
+    # built from the same config (the orchestrate roles, the nanny, a task
+    # subagent), and a minute stamp made each of them a new prefix on the
+    # server: two role calls straddling a minute boundary cost a full
+    # reprefill of the snapshot. The date and time reach the model through the
+    # context_refresh tail message on resume, or through `date` in bash.
     return prompt
 
 

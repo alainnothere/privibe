@@ -113,14 +113,16 @@ def _reorder(config):
     return tool_manager, config, skill_manager, agent_manager
 
 
-def test_datetime_is_in_system_prompt() -> None:
+def test_datetime_is_not_in_system_prompt() -> None:
+    # A clock in message 0 breaks the shared KV-cache prefix across sessions
+    # built from the same config (orchestrate roles, nanny, task subagents).
     config = build_test_vibe_config(
         system_prompt_id="tests",
         include_project_context=False,
         include_prompt_detail=True,
     )
     prompt = get_universal_system_prompt(*_reorder(config))
-    assert "The current date and time is" in prompt
+    assert "The current date and time is" not in prompt
 
 
 def test_project_context_is_in_system_prompt() -> None:
