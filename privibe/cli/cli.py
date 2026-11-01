@@ -329,6 +329,17 @@ def run_cli(args: argparse.Namespace) -> None:
                 ),
             )
 
+            # What the command line chose explicitly keeps winning over what a
+            # resumed conversation had saved.
+            agent_loop.pinned_run_state = frozenset(
+                part
+                for part, given in (
+                    ("model", bool(getattr(args, "model", None))),
+                    ("agent", args.agent != BuiltinAgentName.DEFAULT),
+                )
+                if given
+            )
+
             if loaded_session:
                 _resume_previous_session(agent_loop, *loaded_session)
 

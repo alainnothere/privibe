@@ -11,6 +11,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+import re
 
 from privibe.core.config import OrchestrateConfig
 from privibe.core.orchestrate.ledger import Ledger, TaskItem
@@ -37,7 +38,9 @@ from privibe.core.orchestrate.verifier import VerifierResult, run_verifier
 type RoleCall = Callable[[Role, str, str, bool], Awaitable[str]]
 
 _WORKER_REPORT_CHARS = 4000
+_WHOLE_JOB_TASK = "Do the whole task described above, every edit it needs."
 _PARSE_RETRIES = 1
+_CALL_RETRIES = 1
 
 
 @dataclass(frozen=True)
@@ -87,13 +90,32 @@ class _Run:
     tasks: list[TaskItem] = field(default_factory=list)
     verifier: VerifierResult | None = None
     last_report: str = ""
-    last_task_text: str | None = None
+    last_task_key: str | None = None
+    # Keys of every task a worker has run, kept by the harness because a manager
+    # that answers badly can reset the list's [done] marks.
+    done_keys: set[str] = field(default_factory=set)
     calls: int = 0
     rounds: int = 0
 
     @property
     def max_rounds(self) -> int:
         return self.job.max_rounds or self.config.max_rounds
+
+    def plan_budget_text(self) -> str:
+        # One task per round, and the last round must still run the verifier.
+        return (
+            f"\n\nBudget: the harness runs {self.max_rounds} rounds, one worker "
+            f"task per round. Plan at most {max(1, self.max_rounds - 1)} tasks, so the "
+            "last round is left for the check. Merge small steps into one task.\n"
+        )
+
+    def rounds_left_text(self) -> str:
+        left = self.max_rounds - self.rounds
+        return (
+            f"\n\nBudget: round {self.rounds} of {self.max_rounds}, {left} left "
+            "after this one. Say DONE only when the work is finished; a DONE "
+            "that the verifier rejects still spends a round.\n"
+        )
 
     async def ask(
         self,
@@ -113,14 +135,40 @@ class _Run:
                 tasks=self.tasks,
                 rendered_changed=self.bundle.render_changed(),
                 verifier=self.verifier,
-                last_report=self.last_report if role == Role.MANAGE else "",
+                last_report=(
+                    self.last_report if role in {Role.MANAGE, Role.FINALIZE} else ""
+                ),
                 report_chars=_WORKER_REPORT_CHARS,
                 role_text=role_text(role, task=task) + extra,
             ),
         )
-        answer = await self.call(role, message, effort, answer_only)
+        answer = await self._call_with_retry(role, message, effort, answer_only)
         self.ledger.save_transcript(f"{self.calls:03d}-{role.value}", answer)
         return answer
+
+    async def _call_with_retry(
+        self, role: Role, message: str, effort: str, answer_only: bool
+    ) -> str:
+        """One model call that never raises. A dropped connection or a backend
+        error is retried once; if that fails too the answer is empty, and the
+        loop's own fallbacks (parse retry, fallback task, finalizer) take over.
+        Cancellation is not an error and passes through.
+        """
+        for attempt in range(1 + _CALL_RETRIES):
+            try:
+                return await self.call(role, message, effort, answer_only)
+            except Exception as e:  # the backend can fail in any way
+                self.ledger.log(
+                    f"{role.value} call failed ({type(e).__name__}: {e})"
+                    + (
+                        "; retrying once"
+                        if attempt < _CALL_RETRIES
+                        else "; empty answer"
+                    )
+                )
+                if attempt < _CALL_RETRIES:
+                    self.calls += 1
+        return ""
 
     def outcome(self, status: OutcomeStatus, detail: str = "") -> Outcome:
         self.ledger.log(f"end {status.value}" + (f": {detail}" if detail else ""))
@@ -134,24 +182,39 @@ class _Run:
             detail=detail,
         )
 
-    async def plan(self) -> PlanAnswer | None:
+    async def plan(self) -> PlanAnswer:
+        """The manager's plan. Never fails: when the answer cannot be parsed
+        even after the retry, the job runs as one task and the manager's own
+        text (or the goal) becomes the plan.
+        """
         error = ""
+        text = ""
         for _attempt in range(1 + _PARSE_RETRIES):
             text = await self.ask(
-                Role.PLAN, self.config.effort_plan, answer_only=True, extra=error
+                Role.PLAN,
+                self.config.effort_plan,
+                answer_only=True,
+                extra=self.plan_budget_text() + error,
             )
             try:
                 return parse_plan(text)
             except ParseError as e:
                 error = _retry_note(str(e), text)
                 self.ledger.log(f"plan parse error: {e}")
-        return None
+        self.ledger.log("plan unparseable; falling back to one task for the whole job")
+        return PlanAnswer(
+            plan=text.strip() or self.job.goal.strip(),
+            tasks=[TaskItem(id=1, text=_WHOLE_JOB_TASK)],
+        )
 
     async def manage(self) -> ManageAnswer | None:
         error = ""
         for _attempt in range(1 + _PARSE_RETRIES):
             text = await self.ask(
-                Role.MANAGE, self.config.effort_manage, answer_only=True, extra=error
+                Role.MANAGE,
+                self.config.effort_manage,
+                answer_only=True,
+                extra=self.rounds_left_text() + error,
             )
             try:
                 return parse_manage(text)
@@ -194,9 +257,6 @@ async def run_orchestration(
     # 1. plan
     yield Progress("manager · plan", section=True)
     plan_answer = await run.plan()
-    if plan_answer is None:
-        yield run.outcome(OutcomeStatus.STALLED, "manager's plan could not be parsed")
-        return
     ledger.write_plan(plan_answer.plan)
     run.tasks = plan_answer.tasks
     ledger.write_tasks(run.tasks)
@@ -219,43 +279,35 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
         run.rounds += 1
         tag = f"round {run.rounds}/{run.max_rounds}"
         yield Progress(f"manager · {tag}", section=True)
-        decision = await run.manage()
+        decision = await run.manage() or _fallback_decision(run)
         if decision is None:
-            yield run.outcome(
-                OutcomeStatus.STALLED, "manager's task list could not be parsed"
-            )
+            async for event in _finalize(
+                run,
+                OutcomeStatus.STALLED,
+                "manager's task list could not be parsed and no task is left",
+            ):
+                yield event
             return
         run.tasks = decision.tasks
         ledger.write_tasks(run.tasks)
 
-        if decision.done:
-            if not job.done_command:
-                yield run.outcome(
-                    OutcomeStatus.DONE_UNVERIFIED, "manager declared done; no verifier"
-                )
-                return
-            if run.verifier is None:
-                yield Progress(f"verifier · {tag} (manager declared done)")
-                await run.verify()
-                yield _verifier_progress(run.verifier)
-            if run.verifier is not None and run.verifier.passed:
-                yield run.outcome(OutcomeStatus.DONE)
-                return
-            # A failing run vetoes DONE: the manager sees it next round.
-            ledger.log("manager said DONE but the verifier fails; continuing")
-            run.last_report = ""
-            continue
-
         task = decision.next_task()
-        if task is None:  # parse_manage guarantees otherwise; belt and braces
-            yield run.outcome(OutcomeStatus.STALLED, "manager named no task")
+        if decision.done:
+            events, resolved = await _resolve_done(run, tag)
+            for event in events:
+                yield event
+            if isinstance(resolved, Outcome):
+                yield resolved
+                return
+            task = resolved
+        stall = _stall_reason(run, task, overruled=decision.done)
+        if stall is not None:
+            async for event in _finalize(run, OutcomeStatus.STALLED, stall):
+                yield event
             return
-        if task.text == run.last_task_text:
-            yield run.outcome(
-                OutcomeStatus.STALLED, f"manager reissued the same task: {task.text}"
-            )
-            return
-        run.last_task_text = task.text
+        assert task is not None  # _stall_reason returns a reason for None
+        run.last_task_key = _task_key(task.text)
+        run.done_keys.add(run.last_task_key)
 
         yield Progress(f"worker · {tag} · task {task.id}: {task.text}", section=True)
         report = await run.ask(
@@ -272,8 +324,149 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
             yield Progress(f"verifier · {tag}")
             await run.verify()
             yield _verifier_progress(run.verifier)
+            if run.verifier is not None and run.verifier.passed:
+                # Ground truth: the job is done whatever the task list says.
+                yield run.outcome(OutcomeStatus.DONE, "verifier passes after a worker")
+                return
 
-    yield run.outcome(OutcomeStatus.ROUNDS_EXHAUSTED, f"{run.max_rounds} rounds used")
+    async for event in _finalize(
+        run, OutcomeStatus.ROUNDS_EXHAUSTED, f"{run.max_rounds} rounds used"
+    ):
+        yield event
+
+
+_PUNCT_EDGES = " \t\r\n.,;:!?'\"`*_-"
+
+
+def _task_key(text: str) -> str:
+    """A task's text with case, spacing and edge punctuation ignored, so a small
+    model rewording 'Fix x.' as 'fix  x' is still the same task.
+    """
+    return re.sub(r"\s+", " ", text).strip(_PUNCT_EDGES).lower()
+
+
+async def _resolve_done(
+    run: _Run, tag: str
+) -> tuple[list[Progress], Outcome | TaskItem | None]:
+    """The manager said DONE. Returns the progress lines to show, and either the
+    Outcome that ends the job, the task to run instead because the DONE was
+    overruled, or None when it was overruled and no task is left.
+    """
+    events: list[Progress] = []
+    if run.job.done_command and run.verifier is None:
+        events.append(Progress(f"verifier · {tag} (manager declared done)"))
+        await run.verify()
+        events.append(_verifier_progress(run.verifier))
+    accepted = _done_outcome(run)
+    if accepted is not None:
+        return events, accepted
+    return events, _overrule_done(run)
+
+
+def _stall_reason(run: _Run, task: TaskItem | None, *, overruled: bool) -> str | None:
+    """Why the loop cannot run `task`, or None when it can."""
+    if task is None:
+        if overruled:
+            return "manager said DONE, nothing confirms it, and no other task is left"
+        return "manager named no task"  # parse_manage rules this out; belt and braces
+    if _task_key(task.text) == run.last_task_key:
+        return f"manager reissued the same task: {task.text}"
+    return None
+
+
+def _done_outcome(run: _Run) -> Outcome | None:
+    """The manager said DONE. An Outcome when that stands, None when it must be
+    overruled. A verifier is ground truth: pass is done, fail vetoes. Without
+    one the manager's word stands, except a DONE before any worker has run and
+    with nothing changed, which is a lazy answer, not a finished job.
+    """
+    if run.job.done_command:
+        if run.verifier is not None and run.verifier.passed:
+            return run.outcome(OutcomeStatus.DONE)
+        run.ledger.log("manager said DONE but the verifier fails; continuing")
+        return None
+    if run.last_task_key is None and not run.bundle.changed_files():
+        run.ledger.log("manager said DONE before any work was done; overruled")
+        return None
+    return run.outcome(
+        OutcomeStatus.DONE_UNVERIFIED, "manager declared done; no verifier"
+    )
+
+
+def _advance(run: _Run) -> tuple[list[TaskItem], TaskItem | None]:
+    """Count the task the last worker ran as done and find the first one still
+    open. The manager's own list is not trusted here: it was unparseable or it
+    was overruled.
+    """
+    tasks = [
+        TaskItem(
+            id=t.id, text=t.text, done=t.done or _task_key(t.text) in run.done_keys
+        )
+        for t in run.tasks
+    ]
+    return tasks, next((t for t in tasks if not t.done), None)
+
+
+def _overrule_done(run: _Run) -> TaskItem | None:
+    """A DONE the verifier (or common sense) rejects: do the next open task
+    instead of asking the manager again. None when nothing is open.
+    """
+    run.last_report = ""
+    tasks, first_open = _advance(run)
+    run.tasks = tasks
+    run.ledger.write_tasks(tasks)
+    if first_open is not None:
+        run.ledger.log(f"DONE overruled; running the first open task {first_open.id}")
+    return first_open
+
+
+def _fallback_decision(run: _Run) -> ManageAnswer | None:
+    """The manager's answer could not be parsed, even after the retry. Keep the
+    job moving the way a person would: count the task the worker just ran as
+    done and take the first one still open. None when nothing is open.
+    """
+    tasks, first_open = _advance(run)
+    if first_open is None:
+        return None
+    run.ledger.log(f"manager unparseable; taking the first open task {first_open.id}")
+    return ManageAnswer(tasks=tasks, next_id=first_open.id, done=False)
+
+
+async def _finalize(
+    run: _Run, status: OutcomeStatus, reason: str
+) -> AsyncGenerator[Progress | Outcome, None]:
+    """The loop is ending without a clean sign-off (rounds spent, a task
+    reissued, no task left). One last worker finishes the job from the ledger,
+    then the verifier decides. A pass is DONE whatever the reason; otherwise the
+    original status stands, with what the finalizer did added to the detail.
+    """
+    if run.verifier is not None and run.verifier.passed:
+        # The verifier runs after every worker call, so this is the current
+        # tree: the job is done whatever the manager said, nothing to finish.
+        run.ledger.log(f"loop ended ({reason}) but the verifier passes; done")
+        yield run.outcome(OutcomeStatus.DONE, f"verifier passes: {reason}")
+        return
+    run.ledger.log(f"finalizer: {reason}")
+    yield Progress("finalizer", section=True)
+    report = await run.ask(
+        Role.FINALIZE,
+        run.config.effort_finalize,
+        answer_only=False,
+        extra=f"\n\nWhy the loop ended: {reason}.\n",
+    )
+    run.last_report = report
+    if not run.job.done_command:
+        yield run.outcome(status, f"{reason}; the finalizer ran, nothing verified it")
+        return
+    yield Progress("verifier · finalizer")
+    await run.verify()
+    yield _verifier_progress(run.verifier)
+    if run.verifier is not None and run.verifier.passed:
+        yield run.outcome(OutcomeStatus.DONE, f"finalizer completed the job: {reason}")
+        return
+    yield run.outcome(
+        status, f"{reason}; the finalizer ran and the verifier still fails"
+    )
 
 
 def _verifier_progress(result: VerifierResult | None) -> Progress:

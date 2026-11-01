@@ -11,7 +11,7 @@ Not for questions, not for one-edit fixes, and not for work that needs the user 
 
 - `goal`: the complete request. The workers see nothing from this conversation; write what they need.
 - `files`: the files every call is shown, whole. Put read-only context first and the files you expect to be edited last.
-- `scope`: the directories the workers may edit. Anything else is refused.
+- `scope`: the directories the workers' file edit tools (`write_file`, `search_replace`, the hashed edit tools, `restore_file`) may write to; they refuse anything else. `bash` is not limited by `scope`: a worker's shell command can write outside it, and in an auto-approve session it will not ask first.
 - `done_command`: a shell command that exits 0 when the job is done. Give one whenever you can; without it the result is `done_unverified` and means only that the manager stopped.
 
 The result reports the status, the last verifier run, the files that changed and the ledger directory holding `plan.md`, `notes.md`, `tasks.json` and every call's answer. Check the changed files yourself before telling the user the job is done.

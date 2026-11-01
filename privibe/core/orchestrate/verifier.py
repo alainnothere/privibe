@@ -26,6 +26,15 @@ def tail_chars(text: str, limit: int) -> str:
     return "[... first part cut, last part kept ...]\n" + text[-limit:]
 
 
+def _kill_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill the shell and everything it started (its own process group)."""
+    if sys.platform == "win32":
+        proc.kill()
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
 async def run_verifier(
     command: str, *, cwd: Path, timeout_s: float, output_chars: int
 ) -> VerifierResult:
@@ -44,12 +53,12 @@ async def run_verifier(
     )
     try:
         raw, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except asyncio.CancelledError:
+        # The user cancelled the job: do not leave the command running behind us.
+        _kill_tree(proc)
+        raise
     except TimeoutError:
-        if sys.platform == "win32":
-            proc.kill()
-        else:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, signal.SIGKILL)
+        _kill_tree(proc)
         await proc.wait()
         return VerifierResult(
             exit_code=proc.returncode if proc.returncode is not None else -1,

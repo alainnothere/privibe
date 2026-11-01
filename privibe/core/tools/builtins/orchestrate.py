@@ -296,9 +296,16 @@ class Orchestrate(
             session_prefix=BuiltinAgentName.ORCHESTRATE_WORKER,
             enabled=ctx.session_dir is not None,
         )
-        base = VibeConfig.load(session_logging=session_logging)
+        # Load the file for everything else, but run on the model the caller is
+        # running on, not whatever another session last wrote into config.toml.
+        base = VibeConfig.load(
+            session_logging=session_logging, active_model=parent_config.active_model
+        )
         globs = [str(Path(s) / "*") for s in scope]
-        tools = dict(base.tools)
+        # Permissions come from the caller's live state (its mode plus anything
+        # changed in memory this session), not from the file: a caller on
+        # accept-edits or with bash set to 'always' runs its workers the same.
+        tools = {**base.tools, **parent_config.tools}
         for name in _SCOPED_TOOLS:
             tools[name] = {
                 **tools.get(name, {}),

@@ -194,6 +194,7 @@ class ConsoleUI(NannyListener):
         elif len(self.agent_loop.messages) > 1:
             # History restored before we started (--resume <id> / --continue).
             await self._nanny_follow_session()
+            await self._restore_run_state(self.agent_loop.pinned_run_state)
             self._print_transcript(_REPLAY_TAIL_ENTRIES)
 
         if initial_prompt:
@@ -945,6 +946,19 @@ class ConsoleUI(NannyListener):
         self._nanny = None
         await self.agent_loop.set_session_nanny_model(None)
 
+    async def _restore_run_state(self, pinned: frozenset[str] = frozenset()) -> None:
+        """After a session restore: the model and agent profile recorded in the
+        session's meta.json win over config.toml (shared by every running
+        session), except what the command line pinned. A recorded model that is
+        gone is reported, never swapped for another one.
+        """
+        note = await self.agent_loop.restore_run_state(pinned)
+        if note:
+            print(f"[session] {note}")
+        ctx_msg = await self.agent_loop.resolve_context_size()
+        if ctx_msg:
+            print(ctx_msg)
+
     async def _nanny_follow_session(self) -> None:
         """After a session restore: the nanny recorded in the session's
         meta.json wins over the config default, then its transcript stored
@@ -1076,10 +1090,13 @@ class ConsoleUI(NannyListener):
 
         # Same sequence the TUI runs on model switch: persist, re-read .env,
         # reload the config into the running loop, then re-detect context size.
+        # The file keeps the last pick as the default for NEW sessions only;
+        # this conversation takes the pick directly (see the TUI picker).
         VibeConfig.save_updates({"active_model": alias})
         load_dotenv_values()
-        base_config = VibeConfig.load()
+        base_config = VibeConfig.load(active_model=alias)
         notice = await self.agent_loop.apply_runtime_config(base_config=base_config)
+        await self.agent_loop.persist_run_state()
         if notice:
             print(notice)
         fallback_notice = self.agent_loop.config.model_fallback_notice()
@@ -1288,6 +1305,7 @@ class ConsoleUI(NannyListener):
         self.agent_loop.session_logger.resume_existing_session(session_id, session_path)
         self.agent_loop.messages.restore(session_path)
         await self._nanny_follow_session()
+        await self._restore_run_state()
         print(
             f"Resumed session {session_id} "
             f"with {len(self.agent_loop.messages)} messages."

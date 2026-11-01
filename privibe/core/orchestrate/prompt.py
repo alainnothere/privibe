@@ -22,6 +22,7 @@ class Role(StrEnum):
     BRAINSTORM = "brainstorm"
     MANAGE = "manage"
     EXECUTE = "execute"
+    FINALIZE = "finalize"
 
 
 # --- head ---------------------------------------------------------------------
@@ -169,6 +170,21 @@ Your task:
 {task}
 """
 
+ROLE_FINALIZE = """# Your role: finalizer
+
+The loop has ended without a clean sign-off; the reason is at the end of this
+message. You are the last call, so finish the job now. Read the task, the plan,
+the notes, the changed files and the last verifier run, then make every edit
+still needed with the edit tools, all in this call. If the last verifier run is
+FAIL, fix what its output shows. If the work is already complete, change
+nothing.
+
+When finished, answer in text:
+
+## Result
+<what is done, what is not, and anything unverified>
+"""
+
 
 def role_text(role: Role, *, task: str = "") -> str:
     match role:
@@ -180,3 +196,5 @@ def role_text(role: Role, *, task: str = "") -> str:
             return ROLE_MANAGE
         case Role.EXECUTE:
             return ROLE_EXECUTE.format(task=task.strip())
+        case Role.FINALIZE:
+            return ROLE_FINALIZE

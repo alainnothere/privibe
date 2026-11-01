@@ -433,6 +433,10 @@ class VibeApp(App):  # noqa: PLR0904
         self.agent_loop.set_approval_callback(self._approval_callback)
         self.agent_loop.set_user_input_callback(self._user_input_callback)
         await self._start_nanny_from_config()
+        if len(self.agent_loop.messages) > 1:
+            # --continue / --resume <id>: history was restored before the UI
+            # came up. An explicit --model / --agent still wins, once.
+            await self._restore_run_state(self.agent_loop.pinned_run_state)
         self._refresh_profile_widgets()
 
         chat_input_container = self.query_one(ChatInputContainer)
@@ -757,8 +761,11 @@ class VibeApp(App):  # noqa: PLR0904
     async def on_model_picker_app_model_selected(
         self, message: ModelPickerApp.ModelSelected
     ) -> None:
+        # The file keeps the last pick as the default for NEW sessions only;
+        # this conversation takes the pick directly and records it in its own
+        # meta.json, so another session's pick can never move it.
         VibeConfig.save_updates({"active_model": message.alias})
-        await self._reload_config()
+        await self._reload_config(active_model=message.alias)
         # Switching models changes the active alias, so resolve_context_size
         # re-detects (per-alias latches); refresh the banner afterwards so the
         # detected name for the new model is reflected.
@@ -1301,6 +1308,7 @@ class VibeApp(App):  # noqa: PLR0904
         )
         self.agent_loop.messages.restore(session_path)
         await self._nanny_follow_session()
+        await self._restore_run_state()
         self._refresh_profile_widgets()
         self._apply_conversation_name_display()
 
@@ -1328,16 +1336,22 @@ class VibeApp(App):  # noqa: PLR0904
     def loading_widget(self) -> LoadingWidget | None:
         return self._loading_widget
 
-    async def _reload_config(self) -> None:
+    async def _reload_config(self, active_model: str | None = None) -> None:
         try:
             self._reset_ui_state()
             await self._load_more.hide()
             # Re-read the global .env: the point of reloading is often a key
             # the user just added there, and startup was the only other read.
             load_dotenv_values()
-            base_config = VibeConfig.load()
+            # The file is shared by every running session, so it does not get
+            # to pick this conversation's model: keep the one it runs on, or
+            # the one the user just chose in the picker.
+            base_config = VibeConfig.load(
+                active_model=active_model or self.agent_loop.base_config.active_model
+            )
 
             notice = await self.agent_loop.apply_runtime_config(base_config=base_config)
+            await self.agent_loop.persist_run_state()
             self._narrator_manager.sync()
             self.run_worker(self._sync_nanny_with_config(base_config), exclusive=False)
 
@@ -2659,6 +2673,20 @@ class VibeApp(App):  # noqa: PLR0904
         except Exception:
             pass
         await self.agent_loop.set_session_nanny_model(None)
+
+    async def _restore_run_state(self, pinned: frozenset[str] = frozenset()) -> None:
+        """After a session restore: the model and agent profile recorded in the
+        session's meta.json win over config.toml (a file every running session
+        shares), except what the command line pinned. A recorded model that is
+        gone is reported, never swapped for another one.
+        """
+        note = await self.agent_loop.restore_run_state(pinned)
+        if note:
+            await self._mount_and_scroll(WarningMessage(note, show_border=False))
+        ctx_msg = await self.agent_loop.resolve_context_size()
+        if ctx_msg:
+            await self._mount_and_scroll(WarningMessage(ctx_msg, show_border=False))
+        self._refresh_banner()
 
     async def _nanny_follow_session(self) -> None:
         """After a session restore: the nanny recorded in the session's

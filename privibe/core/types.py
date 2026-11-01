@@ -146,6 +146,13 @@ class SessionMetadata(BaseModel):
     # (/set-context-file). Per conversation, like the name; /resume-from-
     # context-file starts a continuation that keeps it.
     context_file: str | None = None
+    # Alias of the model this conversation is running on, and the name of its
+    # agent profile (default, plan, accept-edits, auto-approve, ...). Rewritten
+    # on every save from the live session, restored on resume/continue, and
+    # inherited by the agents it spawns. Per conversation, like the name:
+    # config.toml is shared by every running session, so it cannot hold them.
+    active_model: str | None = None
+    agent_name: str | None = None
 
 
 class ClientMetadata(BaseModel):

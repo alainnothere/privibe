@@ -129,7 +129,19 @@ class Task(
             session_prefix=args.agent,
             enabled=ctx.session_dir is not None,
         )
-        base_config = VibeConfig.load(session_logging=session_logging)
+        # Run on the model the caller is running on, not whatever another
+        # session last wrote into config.toml.
+        base_config = VibeConfig.load(
+            session_logging=session_logging,
+            active_model=agent_manager.config.active_model,
+        )
+        # Tool permissions come from the caller's live state, not the file.
+        base_config = base_config.model_copy(
+            update={
+                "tools": {**base_config.tools, **agent_manager.config.tools},
+                "auto_approve": agent_manager.config.auto_approve,
+            }
+        )
         subagent_loop = AgentLoop(
             config=base_config,
             agent_name=args.agent,

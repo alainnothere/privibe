@@ -225,7 +225,10 @@ class TestRun:
         result = events[-1]
         assert isinstance(result, OrchestrateResult)
         assert result.status == "done"
-        assert result.rounds == 2 and result.calls == 5
+        # The verifier passes right after the worker, so the loop ends there:
+        # plan, brainstorm, manage, execute.
+        assert result.rounds == 1 and result.calls == 4
+        assert result.detail == "verifier passes after a worker"
         assert result.verifier_exit_code == 0
         assert result.changed_files == [str(target)]
         ledger = Path(result.ledger_dir)
@@ -246,8 +249,8 @@ class TestRun:
         ]
         assert stamped
         # Role calls: efforts and answer-only flags.
-        assert loops.efforts == ["low", "medium", "low", "medium", "low"]
-        assert loops.answer_only_flags == [True, True, True, False, True]
+        assert loops.efforts == ["low", "medium", "low", "medium"]
+        assert loops.answer_only_flags == [True, True, True, False]
         # Every role call got the same frozen head.
         heads = {m.partition(HEAD_TAIL_SEPARATOR)[0] for m in loops.messages_seen}
         assert len(heads) == 1
@@ -269,16 +272,28 @@ class TestRun:
         monkeypatch.chdir(tmp_path)
         target = tmp_path / "t.py"
         target.write_text("x\n")
-        loops = ScriptedLoops({
-            "plan": [PLAN],
-            "brainstorm": [BRAINSTORM],
-            "manage": ["1. [done] x\nNEXT: DONE"],
-        })
+        # A bare DONE on an untouched workspace is overruled, so a worker
+        # edits the file first; then the manager's DONE stands, unverified.
+        loops = ScriptedLoops(
+            {
+                "plan": [PLAN],
+                "brainstorm": [BRAINSTORM],
+                "manage": [
+                    "1. [todo] make f return 2\nNEXT: 1",
+                    "1. [done] make f return 2\nNEXT: DONE",
+                ],
+                "execute": ["edited\n## Notes\nn\n"],
+            },
+            target=target,
+        )
         with patch("privibe.core.tools.builtins.orchestrate.AgentLoop", loops):
             result = await collect_result(
                 tool.run(OrchestrateArgs(goal="g", files=[str(target)]), ctx)
             )
         assert result.status == "done_unverified"
+        assert result.detail == "manager declared done; no verifier"
+        assert result.calls == 5
+        assert result.changed_files == [str(target)]
         assert result.verifier_exit_code is None
         display = Orchestrate.format_result_display(result)
         assert display.success and "done_unverified" in display.message

@@ -231,6 +231,14 @@ class SessionLogger:
         self._context_file = path
         await self._persist_meta_field("context_file", path)
 
+    async def persist_run_state(self, active_model: str, agent_name: str) -> None:
+        """Record the model and agent profile this conversation runs on, right
+        away. save_interaction rewrites both on every save; this covers a switch
+        made between two saves (a /model change, then quit before the next turn).
+        """
+        await self._persist_meta_field("active_model", active_model)
+        await self._persist_meta_field("agent_name", agent_name)
+
     async def _persist_meta_field(self, key: str, value: str | None) -> None:
         if self.session_metadata is not None:
             setattr(self.session_metadata, key, value)
@@ -562,6 +570,11 @@ class SessionLogger:
             metadata_dump = {
                 **self.session_metadata.model_dump(),
                 "end_time": utc_now().isoformat(),
+                # What this conversation is running on right now. Written from
+                # the live objects on every save, so a model or mode switch is
+                # on disk by the next save and a resume can restore it.
+                "active_model": base_config.active_model,
+                "agent_name": agent_profile.name,
                 "stats": stats.model_dump(),
                 "title": title,
                 "total_messages": total_messages,

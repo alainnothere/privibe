@@ -509,7 +509,11 @@ class AgentLoop:
         return self.config.auto_approve
 
     def refresh_config(self) -> None:
-        self._base_config = VibeConfig.load()
+        # Re-read the file for everything except the model: this conversation
+        # keeps the model it is running on, whatever another session wrote.
+        self._base_config = VibeConfig.load(
+            active_model=self._base_config.active_model
+        )
         self.agent_manager.invalidate_config()
 
     def current_reasoning_effort(self) -> str:
@@ -2415,6 +2419,66 @@ class AgentLoop:
         object stays attached through a /clear, so the record stays true.
         """
         await self.session_logger.set_nanny_model(alias)
+
+    # Parts of the run state ("model", "agent") the command line chose with
+    # --model / --agent; set by the CLI and honored once, at startup, so an
+    # explicit flag beats what a resumed conversation had saved.
+    pinned_run_state: frozenset[str] = frozenset()
+
+    async def persist_run_state(self) -> None:
+        """Write the model and agent profile this conversation runs on into
+        its meta.json now, beside the name (save_interaction does it on every
+        save; this covers a switch made between two saves).
+        """
+        await self.session_logger.persist_run_state(
+            self._base_config.active_model, self.agent_profile.name
+        )
+
+    async def restore_run_state(
+        self, pinned: frozenset[str] = frozenset()
+    ) -> str | None:
+        """After a resume/continue: run on the model and agent profile the
+        conversation had saved in meta.json, not on whatever config.toml says
+        (it is shared by every running session). A saved model that is gone, or
+        whose API key is missing, is reported and never swapped for another one.
+        `pinned` names parts the user chose explicitly this run and must keep.
+        Returns a warning for the user, or None.
+        """
+        meta = self.session_logger.session_metadata
+        if meta is None:
+            return None
+        # Read first: the saves inside switch_agent / apply_runtime_config
+        # rewrite meta.json with the values that are live at that moment.
+        saved_model, saved_agent = meta.active_model, meta.agent_name
+        notes: list[str] = []
+
+        if saved_agent and "agent" not in pinned:
+            if saved_agent != self.agent_profile.name:
+                try:
+                    await self.switch_agent(saved_agent)
+                except ValueError:
+                    notes.append(
+                        f"agent '{saved_agent}' from this conversation no longer "
+                        f"exists; staying on '{self.agent_profile.name}'"
+                    )
+
+        if saved_model and "model" not in pinned:
+            if saved_model != self._base_config.active_model:
+                reason = self._base_config.unusable_model_reason(saved_model)
+                if reason is not None:
+                    notes.append(
+                        f"this conversation was running on '{saved_model}', but "
+                        f"{reason}; staying on '{self._base_config.active_model}'"
+                    )
+                else:
+                    await self.apply_runtime_config(
+                        base_config=self._base_config.model_copy(
+                            update={"active_model": saved_model}
+                        )
+                    )
+
+        await self.persist_run_state()
+        return "; ".join(notes) or None
 
     def _reset_session(self) -> None:
         # Keeps the conversation name: rewind and compact call this for the

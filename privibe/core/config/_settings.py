@@ -140,6 +140,7 @@ class OrchestrateConfig(BaseSettings):
     effort_brainstorm: str = "medium"
     effort_manage: str = "low"
     effort_execute: str = "medium"
+    effort_finalize: str = "medium"
 
 
 class PathConfig(BaseSettings):
@@ -949,6 +950,24 @@ class VibeConfig(BaseSettings):
             f"variable is not set, and no other configured model has its API key environment "
             f"variable set either."
         )
+
+    def unusable_model_reason(self, alias: str) -> str | None:
+        """Why `alias` cannot be run as the active model, or None when it can.
+
+        get_active_model() would quietly substitute another model; callers that
+        restore a model somebody chose (a resumed session) use this instead, so
+        a model that went away is reported and never swapped for a stranger.
+        """
+        model = next((m for m in self.models if m.alias == alias), None)
+        if model is None:
+            return f"model '{alias}' is not configured any more"
+        status = self._is_environment_variable_set_for_model(model)
+        if not status.api_key_set:
+            return (
+                f"model '{alias}' needs the environment variable "
+                f"{status.env_var_name}, which is not set"
+            )
+        return None
 
     def get_nanny_model(self) -> ModelConfig | None:
         """The configured nanny model, or None when off.

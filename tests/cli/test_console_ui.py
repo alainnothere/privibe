@@ -47,6 +47,14 @@ class StubAgentLoop:
         self.act_events: list[Any] = []
         # The nanny recorded for the conversation (meta.json); None = off.
         self.session_nanny_model: str | None = None
+        # The model/agent saved in meta.json come back through these on resume.
+        self.pinned_run_state: frozenset[str] = frozenset()
+
+    async def restore_run_state(self, pinned: frozenset[str] = frozenset()) -> None:
+        return None
+
+    async def resolve_context_size(self) -> None:
+        return None
 
     def set_approval_callback(self, callback: Any) -> None:
         self.approval_callback = callback

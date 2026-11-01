@@ -602,6 +602,7 @@ class VibeAcpAgentLoop(AcpAgent):
         VibeConfig.save_updates({"active_model": model_id})
 
         new_config = VibeConfig.load(
+            active_model=model_id,
             tool_paths=session.agent_loop.config.tool_paths,
             disabled_tools=["ask_user_question"],
         )

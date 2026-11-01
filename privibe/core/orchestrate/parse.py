@@ -63,14 +63,15 @@ class PlanAnswer:
 
 def parse_plan(text: str) -> PlanAnswer:
     text = _strip_fences(text)
-    sections = {m.group(1).upper(): m.end() for m in _SECTION.finditer(text)}
-    if "TASKS" not in sections:
+    starts = {m.group(1).upper(): m.start() for m in _SECTION.finditer(text)}
+    ends = {m.group(1).upper(): m.end() for m in _SECTION.finditer(text)}
+    if "TASKS" not in ends:
         raise ParseError("no 'TASKS:' section")
-    tasks_start = sections["TASKS"]
-    if "PLAN" in sections and sections["PLAN"] < tasks_start:
-        plan = text[sections["PLAN"] : text.rfind("TASKS", 0, tasks_start)].strip()
+    tasks_start = ends["TASKS"]
+    if "PLAN" in ends and ends["PLAN"] < tasks_start:
+        plan = text[ends["PLAN"] : starts["TASKS"]].strip()
     else:
-        plan = text[: text.rfind("TASKS", 0, tasks_start)].strip()
+        plan = text[: starts["TASKS"]].strip()
     tasks = _parse_task_lines(text[tasks_start:])
     if not tasks:
         raise ParseError("'TASKS:' section has no numbered tasks")
