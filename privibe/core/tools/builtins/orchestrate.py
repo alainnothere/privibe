@@ -304,11 +304,14 @@ class Orchestrate(
                 direction=args.direction,
             ):
                 if isinstance(event, Progress):
-                    entries = (
-                        tracer.start_section(event.message)
-                        if event.section
-                        else tracer.line(event.message)
-                    )
+                    if event.section:
+                        entries = tracer.start_section(event.message)
+                    elif event.resume_hint:
+                        entries = tracer.line(
+                            event.message, resume_hint=event.resume_hint
+                        )
+                    else:
+                        entries = tracer.line(event.message)
                     for entry in entries:
                         await queue.put(entry)
                 else:

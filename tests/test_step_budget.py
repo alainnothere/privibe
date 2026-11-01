@@ -235,7 +235,9 @@ async def test_interrupted_writeup_warning_is_dropped_before_the_next_turn() -> 
     # turn's checkpoint points at it (the drop happened before the checkpoint).
     do_it = next(i for i, m in enumerate(agent_loop.messages) if m.content == "Do it")
     assert agent_loop.messages[do_it - 1].role == Role.tool
-    assert agent_loop.rewind_manager._checkpoints[-1].message_index == do_it
+    # (Checkpoints are also taken at every closed tool batch now, so the
+    # turn's is not necessarily the last one.)
+    assert do_it in {cp.message_index for cp in agent_loop.rewind_manager._checkpoints}
     # What the model saw on the second turn: no warning anywhere near "Do it".
     sent = backend.requests_messages[-2]
     sent_do_it = next(i for i, m in enumerate(sent) if m.content == "Do it")

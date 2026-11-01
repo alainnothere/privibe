@@ -59,6 +59,11 @@ class TestCheckpoints:
         mgr.add_snapshot(_snap(f))
         f.write_text("v2", encoding="utf-8")
 
+        # One checkpoint per slot: a second one at the same index is a no-op,
+        # so a message has to land before the next checkpoint is taken.
+        mgr.create_checkpoint()
+        assert len(mgr.checkpoints) == 1
+        messages.add(LLMMessage(role=Role.assistant, content="ok"))
         mgr.create_checkpoint()
 
         # Second checkpoint should have re-read the file
@@ -70,6 +75,7 @@ class TestCheckpoints:
         mgr, _, _ = _make_manager(messages)
 
         mgr.create_checkpoint()
+        messages.add(LLMMessage(role=Role.assistant, content="ok"))
         mgr.create_checkpoint()
 
         f = tmp_path / "late.txt"

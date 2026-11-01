@@ -634,6 +634,10 @@ class TraceLineEvent(BaseEvent):
     message: str
     depth: int = 1
     entry_id: str | None = None
+    # Set on a row that marks a point the sub-agent's run can be picked up
+    # from (an orchestrate checkpoint): the message a rewind to this row
+    # pre-fills, naming the ledger and the checkpoint to resume.
+    resume_hint: str | None = None
 
 
 class WaitingForInputEvent(BaseEvent):

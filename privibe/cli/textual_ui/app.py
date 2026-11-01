@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum, auto
 import gc
@@ -91,6 +92,12 @@ from privibe.cli.textual_ui.windowing import (
     non_system_history_messages,
     should_resume_history,
     sync_backfill_state,
+)
+from privibe.cli.textual_ui.windowing.rewind_targets import (
+    RewindKind,
+    RewindPlan,
+    rewind_plan,
+    rewind_targets,
 )
 from privibe.cli.voice_manager import VoiceManager, VoiceManagerPort
 from privibe.cli.voice_manager.voice_manager_port import TranscribeState
@@ -254,6 +261,17 @@ class StartupOptions:
     show_resume_picker: bool = False
 
 
+def _index_of(widgets: Sequence[Widget], widget: Widget | None) -> int:
+    """Position of `widget` in `widgets`, by identity; ValueError when absent
+    (the callers already handle that), so a tool row highlighted by the step
+    keys reads as 'not one of the user messages'.
+    """
+    for i, candidate in enumerate(widgets):
+        if candidate is widget:
+            return i
+    raise ValueError("widget is not in the list")
+
+
 class VibeApp(App):  # noqa: PLR0904
     ENABLE_COMMAND_PALETTE = False
     CSS_PATH = "app.tcss"
@@ -359,7 +377,11 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
         self._rewind_mode = False
-        self._rewind_highlighted_widget: UserMessage | None = None
+
+        # Set by a rewind to a closed tool batch: the next message steers the turn.
+
+        self._steer_next_message = False
+        self._rewind_highlighted_widget: Widget | None = None
         # The bubble mounted for the message being submitted, until the loop
         # reports where that message actually landed.
         self._pending_user_widget: UserMessage | None = None
@@ -954,19 +976,23 @@ class VibeApp(App):  # noqa: PLR0904
             )
 
     async def _handle_user_message(self, message: str) -> None:
-        # Provisional index: act() may repair the conversation tail before
-        # appending (shims for a session that died mid-tool), so the real
-        # slot arrives with the UserMessageEvent and is stamped then.
-        message_index = len(self.agent_loop.messages)
-        user_message = UserMessage(message, message_index=message_index)
-        self._pending_user_widget = user_message
-
-        await self._mount_and_scroll(user_message)
+        steering = self._steer_next_message
+        self._steer_next_message = False
+        if not steering:
+            # Provisional index: act() may repair the conversation tail before
+            # appending (shims for a session that died mid-tool), so the real
+            # slot arrives with the UserMessageEvent and is stamped then.
+            message_index = len(self.agent_loop.messages)
+            user_message = UserMessage(message, message_index=message_index)
+            self._pending_user_widget = user_message
+            await self._mount_and_scroll(user_message)
+        # A steering message's bubble is mounted from its UserMessageEvent,
+        # the same way a message typed mid-turn is.
 
         if not self._agent_running:
             await self._remove_loading_widget()
             self._agent_task = asyncio.create_task(
-                self._handle_agent_loop_turn(message)
+                self._handle_agent_loop_turn(message, steering=steering)
             )
 
     def _reset_ui_state(self) -> None:
@@ -1089,7 +1115,9 @@ class VibeApp(App):  # noqa: PLR0904
         if self.event_handler:
             self.event_handler.stop_current_tool_call(success=False)
 
-    async def _handle_agent_loop_turn(self, prompt: str) -> None:
+    async def _handle_agent_loop_turn(
+        self, prompt: str, *, steering: bool = False
+    ) -> None:
         self._agent_running = True
 
         await self._remove_loading_widget()
@@ -1099,7 +1127,7 @@ class VibeApp(App):  # noqa: PLR0904
             rendered_prompt = render_path_prompt(prompt, base_dir=Path.cwd())
             self._narrator_manager.cancel()
             self._narrator_manager.on_turn_start(rendered_prompt)
-            async for event in self.agent_loop.act(rendered_prompt):
+            async for event in self.agent_loop.act(rendered_prompt, steering=steering):
                 self._narrator_manager.on_turn_event(event)
                 if (
                     isinstance(event, UserMessageEvent)
@@ -1705,7 +1733,7 @@ class VibeApp(App):  # noqa: PLR0904
         """Return all UserMessage widgets currently visible in #messages.
 
         Only includes messages with a valid message_index (i.e. real user
-        messages, not slash-command echo messages).
+        messages, not slash-command echo messages). alt+up/down walk these.
         """
         messages_area = self._cached_messages_area or self.query_one("#messages")
         return [
@@ -1713,6 +1741,46 @@ class VibeApp(App):  # noqa: PLR0904
             for child in messages_area.children
             if isinstance(child, UserMessage) and child.message_index is not None
         ]
+
+    def _get_rewind_targets(self) -> list[Widget]:
+        """Every rewind target mounted in #messages, in order: the user
+        messages above, plus the tool result rows that close a batch mid-turn
+        (the slot a steering message lands in) and the checkpoint rows an
+        orchestrate run left (a point inside it to pick up from). alt+left and
+        alt+right step through these.
+        """
+        messages_area = self._cached_messages_area or self.query_one("#messages")
+        return rewind_targets(
+            list(messages_area.children),
+            list(self.agent_loop.messages),
+            self.agent_loop.rewind_manager.batch_boundaries(),
+        )
+
+    def on_rewind_app_step_prev(self, message: RewindApp.StepPrev) -> None:
+        self._rewind_step(-1)
+
+    def on_rewind_app_step_next(self, message: RewindApp.StepNext) -> None:
+        self._rewind_step(+1)
+
+    def _rewind_step(self, direction: int) -> None:
+        """Move the highlight one target of any kind: from a user message to
+        the tool batch above or below it, from a batch to the next. Only
+        reachable from the rewind panel (its alt+left/right), so the input's
+        own word movement keeps those keys.
+        """
+        if self._agent_running or not self._rewind_mode:
+            return
+        targets = self._get_rewind_targets()
+        if not targets:
+            return
+        if self._rewind_highlighted_widget not in targets:
+            target = targets[-1]
+        else:
+            idx = targets.index(self._rewind_highlighted_widget) + direction
+            if idx < 0 or idx >= len(targets):
+                return
+            target = targets[idx]
+        self.run_worker(self._select_rewind_widget(target), exclusive=False)
 
     def _start_rewind_mode(self) -> None:
         self.action_rewind_prev()
@@ -1735,7 +1803,7 @@ class VibeApp(App):  # noqa: PLR0904
             target = user_widgets[-1]
         elif self._rewind_highlighted_widget is not None:
             try:
-                idx = user_widgets.index(self._rewind_highlighted_widget)
+                idx = _index_of(user_widgets, self._rewind_highlighted_widget)
             except ValueError:
                 idx = len(user_widgets)
             if idx <= 0:
@@ -1783,7 +1851,7 @@ class VibeApp(App):  # noqa: PLR0904
                 break
             user_widgets = self._get_user_message_widgets()
             try:
-                idx = user_widgets.index(self._rewind_highlighted_widget)
+                idx = _index_of(user_widgets, self._rewind_highlighted_widget)
             except ValueError:
                 idx = 0
             if idx > 0:
@@ -1806,7 +1874,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         user_widgets = self._get_user_message_widgets()
         try:
-            idx = user_widgets.index(self._rewind_highlighted_widget)
+            idx = _index_of(user_widgets, self._rewind_highlighted_widget)
         except ValueError:
             return
         if idx >= len(user_widgets) - 1:
@@ -1816,22 +1884,23 @@ class VibeApp(App):  # noqa: PLR0904
             self._select_rewind_widget(user_widgets[idx + 1]), exclusive=False
         )
 
-    async def _select_rewind_widget(self, widget: UserMessage) -> None:
-        """Highlight the given user message widget and show the rewind panel."""
+    async def _select_rewind_widget(self, widget: Widget) -> None:
+        """Highlight the given rewind target and show the rewind panel."""
         if self._rewind_highlighted_widget is not None:
             self._rewind_highlighted_widget.remove_class("rewind-selected")
 
         widget.add_class("rewind-selected")
         self._rewind_highlighted_widget = widget
 
-        msg_index = widget.message_index
+        plan = self._rewind_plan(widget)
         has_file_changes = (
-            msg_index is not None
-            and self.agent_loop.rewind_manager.has_file_changes_at(msg_index)
+            plan is not None
+            and plan.kind != RewindKind.INSIDE
+            and self.agent_loop.rewind_manager.has_file_changes_at(plan.cut_index)
         )
 
         await self._switch_to_rewind_app(
-            widget.get_content(), has_file_changes=has_file_changes
+            plan.preview if plan is not None else "", has_file_changes=has_file_changes
         )
 
         chat = self._cached_chat or self.query_one("#chat", ChatScroll)
@@ -1893,24 +1962,43 @@ class VibeApp(App):  # noqa: PLR0904
     ) -> None:
         await self._execute_rewind(restore_files=False)
 
+    def _rewind_plan(self, widget: Widget) -> RewindPlan | None:
+        messages_area = self._cached_messages_area or self.query_one("#messages")
+        return rewind_plan(
+            widget,
+            list(messages_area.children),
+            list(self.agent_loop.messages),
+            self.agent_loop.rewind_manager.batch_boundaries(),
+        )
+
     async def _execute_rewind(self, *, restore_files: bool) -> None:
-        """Fork the session at the selected user message."""
+        """Fork the session at the selected target: at a user message (its
+        words come back to the input), at a closed tool batch (the next
+        message steers the turn from there), or at a point inside an
+        orchestrate run (the input is pre-filled with the resume request).
+        """
         if not self._rewind_mode or self._rewind_highlighted_widget is None:
             return
 
         target_widget = self._rewind_highlighted_widget
-        msg_index = target_widget.message_index
-
-        if msg_index is None:
+        plan = self._rewind_plan(target_widget)
+        if plan is None:
             return
 
         try:
-            (
-                message_content,
-                restore_errors,
-            ) = await self.agent_loop.rewind_manager.rewind_to_message(
-                msg_index, restore_files=restore_files
-            )
+            if plan.kind == RewindKind.USER:
+                (
+                    message_content,
+                    restore_errors,
+                ) = await self.agent_loop.rewind_manager.rewind_to_message(
+                    plan.cut_index, restore_files=restore_files
+                )
+                prefill = message_content + plan.prefill
+            else:
+                restore_errors = await self.agent_loop.rewind_manager.rewind_to_index(
+                    plan.cut_index, restore_files=restore_files
+                )
+                prefill = plan.prefill
         except RewindError as exc:
             self.notify(str(exc), severity="error")
             return
@@ -1918,29 +2006,31 @@ class VibeApp(App):  # noqa: PLR0904
         for error in restore_errors:
             self.notify(error, severity="warning")
         if self._nanny is not None:
-            excerpt = message_content.strip().replace("\n", " ")[:80]
-            self._nanny.note_rewind(
-                f"the conversation was rewound to the user message '{excerpt}'; "
-                "calls judged after it were dropped and may be asked again"
-            )
+            self._nanny.note_rewind(plan.nanny_note)
 
-        # Remove UI widgets from the selected message onward
+        # Remove the rows from the cut onward (the target itself stays when
+        # the cut is after it: a closed batch keeps its result row).
         messages_area = self._cached_messages_area or self.query_one("#messages")
         children = list(messages_area.children)
         try:
-            target_idx = children.index(target_widget)
+            first_removed = children.index(plan.first_removed)
         except ValueError:
-            target_idx = len(children)
-        to_remove = children[target_idx:]
+            first_removed = len(children)
+        to_remove = children[first_removed:]
         if to_remove:
             await messages_area.remove_children(to_remove)
 
         self._clear_rewind_state()
+        self._steer_next_message = plan.steering
 
-        # Switch back to input and pre-fill with the original message
+        # Switch back to input and pre-fill
         await self._switch_to_input_app()
         if self._chat_input_container:
-            self._chat_input_container.value = message_content
+            self._chat_input_container.value = prefill
+        if plan.steering:
+            self.notify(
+                "Steering from here: your next message continues this turn", timeout=4
+            )
 
     # --- End rewind mode ---
 

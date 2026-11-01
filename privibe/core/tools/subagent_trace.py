@@ -87,20 +87,25 @@ class Tracer:
     def section_label(self) -> str:
         return self._section_label
 
-    def _row(self, message: str, entry_id: str | None = None) -> TraceLineEvent:
+    def _row(
+        self, message: str, entry_id: str | None = None, resume_hint: str | None = None
+    ) -> TraceLineEvent:
         return TraceLineEvent(
             tool_call_id=self.tool_call_id,
             message=message,
             depth=self.depth,
             entry_id=entry_id,
+            resume_hint=resume_hint,
         )
 
     def _new_id(self) -> str:
         return f"{self.tool_call_id}:{next(self._ids)}"
 
-    def line(self, text: str) -> list[BaseEvent]:
-        """A plain row, no id: never updated."""
-        return [self._row(text)]
+    def line(self, text: str, *, resume_hint: str | None = None) -> list[BaseEvent]:
+        """A plain row, no id: never updated. With a resume hint, a point the
+        run can be picked up from (the UI offers it as a rewind target).
+        """
+        return [self._row(text, resume_hint=resume_hint)]
 
     def start_section(self, label: str) -> list[BaseEvent]:
         self._section_id = self._new_id()

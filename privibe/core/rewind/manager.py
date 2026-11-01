@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 
-from privibe.core.logger import logger
 from privibe.core.conversation import ConversationList
+from privibe.core.logger import logger
 from privibe.core.types import LLMMessage, Role
 
 
@@ -60,13 +60,16 @@ class RewindManager:
         Files known from the previous checkpoint are re-read from disk so
         that each checkpoint captures the actual state at that point in time.
         """
+        index = len(self._messages)
+        if self._checkpoints and self._checkpoints[-1].message_index == index:
+            # Already taken at this slot (a batch boundary followed by a
+            # steering message lands here twice): one checkpoint per slot.
+            return
         files: list[FileSnapshot] = []
         if self._checkpoints:
             for snap in self._checkpoints[-1].files:
                 files.append(self._read_snapshot(snap.path))
-        self._checkpoints.append(
-            Checkpoint(message_index=len(self._messages), files=files)
-        )
+        self._checkpoints.append(Checkpoint(message_index=index, files=files))
 
     def add_snapshot(self, snapshot: FileSnapshot) -> None:
         """Record a file snapshot into every checkpoint that doesn't have it yet."""
@@ -91,6 +94,42 @@ class RewindManager:
             if msg.role == Role.user and msg.content and not msg.injected
         ]
 
+    def batch_boundaries(self) -> list[int]:
+        """Indices where a tool batch has just closed: every call of the
+        assistant message before it has its result, and the message at the
+        index (if any) is not another result. A conversation cut there ends on
+        tool results, which is the one slot the loop itself inserts a user
+        message mid-turn (steering), so a message appended there is a steering
+        message, not a lie about history. Includes len(messages) when the
+        conversation ends on a closed batch.
+        """
+        messages: list[LLMMessage] = list(self._messages)
+        boundaries: list[int] = []
+        for index in range(1, len(messages) + 1):
+            if messages[index - 1].role != Role.tool:
+                continue
+            if index < len(messages) and messages[index].role == Role.tool:
+                continue
+            if self._batch_closed_at(index):
+                boundaries.append(index)
+        return boundaries
+
+    def _batch_closed_at(self, index: int) -> bool:
+        """messages[:index] ends with results, and the assistant message that
+        made those calls has every call answered among them.
+        """
+        messages: list[LLMMessage] = list(self._messages)
+        answered: set[str] = set()
+        j = index - 1
+        while j >= 0 and messages[j].role == Role.tool:
+            if messages[j].tool_call_id:
+                answered.add(messages[j].tool_call_id or "")
+            j -= 1
+        if j < 0 or messages[j].role != Role.assistant or not messages[j].tool_calls:
+            return False
+        wanted = {tc.id for tc in (messages[j].tool_calls or ()) if tc.id}
+        return wanted <= answered
+
     async def rewind_to_message(
         self, message_index: int, *, restore_files: bool
     ) -> tuple[str, list[str]]:
@@ -113,8 +152,33 @@ class RewindManager:
             raise RewindError(f"Message at index {message_index} is not a user message")
 
         message_content = user_msg.content or ""
-        restore_errors: list[str] = []
+        restore_errors = await self._truncate_to(
+            message_index, restore_files=restore_files
+        )
+        return message_content, restore_errors
 
+    async def rewind_to_index(
+        self, message_index: int, *, restore_files: bool
+    ) -> list[str]:
+        """Cut the conversation at a closed tool batch: messages[:index] stay,
+        the tail is the batch's results, and the next user message is a
+        steering message into the turn. Same save, checkpoint drop and
+        session fork as a user-message rewind. Returns the restore errors.
+
+        Raises:
+            RewindError: when the index is not a batch boundary.
+        """
+        if message_index not in self.batch_boundaries():
+            raise RewindError(
+                f"Message index {message_index} does not close a tool batch"
+            )
+        return await self._truncate_to(message_index, restore_files=restore_files)
+
+    async def _truncate_to(
+        self, message_index: int, *, restore_files: bool
+    ) -> list[str]:
+        messages: list[LLMMessage] = list(self._messages)
+        restore_errors: list[str] = []
         if restore_files:
             checkpoint = self._get_checkpoint(message_index)
             if checkpoint:
@@ -129,8 +193,7 @@ class RewindManager:
         with self._messages.no_reset_hooks():
             self._messages.rewind(n_to_remove)
         self._reset_session()
-
-        return message_content, restore_errors
+        return restore_errors
 
     # -- Private helpers -------------------------------------------------------
 

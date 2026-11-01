@@ -17,8 +17,8 @@ from pydantic import BaseModel
 
 from privibe.core.agents.manager import AgentManager
 from privibe.core.agents.models import AgentProfile, BuiltinAgentName
-from privibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from privibe.core.auto_continue import AutoContinueMode, NudgeKind, nudge_kind
+from privibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from privibe.core.conversation import ConversationList, is_step_budget_warning
 from privibe.core.llm.backend.factory import BACKEND_FACTORY
 from privibe.core.llm.backend.generic import GenericBackend
@@ -993,11 +993,17 @@ class AgentLoop:
         client_message_id: str | None = None,
         *,
         answer_only: bool = False,
+        steering: bool = False,
     ) -> AsyncGenerator[BaseEvent, None]:
+        """One user turn. `steering=True` sends `msg` as a steering message:
+        the conversation was cut at a closed tool batch and this is the
+        direction into that turn, stored as the raw words and wrapped in the
+        steering envelope on the wire, exactly like a message typed mid-turn.
+        """
         self._answer_only_turn = answer_only
         self._auto_continues_this_turn = 0
         if self.nanny is not None:
-            self.nanny.note_user_prompt(msg, self.agent_profile.name)
+            self.nanny.note_user_prompt(msg, self.agent_profile.name, steering=steering)
         self._cancel_preflight_warmup()
         self._drop_dangling_step_budget_warning()
         self._act_call_count += 1
@@ -1017,7 +1023,7 @@ class AgentLoop:
         # that index; the UI learns it from the UserMessageEvent).
         self.rewind_manager.create_checkpoint()
         async for event in self._conversation_loop(
-            msg, client_message_id=client_message_id
+            msg, client_message_id=client_message_id, steering=steering
         ):
             yield event
 
@@ -1178,12 +1184,17 @@ class AgentLoop:
         return headers
 
     async def _conversation_loop(
-        self, user_msg: str, client_message_id: str | None = None
+        self,
+        user_msg: str,
+        client_message_id: str | None = None,
+        *,
+        steering: bool = False,
     ) -> AsyncGenerator[BaseEvent]:
         user_message = LLMMessage(
             role=Role.user,
             content=user_msg,
             message_id=client_message_id,
+            steering=steering,
             reasoning_effort=self.current_reasoning_effort(),
             meta=MessageMeta(submitted_at=time.time()),
         )
@@ -1202,6 +1213,7 @@ class AgentLoop:
             content=user_msg,
             message_id=user_message.message_id,
             message_index=message_index,
+            steering=steering,
         )
 
         try:
@@ -1244,6 +1256,11 @@ class AgentLoop:
                         should_break_loop = False
 
                 if not should_break_loop:
+                    # A closed tool batch: a checkpoint here is what lets a
+                    # later rewind land on this boundary with the files as
+                    # they were (one per slot; the steering flush below
+                    # reuses it).
+                    self.rewind_manager.create_checkpoint()
                     # agent steering — the tool batch is complete and the next
                     # request is not built yet: the only slot where a message
                     # typed mid-turn can land without splitting a batch.
@@ -2399,7 +2416,8 @@ class AgentLoop:
     @property
     def context_file(self) -> str | None:
         """Absolute path of the context file associated with this
-        conversation (/set-context-file), or None."""
+        conversation (/set-context-file), or None.
+        """
         return self.session_logger.context_file
 
     async def set_context_file(self, path: str | None) -> None:

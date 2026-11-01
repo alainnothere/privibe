@@ -110,6 +110,24 @@ class Progress:
     message: str
     # A role call is starting: the tool opens a section in its trace.
     section: bool = False
+    # A checkpoint was just saved: what a rewind to this row should ask for.
+    resume_hint: str = ""
+
+
+def resume_hint(ledger_dir: Path, checkpoint: int) -> str:
+    return (
+        f"Resume the orchestration at {ledger_dir} from checkpoint {checkpoint} "
+        "(call orchestrate with resume_ledger and checkpoint; put what should "
+        "change in direction)."
+    )
+
+
+def _checkpoint_progress(run: _Run, cp: Checkpoint) -> Progress:
+    where = f"round {cp.rounds} done" if cp.phase == PHASE_ROUND_END else cp.phase
+    return Progress(
+        f"◆ checkpoint {cp.number} · {where}",
+        resume_hint=resume_hint(run.ledger.root, cp.number),
+    )
 
 
 @dataclass
@@ -369,7 +387,7 @@ async def run_orchestration(
         run.tasks = plan_answer.tasks
         ledger.write_tasks(run.tasks)
         ledger.log(f"plan written, {len(run.tasks)} seed tasks")
-        run.checkpoint(PHASE_PLANNED)
+        yield _checkpoint_progress(run, run.checkpoint(PHASE_PLANNED))
 
     # 2. brainstorm
     if phase_done < _PHASE_ORDER[PHASE_BRAINSTORMED]:
@@ -379,7 +397,7 @@ async def run_orchestration(
         )
         ledger.write_notes(notes)
         ledger.log("brainstorm written to notes")
-        run.checkpoint(PHASE_BRAINSTORMED)
+        yield _checkpoint_progress(run, run.checkpoint(PHASE_BRAINSTORMED))
 
     # 3. manage -> 4. execute -> 5. verify, up to max_rounds times
     async for event in _rounds(run):
@@ -471,7 +489,7 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
                 yield run.outcome(OutcomeStatus.DONE, "verifier passes after a worker")
                 return
         ledger.clear_inflight()
-        run.checkpoint(PHASE_ROUND_END)
+        yield _checkpoint_progress(run, run.checkpoint(PHASE_ROUND_END))
 
     async for event in _finalize(
         run, OutcomeStatus.ROUNDS_EXHAUSTED, f"{run.max_rounds} rounds used"

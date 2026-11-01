@@ -36,12 +36,22 @@ class TraceLineMessage(NoMarkupStatic):
     """
 
     def __init__(
-        self, text: str, *, depth: int = 1, entry_id: str | None = None
+        self,
+        text: str,
+        *,
+        depth: int = 1,
+        entry_id: str | None = None,
+        parent_call_id: str | None = None,
+        resume_hint: str | None = None,
     ) -> None:
         super().__init__(text)
         self.text = text
         self.entry_id = entry_id
         self.depth = depth
+        # The call this row ran under, and (for a checkpoint row) what a
+        # rewind to it pre-fills. Both are what make the row a rewind target.
+        self.parent_call_id = parent_call_id
+        self.resume_hint = resume_hint
         self.add_class("trace-line")
         if depth_class(depth):
             self.add_class(depth_class(depth))
@@ -53,6 +63,9 @@ class TraceLineMessage(NoMarkupStatic):
     def set_text(self, text: str) -> None:
         self.text = text
         self.update(text)
+
+    def get_content(self) -> str:
+        return self.text
 
 
 class ToolCallMessage(StatusMessage):
@@ -412,6 +425,14 @@ class ToolResultMessage(Static):
 
     @property
     def tool_name(self) -> str:
+        return self._tool_name
+
+    def get_content(self) -> str:
+        """What this row stands for, one line: the call it answers when that
+        is known (the rewind panel's preview), else the tool name.
+        """
+        if self._call_widget is not None:
+            return self._call_widget.get_content().splitlines()[0]
         return self._tool_name
 
     @property

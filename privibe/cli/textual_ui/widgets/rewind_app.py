@@ -37,7 +37,17 @@ class RewindApp(Container):
         Binding("up", "move_up", "Up", show=False),
         Binding("down", "move_down", "Down", show=False),
         Binding("enter", "select", "Select", show=False),
+        Binding("alt+left", "step_prev", "Step back", show=False),
+        Binding("alt+right", "step_next", "Step forward", show=False),
     ]
+
+    class StepPrev(Message):
+        """Move the highlight to the previous target of any kind (a tool
+        batch or an orchestrate checkpoint, not only a user message).
+        """
+
+    class StepNext(Message):
+        """Move the highlight to the next target of any kind."""
 
     class RewindWithRestore(Message):
         """User chose to edit the message and restore files."""
@@ -122,8 +132,8 @@ class RewindApp(Container):
         if confirming:
             return "Type the number  Enter confirm  ESC back to options"
         return (
-            f"{ALT_KEY}+↑↓ or Ctrl+P/N browse messages  ↑↓ pick option  "
-            "Enter confirm  ESC cancel"
+            f"{ALT_KEY}+↑↓ or Ctrl+P/N browse messages  {ALT_KEY}+←→ step through "
+            "tool batches and checkpoints  ↑↓ pick option  Enter confirm  ESC cancel"
         )
 
     async def on_mount(self) -> None:
@@ -167,6 +177,14 @@ class RewindApp(Container):
         if self.is_confirming:
             return
         self._handle_selection(self.selected_option)
+
+    def action_step_prev(self) -> None:
+        if not self.is_confirming:
+            self.post_message(self.StepPrev())
+
+    def action_step_next(self) -> None:
+        if not self.is_confirming:
+            self.post_message(self.StepNext())
 
     def _handle_selection(self, option: int) -> None:
         _, action = self._options[option]

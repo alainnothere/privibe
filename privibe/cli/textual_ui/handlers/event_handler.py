@@ -222,7 +222,11 @@ class EventHandler:
                 existing.set_text(event.message)
                 return
         row = TraceLineMessage(
-            event.message, depth=event.depth, entry_id=event.entry_id
+            event.message,
+            depth=event.depth,
+            entry_id=event.entry_id,
+            parent_call_id=event.tool_call_id,
+            resume_hint=event.resume_hint,
         )
         if event.entry_id is not None:
             self.trace_rows[f"{event.tool_call_id}/{event.entry_id}"] = row
