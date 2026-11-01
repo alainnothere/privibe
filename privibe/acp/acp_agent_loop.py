@@ -109,6 +109,7 @@ from privibe.core.proxy_setup import (
 )
 from privibe.core.session.session_loader import SessionLoader
 from privibe.core.tools.permissions import RequiredPermission
+from privibe.core.tools.ui import ToolUIDataAdapter
 from privibe.core.types import (
     AgentProfileChangedEvent,
     ApprovalCallback,
@@ -124,6 +125,7 @@ from privibe.core.types import (
     ToolCallEvent,
     ToolResultEvent,
     ToolStreamEvent,
+    TraceLineEvent,
 )
 from privibe.core.utils import (
     CancellationReason,
@@ -220,9 +222,7 @@ class VibeAcpAgentLoop(AcpAgent):
             ),
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(
-                name="privibe",
-                title="Privibe",
-                version=__version__,
+                name="privibe", title="Privibe", version=__version__
             ),
             auth_methods=auth_methods,
         )
@@ -293,7 +293,6 @@ class VibeAcpAgentLoop(AcpAgent):
             session = await self._create_acp_session(agent_loop.session_id, agent_loop)
         except Exception as e:
             raise ConfigurationError(str(e)) from e
-
 
         modes_state, modes_config = make_mode_response(
             list(agent_loop.agent_manager.available_agents.values()),
@@ -485,7 +484,7 @@ class VibeAcpAgentLoop(AcpAgent):
                         hint="KEY value to set, KEY to unset, or empty for help"
                     )
                 ),
-            ),
+            )
         ]
 
         update = update_available_commands(commands)
@@ -558,8 +557,7 @@ class VibeAcpAgentLoop(AcpAgent):
         session = await self._create_acp_session(session_id, agent_loop)
 
         non_system_messages = [
-            m for m in agent_loop.messages
-            if m.role != Role.system and not m.injected
+            m for m in agent_loop.messages if m.role != Role.system and not m.injected
         ]
         await self._replay_conversation_history(session_id, non_system_messages)
         self._send_usage_update(session)
@@ -821,6 +819,29 @@ class VibeAcpAgentLoop(AcpAgent):
                     message_id=event.message_id,
                 )
 
+            elif (
+                isinstance(event, (ToolCallEvent, ToolResultEvent))
+                and event.parent_call_id is not None
+            ) or isinstance(event, TraceLineEvent):
+                # A sub-agent's row: ACP has no nesting, so it is progress
+                # text on the parent call, as the trace always was here.
+                yield ToolCallProgress(
+                    session_update="tool_call_update",
+                    tool_call_id=(
+                        event.parent_call_id or ""
+                        if isinstance(event, (ToolCallEvent, ToolResultEvent))
+                        else event.tool_call_id
+                    ),
+                    content=[
+                        ContentToolCallContent(
+                            type="content",
+                            content=TextContentBlock(
+                                type="text", text=_nested_row_text(event)
+                            ),
+                        )
+                    ],
+                )
+
             elif isinstance(event, ToolCallEvent):
                 if issubclass(event.tool_class, BaseAcpTool):
                     event.tool_class.update_tool_state(
@@ -922,3 +943,18 @@ def run_acp_server() -> None:
         # Log any unexpected errors
         print(f"ACP Agent Server error: {e}", file=sys.stderr)
         raise
+
+
+def _nested_row_text(event: ToolCallEvent | ToolResultEvent | TraceLineEvent) -> str:
+    """One line of text for a sub-agent's row, as ACP clients see it."""
+    indent = "  " * (event.depth - 1 if event.depth > 0 else 0)
+    if isinstance(event, TraceLineEvent):
+        return "\n".join(indent + line for line in event.message.splitlines())
+    adapter = ToolUIDataAdapter(event.tool_class) if event.tool_class else None
+    if isinstance(event, ToolCallEvent):
+        text = adapter.get_call_display(event).summary if adapter else event.tool_name
+        return indent + "⋯ " + text
+    if adapter is not None:
+        display = adapter.get_result_display(event)
+        return indent + ("✓ " if display.success else "✕ ") + display.message
+    return indent + ("✕ " if event.error or event.skipped else "✓ ") + event.tool_name

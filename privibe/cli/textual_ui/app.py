@@ -25,12 +25,12 @@ from privibe.cli.clipboard import (
     copy_selection_to_clipboard,
     is_reliable_clipboard_available,
 )
+from privibe.cli.commands import CommandRegistry, effort_cycle_notice
 from privibe.cli.continuation import (
     continuation_name,
     read_context_file_prompt,
     resolve_context_file,
 )
-from privibe.cli.commands import CommandRegistry, effort_cycle_notice
 from privibe.cli.narrator_manager import (
     NarratorManager,
     NarratorManagerPort,
@@ -122,7 +122,7 @@ from privibe.core.session.resume_sessions import (
     build_local_resume_index,
     short_session_id,
 )
-from privibe.core.session.session_loader import SessionLoader
+from privibe.core.session.session_loader import SessionLoader, load_subagent_session
 from privibe.core.skills.parser import SkillParseError
 from privibe.core.skills.render import load_skill_content
 from privibe.core.tools.builtins.ask_user_question import (
@@ -276,7 +276,11 @@ class VibeApp(App):  # noqa: PLR0904
             "shift+home", "scroll_chat_home", "Scroll To Top", show=False, priority=True
         ),
         Binding(
-            "shift+end", "scroll_chat_end", "Scroll To Bottom", show=False, priority=True
+            "shift+end",
+            "scroll_chat_end",
+            "Scroll To Bottom",
+            show=False,
+            priority=True,
         ),
         Binding("pageup", "scroll_chat_page_up", "Page Up", show=False, priority=True),
         Binding(
@@ -461,6 +465,7 @@ class VibeApp(App):  # noqa: PLR0904
         # pop_pending_message returns None except on the launch where the
         # appending actually happened.
         from privibe.core.config.migration import pop_pending_message
+
         migration_msg = pop_pending_message()
         if migration_msg:
             await self._mount_and_scroll(
@@ -573,12 +578,10 @@ class VibeApp(App):  # noqa: PLR0904
 
         if self._pending_approval and not self._pending_approval.done():
             self._record_human_choice("deny_always")
-            self._pending_approval.set_result(
-                (
-                    ApprovalResponse.NO,
-                    "Denied for this session. Do not attempt this again.",
-                )
-            )
+            self._pending_approval.set_result((
+                ApprovalResponse.NO,
+                "Denied for this session. Do not attempt this again.",
+            ))
 
         if self._loading_widget and self._loading_widget.parent:
             await self._remove_loading_widget()
@@ -929,8 +932,12 @@ class VibeApp(App):  # noqa: PLR0904
                 )
                 return
 
-            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            stdout = (
+                stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            )
+            stderr = (
+                stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            )
             output = stdout or stderr or "(no output)"
             exit_code = proc.returncode or 0
             await self._mount_and_scroll(
@@ -1011,6 +1018,7 @@ class VibeApp(App):  # noqa: PLR0904
             history_widget_indices=self._history_widget_indices,
             tool_classes=self.agent_loop.tool_manager.available_tools,
             nanny_decisions=self._history_nanny_decisions(),
+            child_loader=load_subagent_session,
         )
 
         with self.batch_update():
@@ -1103,7 +1111,9 @@ class VibeApp(App):  # noqa: PLR0904
                     self._pending_user_widget = None
                 if isinstance(event, WaitingForInputEvent):
                     await self._remove_loading_widget()
-                elif self._loading_widget is None and not isinstance(event, WaitingForInputEvent):
+                elif self._loading_widget is None and not isinstance(
+                    event, WaitingForInputEvent
+                ):
                     await self._ensure_loading_widget()
                 if self.event_handler:
                     await self.event_handler.handle_event(
@@ -1111,7 +1121,6 @@ class VibeApp(App):  # noqa: PLR0904
                         loading_active=self._loading_widget is not None,
                         loading_widget=self._loading_widget,
                     )
-
 
         except asyncio.CancelledError:
             await self._handle_turn_error()
@@ -1243,15 +1252,11 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
         if index is None or not index.sessions:
-            await self._mount_and_scroll(
-                UserCommandMessage("No sessions found.")
-            )
+            await self._mount_and_scroll(UserCommandMessage("No sessions found."))
             return
 
         sessions = sorted(
-            index.sessions,
-            key=lambda s: (s.cwd == cwd, s.end_time or ""),
-            reverse=True,
+            index.sessions, key=lambda s: (s.cwd == cwd, s.end_time or ""), reverse=True
         )
 
         picker = SessionPickerApp(
@@ -1325,7 +1330,6 @@ class VibeApp(App):  # noqa: PLR0904
             )
         )
 
-
     async def remove_loading(self) -> None:
         await self._remove_loading_widget()
 
@@ -1365,9 +1369,7 @@ class VibeApp(App):  # noqa: PLR0904
                 )
             await self._mount_and_scroll(UserCommandMessage("Configuration reloaded."))
             if notice:
-                await self._mount_and_scroll(
-                    WarningMessage(notice, show_border=False)
-                )
+                await self._mount_and_scroll(WarningMessage(notice, show_border=False))
             await self._show_model_fallback_warning()
         except Exception as e:
             await self._mount_and_scroll(
@@ -2180,7 +2182,10 @@ class VibeApp(App):  # noqa: PLR0904
                 return
 
         # If something is running, interrupt it (same as Esc) and reset countdown.
-        if self._agent_running or self._voice_manager.transcribe_state != TranscribeState.IDLE:
+        if (
+            self._agent_running
+            or self._voice_manager.transcribe_state != TranscribeState.IDLE
+        ):
             self.action_interrupt()
             self._ctrl_c_exit_time = None
             return
@@ -2288,7 +2293,9 @@ class VibeApp(App):  # noqa: PLR0904
         for doc_dir, _ in mgr.load_project_docs():
             loaded.append(f"`{doc_dir / AGENTS_MD_FILENAME}` (project)")
 
-        for extra_path, _ in mgr.load_extra_instruction_files(self.config.extra_instruction_files):
+        for extra_path, _ in mgr.load_extra_instruction_files(
+            self.config.extra_instruction_files
+        ):
             loaded.append(f"`{extra_path}` (extra)")
 
         if loaded:
@@ -2304,7 +2311,9 @@ class VibeApp(App):  # noqa: PLR0904
         VibeConfig.save_updates({"autocopy_to_clipboard": new_value})
         self.agent_loop.refresh_config()
         state = "enabled" if new_value else "disabled"
-        await self._mount_and_scroll(UserCommandMessage(f"Auto-copy to clipboard {state}."))
+        await self._mount_and_scroll(
+            UserCommandMessage(f"Auto-copy to clipboard {state}.")
+        )
 
     async def _open_option_picker(
         self,
@@ -2404,7 +2413,9 @@ class VibeApp(App):  # noqa: PLR0904
                 return
             error = f"'{args}' is not a valid preview length (use a positive number)."
         current = self.config.tool_result_preview_lines
-        options = _options_with_current(self.config.tool_result_preview_options, current)
+        options = _options_with_current(
+            self.config.tool_result_preview_options, current
+        )
         await self._open_option_picker(
             setting="preview_lines",
             title="Tool result preview lines",
@@ -2464,7 +2475,9 @@ class VibeApp(App):  # noqa: PLR0904
             return
         self._apply_conversation_name_display()
         if name is None:
-            await self._mount_and_scroll(UserCommandMessage("Conversation name cleared."))
+            await self._mount_and_scroll(
+                UserCommandMessage("Conversation name cleared.")
+            )
         else:
             await self._mount_and_scroll(
                 UserCommandMessage(f"Conversation named `{name}`.")
@@ -2488,8 +2501,7 @@ class VibeApp(App):  # noqa: PLR0904
         except Exception as e:
             await self._mount_and_scroll(
                 ErrorMessage(
-                    f"Failed to save context file: {e}",
-                    collapsed=self._tools_collapsed,
+                    f"Failed to save context file: {e}", collapsed=self._tools_collapsed
                 )
             )
             return
@@ -2892,7 +2904,9 @@ class VibeApp(App):  # noqa: PLR0904
             if value in {v for v, _ in self._AUTO_CONTINUE_OPTIONS}:
                 await self._apply_auto_continue(value)
                 return
-            error = f"'{args}' is not an auto-continue mode (off, truncated, heuristic)."
+            error = (
+                f"'{args}' is not an auto-continue mode (off, truncated, heuristic)."
+            )
         await self._open_option_picker(
             setting="auto_continue",
             title=(
@@ -2907,9 +2921,7 @@ class VibeApp(App):  # noqa: PLR0904
     async def _apply_auto_continue(self, mode: str) -> None:
         VibeConfig.save_updates({"auto_continue": mode})
         self.agent_loop.refresh_config()
-        await self._mount_and_scroll(
-            UserCommandMessage(f"Auto-continue: {mode}.")
-        )
+        await self._mount_and_scroll(UserCommandMessage(f"Auto-continue: {mode}."))
 
     async def _continue_turn(self) -> None:
         """/continue: the manual nudge, a plain user message."""
@@ -2939,7 +2951,10 @@ class VibeApp(App):  # noqa: PLR0904
             setting="ascii",
             title="Non-ASCII characters in content the model writes (this session)",
             options=[
-                ("on", "ASCII: transliterate and report (allow_unicode=true keeps them)"),
+                (
+                    "on",
+                    "ASCII: transliterate and report (allow_unicode=true keeps them)",
+                ),
                 ("off", "UTF-8 verbatim (allow_unicode=false transliterates)"),
             ],
             current="on" if current else "off",
@@ -3014,9 +3029,10 @@ class VibeApp(App):  # noqa: PLR0904
         """Drives both the master enable and the poll cadence so there is never
         a master-off/cadence-set mismatch.
         """
-        VibeConfig.save_updates(
-            {"auto_detect_context_size": auto, "context_size_redetect_every": every}
-        )
+        VibeConfig.save_updates({
+            "auto_detect_context_size": auto,
+            "context_size_redetect_every": every,
+        })
         self.agent_loop.refresh_config()
         label = context_size_mode_label(auto, every)
 
@@ -3029,6 +3045,7 @@ class VibeApp(App):  # noqa: PLR0904
         # (Re)enabled: clear the per-model "already settled this run" latches so a
         # fresh detect runs now and re-pulls the context size and model name.
         from privibe.core import agent_loop as _agent_loop_module
+
         _agent_loop_module.reset_context_size_detection_state()
         ctx_msg = await self.agent_loop.resolve_context_size()
         if ctx_msg:
@@ -3039,13 +3056,16 @@ class VibeApp(App):  # noqa: PLR0904
             )
         self._refresh_banner()
         # DEBUG LLM COMMUNICATIONS
+
     async def _toggle_llm_debug(self) -> None:
         new_value = not self.config.llm_debug_dump
         VibeConfig.save_updates({"llm_debug_dump": new_value})
         self.agent_loop.refresh_config()
         state = "enabled" if new_value else "disabled"
         await self._mount_and_scroll(
-            UserCommandMessage(f"LLM debug dump {state}. Files written to ./debug/ on each LLM call.")
+            UserCommandMessage(
+                f"LLM debug dump {state}. Files written to ./debug/ on each LLM call."
+            )
         )
 
     async def _show_active_tools(self) -> None:
@@ -3083,7 +3103,9 @@ class VibeApp(App):  # noqa: PLR0904
             for p in sorted(subagents, key=lambda p: p.name)
         )
         await self._mount_and_scroll(
-            UserCommandMessage(f"**Available subagents ({len(subagents)}):**\n\n{items}")
+            UserCommandMessage(
+                f"**Available subagents ({len(subagents)}):**\n\n{items}"
+            )
         )
 
     async def _show_dangerous_directory_warning(self) -> None:

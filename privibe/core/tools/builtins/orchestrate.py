@@ -35,11 +35,12 @@ from privibe.core.tools.base import (
     ToolPermission,
 )
 from privibe.core.tools.builtins.bash import _extract_commands, _find_protected_token
+from privibe.core.tools.builtins.task import subagent_session_dir
 from privibe.core.tools.permissions import PermissionContext
 from privibe.core.tools.subagent_trace import Tracer
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.tools.utils import is_path_within_workdir, is_protected_path
-from privibe.core.types import Role as MessageRole, ToolStreamEvent
+from privibe.core.types import BaseEvent, Role as MessageRole
 from privibe.core.utils.tags import VIBE_STOP_EVENT_TAG
 
 # The file tools whose writes the job's scope limits. bash is left to its own
@@ -258,7 +259,7 @@ class Orchestrate(
 
     async def run(  # noqa: PLR0914
         self, args: OrchestrateArgs, ctx: InvokeContext | None = None
-    ) -> AsyncGenerator[ToolStreamEvent | OrchestrateResult, None]:
+    ) -> AsyncGenerator[BaseEvent | OrchestrateResult, None]:
         if not ctx or not ctx.agent_manager:
             raise ToolError("orchestrate requires agent_manager in context")
         parent_config = ctx.agent_manager.config
@@ -271,10 +272,8 @@ class Orchestrate(
             cwd = Path.cwd()
         scope = job.scope
         worker_config = self._worker_config(ctx, parent_config, scope)
-        queue: asyncio.Queue[ToolStreamEvent | Outcome] = asyncio.Queue()
-        tracer = Tracer(
-            self.get_name(), ctx.tool_call_id, parent_config.tool_result_preview_lines
-        )
+        queue: asyncio.Queue[BaseEvent | Outcome] = asyncio.Queue()
+        tracer = Tracer(self.get_name(), ctx.tool_call_id)
         transcripts = str(ledger.root / "calls")
 
         async def call(role: Role, message: str, effort: str, answer_only: bool) -> str:
@@ -283,6 +282,7 @@ class Orchestrate(
                 worker_config,
                 queue,
                 tracer,
+                ledger,
                 transcripts,
                 message,
                 effort,
@@ -333,7 +333,7 @@ class Orchestrate(
                     except LedgerStateError as e:
                         raise ToolError(str(e)) from e
                     raise ToolError("orchestration ended without a result")
-                if isinstance(item, ToolStreamEvent):
+                if isinstance(item, BaseEvent):
                     yield item
                 else:
                     await driver
@@ -396,8 +396,9 @@ class Orchestrate(
         self,
         ctx: InvokeContext,
         worker_config: VibeConfig,
-        queue: asyncio.Queue[ToolStreamEvent | Outcome],
+        queue: asyncio.Queue[BaseEvent | Outcome],
         tracer: Tracer,
+        ledger: Ledger,
         transcripts: str,
         message: str,
         effort: str,
@@ -418,6 +419,9 @@ class Orchestrate(
         for rule in ctx.session_rules:
             loop.add_session_rule(rule)
         loop.set_reasoning_effort(effort)
+        # The ledger keeps which worker session played which role call, so a
+        # resumed conversation can draw the run's rows again.
+        ledger.record_call(tracer.section_label, subagent_session_dir(loop))
 
         async for event in loop.act(message, answer_only=answer_only):
             for entry in tracer.on_event(event):

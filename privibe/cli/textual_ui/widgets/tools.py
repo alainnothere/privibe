@@ -21,6 +21,40 @@ from privibe.core.tools.ui import ToolUIDataAdapter
 from privibe.core.types import MessageMeta, ToolCallEvent, ToolResultEvent
 
 
+def depth_class(depth: int) -> str:
+    """The CSS class that indents a row made by a sub-agent `depth` levels
+    under the call that ran it; nothing at the top level.
+    """
+    return f"depth-{depth}" if depth > 0 else ""
+
+
+class TraceLineMessage(NoMarkupStatic):
+    """One row of a sub-agent's trace that is not a tool call: a role or
+    section header, a verifier line, the closing rule. Indented like the
+    nested calls around it. A row with an entry id is updated in place when
+    another arrives with the same id (a header gets its timing).
+    """
+
+    def __init__(
+        self, text: str, *, depth: int = 1, entry_id: str | None = None
+    ) -> None:
+        super().__init__(text)
+        self.text = text
+        self.entry_id = entry_id
+        self.depth = depth
+        self.add_class("trace-line")
+        if depth_class(depth):
+            self.add_class(depth_class(depth))
+
+    @property
+    def history_key(self) -> None:
+        return None
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+        self.update(text)
+
+
 class ToolCallMessage(StatusMessage):
     def __init__(
         self,
@@ -29,16 +63,19 @@ class ToolCallMessage(StatusMessage):
         tool_name: str | None = None,
         history: bool = False,
         collapsed: bool = True,
+        depth: int | None = None,
     ) -> None:
         """A tool call line. Live: built from the event as it streams in.
         History (resume / load-more): built from the stored message, with an
         event when the tool is known and without one otherwise; never spins.
         `collapsed` is the fold-out body's initial state (ctrl+o's global one).
+        `depth` indents a call a sub-agent made (default: the event's own).
         """
         if event is None and tool_name is None:
             raise ValueError("Either event or tool_name must be provided")
 
         self._event = event
+        self.depth = depth if depth is not None else (event.depth if event else 0)
         self._tool_name = tool_name or (event.tool_name if event else None) or "unknown"
         self._is_history = history or event is None
         self._stream_widget: NoMarkupStatic | None = None
@@ -57,6 +94,8 @@ class ToolCallMessage(StatusMessage):
 
         super().__init__()
         self.add_class("tool-call")
+        if depth_class(self.depth):
+            self.add_class(depth_class(self.depth))
 
         if self._is_history:
             self._is_spinning = False
@@ -155,7 +194,7 @@ class ToolCallMessage(StatusMessage):
         siblings = list(self.parent.children) if self.parent else []
         idx = siblings.index(self) if self in siblings else -1
         if idx > 0 and isinstance(
-            siblings[idx - 1], (ToolCallMessage, ToolResultMessage)
+            siblings[idx - 1], (ToolCallMessage, ToolResultMessage, TraceLineMessage)
         ):
             self.add_class("no-gap")
 
@@ -353,6 +392,7 @@ class ToolResultMessage(Static):
         *,
         tool_name: str | None = None,
         content: str | None = None,
+        depth: int | None = None,
     ) -> None:
         if event is None and tool_name is None:
             raise ValueError("Either event or tool_name must be provided")
@@ -363,9 +403,12 @@ class ToolResultMessage(Static):
         self._content = content
         self.collapsed = collapsed
         self._content_container: Vertical | None = None
+        self.depth = depth if depth is not None else (event.depth if event else 0)
 
         super().__init__()
         self.add_class("tool-result")
+        if depth_class(self.depth):
+            self.add_class(depth_class(self.depth))
 
     @property
     def tool_name(self) -> str:

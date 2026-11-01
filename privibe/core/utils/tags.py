@@ -11,11 +11,16 @@ TOOL_ERROR_TAG = "tool_error"
 VIBE_STOP_EVENT_TAG = "vibe_stop_event"
 VIBE_WARNING_TAG = "vibe_warning"
 
-KNOWN_TAGS = [CANCELLATION_TAG, CONTEXT_REFRESH_TAG, TOOL_ERROR_TAG, VIBE_STOP_EVENT_TAG, VIBE_WARNING_TAG]
+KNOWN_TAGS = [
+    CANCELLATION_TAG,
+    CONTEXT_REFRESH_TAG,
+    TOOL_ERROR_TAG,
+    VIBE_STOP_EVENT_TAG,
+    VIBE_WARNING_TAG,
+]
 
 _TAG_PATTERN = re.compile(
-    rf"<({'|'.join(re.escape(tag) for tag in KNOWN_TAGS)})>(.*?)</\1>",
-    flags=re.DOTALL,
+    rf"<({'|'.join(re.escape(tag) for tag in KNOWN_TAGS)})>(.*?)</\1>", flags=re.DOTALL
 )
 
 _TAG_OPENER_PATTERN = re.compile(
@@ -90,6 +95,10 @@ def get_user_cancellation_message(
 
 
 def is_user_cancellation_event(event: BaseEvent) -> bool:
-    if not isinstance(event, ToolResultEvent):
+    """A cancelled tool result of this turn. A sub-agent's result (stamped
+    with parent_call_id) belongs to the sub-agent's turn: its tool reports
+    it, the parent's loop does not stop for it.
+    """
+    if not isinstance(event, ToolResultEvent) or event.parent_call_id is not None:
         return False
     return event.cancelled

@@ -110,7 +110,6 @@ from privibe.core.types import (
     ToolCallEvent,
     ToolOutcome,
     ToolResultEvent,
-    ToolStreamEvent,
     UserInputCallback,
     UserMessageEvent,
 )
@@ -1351,7 +1350,7 @@ class AgentLoop:
         tool response message. Every emission site adds the response message
         before yielding its ToolResultEvent, so it is always found here.
         """
-        if not isinstance(event, ToolResultEvent):
+        if not isinstance(event, ToolResultEvent) or event.parent_call_id is not None:
             return event
         tool_meta: MessageMeta | None = None
         for msg in reversed(self.messages):
@@ -1396,13 +1395,13 @@ class AgentLoop:
 
     async def _process_one_tool_call(
         self, tool_call: ResolvedToolCall
-    ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent]:
+    ) -> AsyncGenerator[BaseEvent]:
         async for event in self._execute_tool_call(tool_call):
             yield event
 
     async def _execute_tool_call(
         self, tool_call: ResolvedToolCall
-    ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent]:
+    ) -> AsyncGenerator[BaseEvent]:
         try:
             tool_instance = self.tool_manager.get(tool_call.tool_name)
         except Exception as exc:
@@ -1472,7 +1471,10 @@ class AgentLoop:
                 ),
                 **tool_call.args_dict,
             ):
-                if isinstance(item, ToolStreamEvent):
+                if isinstance(item, BaseEvent):
+                    # Progress of the tool itself, or a sub-agent's calls and
+                    # trace rows (stamped with parent_call_id): forwarded as
+                    # they are. Anything else is the tool's result.
                     yield item
                 else:
                     result_model = item
@@ -1589,7 +1591,7 @@ class AgentLoop:
 
     async def _handle_tool_calls(
         self, resolved: ResolvedMessage
-    ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent | ToolStreamEvent]:
+    ) -> AsyncGenerator[BaseEvent]:
         async for event in self._emit_failed_tool_events(resolved.failed_calls):
             yield event
         if not resolved.tool_calls:
@@ -1676,7 +1678,7 @@ class AgentLoop:
     async def _execute_tool_to_queue(
         self,
         tc: ResolvedToolCall,
-        queue: asyncio.Queue[ToolCallEvent | ToolResultEvent | ToolStreamEvent | None],
+        queue: asyncio.Queue[BaseEvent | None],
     ) -> None:
         """Run a single tool call, sending events to the queue."""
         async for event in self._process_one_tool_call(tc):
@@ -1696,7 +1698,7 @@ class AgentLoop:
 
     async def _run_tools_concurrently(
         self, tool_calls: list[ResolvedToolCall]
-    ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent | ToolStreamEvent]:
+    ) -> AsyncGenerator[BaseEvent]:
         """Execute a batch of tool calls.
 
         Read-only tools run concurrently in arbitrary order. File-mutating tools
@@ -1820,11 +1822,9 @@ class AgentLoop:
 
     async def _run_concurrent_group(
         self, tool_calls: list[ResolvedToolCall]
-    ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent | ToolStreamEvent]:
+    ) -> AsyncGenerator[BaseEvent]:
         """Execute multiple tool calls concurrently, yielding events as they arrive."""
-        queue: asyncio.Queue[
-            ToolCallEvent | ToolResultEvent | ToolStreamEvent | None
-        ] = asyncio.Queue()
+        queue: asyncio.Queue[BaseEvent | None] = asyncio.Queue()
 
         tasks = [
             asyncio.create_task(self._execute_tool_to_queue(tc, queue))

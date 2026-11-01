@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from privibe.core.logger import logger
 from privibe.core.paths.dialect import translate_path
 from privibe.core.rewind.manager import FileSnapshot
-from privibe.core.types import ToolStreamEvent
+from privibe.core.types import BaseEvent, ToolStreamEvent
 from privibe.core.utils.io import read_safe
 
 if TYPE_CHECKING:
@@ -186,8 +186,11 @@ class BaseTool[
     @abstractmethod
     async def run(
         self, args: ToolArgs, ctx: InvokeContext | None = None
-    ) -> AsyncGenerator[ToolStreamEvent | ToolResult, None]:
-        """Invoke the tool with the given arguments."""
+    ) -> AsyncGenerator[BaseEvent | ToolResult, None]:
+        """Invoke the tool with the given arguments. Yields progress events
+        (ToolStreamEvent for the tool's own progress; a sub-agent's calls,
+        results and trace rows for tools that run one) and then the result.
+        """
         raise NotImplementedError  # pragma: no cover
         yield  # type: ignore[misc]
 
@@ -224,7 +227,7 @@ class BaseTool[
 
     async def invoke(
         self, ctx: InvokeContext | None = None, **raw: Any
-    ) -> AsyncGenerator[ToolStreamEvent | ToolResult, None]:
+    ) -> AsyncGenerator[BaseEvent | ToolResult, None]:
         """Validate arguments and run the tool."""
         try:
             args_model, _ = self._get_tool_args_results()
@@ -306,6 +309,7 @@ class BaseTool[
                 "InvokeContext": InvokeContext,
                 "AsyncGenerator": AsyncGenerator,
                 "ToolStreamEvent": ToolStreamEvent,
+                "BaseEvent": BaseEvent,
             },
         )
 
@@ -352,7 +356,7 @@ class BaseTool[
         # Handle Union types (X | Y or Union[X, Y])
         if yield_origin is Union or isinstance(yield_type, types.UnionType):
             for arg in get_args(yield_type):
-                if arg is not ToolStreamEvent and isinstance(arg, type):
+                if isinstance(arg, type) and not issubclass(arg, BaseEvent):
                     return arg
 
         # Handle single type

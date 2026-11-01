@@ -580,6 +580,12 @@ class ToolCallEvent(BaseEvent):
     tool_call_index: int | None = None
     args: BaseModel | None = None
     timeout: int | None = None
+    # Set on a call made by a sub-agent (task, orchestrate workers): the id
+    # of the parent tool call it ran under, and how deep. The parent's loop
+    # forwards such events without treating them as its own; the UI draws
+    # them as rows indented under the parent call.
+    parent_call_id: str | None = None
+    depth: int = 0
     # Wall-clock time.time() when the LLM request that produced this call was
     # sent. Display only; not persisted, so resumed history has none.
     requested_at: float | None = None
@@ -596,6 +602,8 @@ class ToolResultEvent(BaseEvent):
     duration: float | None = None
     tool_call_id: str
     file_diff: FileDiff | None = None
+    parent_call_id: str | None = None
+    depth: int = 0
     # The two MessageMeta the finished line derives its times from: the
     # assistant message that made the call and the tool response message.
     # The request's prefill/decode belong to the first call of a batch only
@@ -612,6 +620,19 @@ class ToolStreamEvent(BaseEvent):
     # Entries with the same id replace each other in the tool call's body
     # (a running nested call becomes its result; a section header gets its
     # timing). None appends. Display only.
+    entry_id: str | None = None
+
+
+class TraceLineEvent(BaseEvent):
+    """One row of a sub-agent's trace that is not a tool call: a role or
+    section header, a verifier line, the closing summary. `tool_call_id` is
+    the parent call it belongs under. Rows with the same entry_id replace each
+    other (a header gets its timing once the section ends).
+    """
+
+    tool_call_id: str
+    message: str
+    depth: int = 1
     entry_id: str | None = None
 
 

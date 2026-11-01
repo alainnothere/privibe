@@ -22,6 +22,9 @@ SNAPSHOT_FILENAME = "snapshot.json"
 STATE_DIRNAME = "state"
 INFLIGHT_FILENAME = "inflight.json"
 STEER_FILENAME = "steer.md"
+# Which sub-agent session played which role call, in order: what a resumed
+# conversation reads to draw the run's rows again.
+CALLS_FILENAME = "calls.json"
 CHECKPOINT_VERSION = 1
 
 # Phases a checkpoint can record, in order. A resumed run skips every phase at
@@ -203,6 +206,10 @@ class Ledger:  # noqa: PLR0904  every write of the run goes through here
     def steer_path(self) -> Path:
         return self.root / STEER_FILENAME
 
+    @property
+    def calls_path(self) -> Path:
+        return self.root / CALLS_FILENAME
+
     # --- task / plan / notes ----------------------------------------------
     def write_task(self, text: str) -> None:
         write_atomic(self.task_path, text.strip() + "\n")
@@ -338,6 +345,26 @@ class Ledger:  # noqa: PLR0904  every write of the run goes through here
 
     def read_steer(self) -> str:
         return self._read(self.steer_path)
+
+    def record_call(self, label: str, session_dir: str) -> None:
+        """Append one role call: its section label and the worker session
+        that played it ("" when the worker logged nowhere).
+        """
+        calls = self.read_calls()
+        calls.append({"label": label, "session_dir": session_dir})
+        write_atomic(self.calls_path, _dumps(calls))
+
+    def read_calls(self) -> list[dict[str, str]]:
+        if not self.calls_path.is_file():
+            return []
+        raw = json.loads(self.calls_path.read_text(encoding="utf-8"))
+        return [
+            {
+                "label": str(c.get("label", "")),
+                "session_dir": str(c.get("session_dir", "")),
+            }
+            for c in raw
+        ]
 
     # --- log ---------------------------------------------------------------
     def log(self, event: str) -> None:

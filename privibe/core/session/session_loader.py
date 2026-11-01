@@ -45,6 +45,20 @@ class SessionScan:
     search_text: str | None
 
 
+def load_subagent_session(session_dir: Path) -> list[LLMMessage]:
+    """The messages of a sub-agent session a tool result points at, or []
+    when the directory is gone, empty or unreadable: a missing worker
+    transcript must never stop the parent conversation from drawing.
+    """
+    try:
+        if not (session_dir / MESSAGES_FILENAME).is_file():
+            return []
+        messages, _meta = SessionLoader.load_session(session_dir)
+    except Exception:
+        return []
+    return list(messages)
+
+
 class SessionLoader:
     @staticmethod
     def _is_valid_session(session_dir: Path) -> bool:
@@ -214,10 +228,7 @@ class SessionLoader:
 
     @staticmethod
     def _scan_session_dir(
-        session_dir: Path,
-        cwd: str | None,
-        collect_text: bool,
-        preview_lines: int,
+        session_dir: Path, cwd: str | None, collect_text: bool, preview_lines: int
     ) -> SessionScan | None:
         """Read one session's metadata and messages once, or None if unusable."""
         metadata_path = session_dir / METADATA_FILENAME
@@ -338,7 +349,8 @@ class SessionLoader:
         """The frozen session base (system prompt + tools), or None when the
         session predates base.json. Corruption raises: silently falling back
         to regenerated content would send the model a different prefix than
-        the one this session was built on."""
+        the one this session was built on.
+        """
         base_filepath = session_dir / BASE_FILENAME
         if not base_filepath.exists():
             return None

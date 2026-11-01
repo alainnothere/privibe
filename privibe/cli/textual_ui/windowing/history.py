@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import json
+from pathlib import Path
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -13,7 +14,12 @@ from privibe.cli.textual_ui.widgets.messages import (
     NannyMessage,
     UserMessage,
 )
-from privibe.cli.textual_ui.widgets.tools import ToolCallMessage, ToolResultMessage
+from privibe.cli.textual_ui.widgets.tools import (
+    ToolCallMessage,
+    ToolResultMessage,
+    TraceLineMessage,
+)
+from privibe.core.tools.subagent_trace import section_line
 from privibe.core.types import (
     LLMMessage,
     MessageMeta,
@@ -25,6 +31,43 @@ from privibe.core.types import (
 )
 
 ToolClasses = Mapping[str, Any]
+# Loads a sub-agent session's messages by its directory; [] when it is gone.
+ChildLoader = Callable[[Path], Sequence[LLMMessage]]
+# Tools whose result names the sub-agent sessions that ran under them.
+_SUBAGENT_TOOLS = {"task", "orchestrate"}
+_CALLS_FILENAME = "calls.json"
+
+
+def subagent_children(
+    tool_name: str, result: BaseModel | None
+) -> list[tuple[str, Path]]:
+    """(section label, session dir) for every sub-agent run a stored result
+    points at: the task tool's one session, or each role call of an
+    orchestrate run as its ledger's calls.json lists them. Labels are "" for
+    a run with no header (task). Missing paths are kept; the loader decides.
+    """
+    if result is None or tool_name not in _SUBAGENT_TOOLS:
+        return []
+    if tool_name == "task":
+        session_dir = getattr(result, "session_dir", "")
+        return [("", Path(session_dir))] if session_dir else []
+    ledger_dir = getattr(result, "ledger_dir", "")
+    if not ledger_dir:
+        return []
+    calls_path = Path(ledger_dir) / _CALLS_FILENAME
+    if not calls_path.is_file():
+        return []
+    try:
+        raw = json.loads(calls_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    children: list[tuple[str, Path]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        session_dir = str(entry.get("session_dir", ""))
+        children.append((str(entry.get("label", "")), Path(session_dir)))
+    return children
 
 
 def _tool_models(tool_class: Any) -> tuple[type[BaseModel], type[BaseModel]] | None:
@@ -155,8 +198,18 @@ def build_history_widgets(
     history_widget_indices: WeakKeyDictionary[Widget, int],
     tool_classes: ToolClasses | None = None,
     nanny_decisions: Mapping[str, Any] | None = None,
+    child_loader: ChildLoader | None = None,
+    depth: int = 0,
 ) -> list[Widget]:
     """Widgets for a batch of stored messages (resume and load-more).
+
+    With `child_loader`, a task or orchestrate result also brings back the
+    rows its sub-agents made: each worker session the result points at is
+    loaded and built the same way, one level deeper, and placed under the
+    parent call, so a resumed conversation shows what the live one showed.
+    Child widgets are not stamped into history_widget_indices: rewind and
+    windowing key on the parent's messages, and a child row follows its
+    parent call wherever that goes.
 
     `nanny_decisions` maps a tool_call_id to the nanny's stored decision on
     it; a NannyMessage is placed right after that call's widget, rebuilt
@@ -208,7 +261,7 @@ def build_history_widgets(
                             tool_call, msg, tool_classes
                         )
                         widget = ToolCallMessage(
-                            call_event, tool_name=tool_name, history=True
+                            call_event, tool_name=tool_name, history=True, depth=depth
                         )
                         if tool_call.id:
                             call_widgets[tool_call.id] = widget
@@ -225,34 +278,117 @@ def build_history_widgets(
                             history_widget_indices[entry] = history_index
 
             case Role.tool:
-                tool_name = msg.name or tool_call_map.get(
-                    msg.tool_call_id or "", "tool"
-                )
-                request_meta, first = call_requests.get(
-                    msg.tool_call_id or "", (None, False)
-                )
-                result_event = history_tool_result_event(
+                _append_tool_result(
                     msg,
-                    tool_name,
-                    tool_classes,
-                    request_meta=request_meta,
-                    first_in_message=first,
+                    history_index,
+                    widgets,
+                    call_widgets,
+                    call_requests,
+                    tool_call_map,
+                    tools_collapsed=tools_collapsed,
+                    history_widget_indices=history_widget_indices,
+                    tool_classes=tool_classes,
+                    child_loader=child_loader,
+                    depth=depth,
                 )
-                if result_event is not None:
-                    widget = ToolResultMessage(
-                        result_event,
-                        call_widgets.get(msg.tool_call_id or ""),
-                        collapsed=tools_collapsed,
-                    )
-                else:
-                    widget = ToolResultMessage(
-                        tool_name=tool_name,
-                        content=msg.content,
-                        collapsed=tools_collapsed,
-                    )
-                widgets.append(widget)
-                history_widget_indices[widget] = history_index
 
+    return widgets
+
+
+def _append_tool_result(  # noqa: PLR0913  the builder's state, passed through
+    msg: LLMMessage,
+    history_index: int,
+    widgets: list[Widget],
+    call_widgets: dict[str, ToolCallMessage],
+    call_requests: dict[str, tuple[MessageMeta | None, bool]],
+    tool_call_map: dict[str, str],
+    *,
+    tools_collapsed: bool,
+    history_widget_indices: WeakKeyDictionary[Widget, int],
+    tool_classes: ToolClasses,
+    child_loader: ChildLoader | None,
+    depth: int,
+) -> None:
+    """The widget for a stored tool result, linked to its call widget, plus
+    (with a child_loader) the rows of the sub-agents that ran under it,
+    placed right under the parent call where the live path puts them.
+    """
+    tool_name = msg.name or tool_call_map.get(msg.tool_call_id or "", "tool")
+    request_meta, first = call_requests.get(msg.tool_call_id or "", (None, False))
+    result_event = history_tool_result_event(
+        msg, tool_name, tool_classes, request_meta=request_meta, first_in_message=first
+    )
+    call_widget = call_widgets.get(msg.tool_call_id or "")
+    if result_event is not None:
+        widget = ToolResultMessage(
+            result_event, call_widget, collapsed=tools_collapsed, depth=depth
+        )
+    else:
+        widget = ToolResultMessage(
+            tool_name=tool_name,
+            content=msg.content,
+            collapsed=tools_collapsed,
+            depth=depth,
+        )
+    if child_loader is not None and result_event is not None:
+        children = _child_widgets(
+            tool_name,
+            result_event.result,
+            child_loader,
+            tools_collapsed=tools_collapsed,
+            tool_classes=tool_classes,
+            depth=depth + 1,
+        )
+        if children:
+            at = (
+                widgets.index(call_widget) + 1
+                if call_widget in widgets
+                else len(widgets)
+            )
+            widgets[at:at] = children
+    widgets.append(widget)
+    history_widget_indices[widget] = history_index
+
+
+def _child_widgets(
+    tool_name: str,
+    result: BaseModel | None,
+    child_loader: ChildLoader,
+    *,
+    tools_collapsed: bool,
+    tool_classes: ToolClasses | None,
+    depth: int,
+) -> list[Widget]:
+    """The rows of every sub-agent session a stored result points at, each
+    under its section header when the run had one (orchestrate's role calls).
+    """
+    widgets: list[Widget] = []
+    for label, session_dir in subagent_children(tool_name, result):
+        if label:
+            widgets.append(TraceLineMessage(section_line(label), depth=depth))
+        if not str(session_dir):
+            continue
+        messages = child_loader(session_dir)
+        if not messages:
+            continue
+        child_messages = non_system_history_messages(messages)
+        rows = build_history_widgets(
+            child_messages,
+            build_tool_call_map(child_messages),
+            start_index=0,
+            tools_collapsed=tools_collapsed,
+            history_widget_indices=WeakKeyDictionary(),
+            tool_classes=tool_classes,
+            child_loader=child_loader,
+            depth=depth,
+        )
+        # Tool rows only, as the live trace shows them: the worker's prompt
+        # and its written answer stay in its own session.
+        widgets.extend(
+            w
+            for w in rows
+            if isinstance(w, (ToolCallMessage, ToolResultMessage, TraceLineMessage))
+        )
     return widgets
 
 

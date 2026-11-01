@@ -269,6 +269,16 @@ class TestRun:
             and m.rstrip("─ ").endswith("s")
         ]
         assert stamped
+        # The ledger knows which session played which role call (the scripted
+        # loops log nowhere, so the dirs are empty here).
+        calls = json.loads((ledger / "calls.json").read_text())
+        assert [c["label"] for c in calls] == [
+            "manager · plan",
+            "brainstorm",
+            "manager · round 1/10",
+            "worker · round 1/10 · task 1: make f return 2",
+        ]
+        assert all(c["session_dir"] == "" for c in calls)
         # The trace ends on a rule that says how the run ended, with the detail.
         assert stream[-1].startswith("── end · done ")
         assert (

@@ -21,6 +21,11 @@ from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING, cast
 
+from privibe.cli.continuation import (
+    continuation_name,
+    read_context_file_prompt,
+    resolve_context_file,
+)
 from privibe.cli.textual_ui.session_exit import (
     print_session_resume_message,
     resumable_session_id,
@@ -30,11 +35,6 @@ from privibe.core.config import (
     cycle_llm_calls_per_turn,
     cycle_preview_lines,
     load_dotenv_values,
-)
-from privibe.cli.continuation import (
-    continuation_name,
-    read_context_file_prompt,
-    resolve_context_file,
 )
 from privibe.core.nanny import (
     NannyConfigError,
@@ -66,6 +66,7 @@ from privibe.core.types import (
     ToolCallEvent,
     ToolResultEvent,
     ToolStreamEvent,
+    TraceLineEvent,
     UserMessageEvent,
     WaitingForInputEvent,
 )
@@ -359,16 +360,25 @@ class ConsoleUI(NannyListener):
             case ToolCallEvent():
                 self._close_block()
                 summary = self._call_summary(event)
-                print(f"[tool] {event.tool_name}: {summary}", flush=True)
+                indent = "  " * event.depth
+                print(f"{indent}[tool] {event.tool_name}: {summary}", flush=True)
 
             case ToolStreamEvent():
                 self._close_block()
                 for line in event.message.splitlines() or [""]:
                     print(f"  | {line}", flush=True)
 
+            case TraceLineEvent():
+                # A sub-agent's header or verifier row, indented like its calls.
+                self._close_block()
+                indent = "  " * event.depth
+                for line in event.message.splitlines() or [""]:
+                    print(f"{indent}{line}", flush=True)
+
             case ToolResultEvent():
                 self._close_block()
-                print(self._result_line(event), flush=True)
+                indent = "  " * event.depth
+                print(indent + self._result_line(event), flush=True)
                 self._print_result_body(event)
 
             case UserMessageEvent() if event.auto_continue:
@@ -812,9 +822,7 @@ class ConsoleUI(NannyListener):
                     parts[1] if len(parts) > 1 else ""
                 )
             case "/set-context-file" | "/context-file":
-                await self._command_set_context_file(
-                    parts[1] if len(parts) > 1 else ""
-                )
+                await self._command_set_context_file(parts[1] if len(parts) > 1 else "")
             case "/resume-from-context-file" | "/resume_from_context_file":
                 await self._command_resume_from_context_file()
             case "/ascii":
@@ -1013,7 +1021,9 @@ class ConsoleUI(NannyListener):
                 print("Nanny is off; /ensure-commands-safety <alias> turns it on.")
                 return
             if not text:
-                print("Usage: /ensure-commands-safety tell <what the nanny should know>")
+                print(
+                    "Usage: /ensure-commands-safety tell <what the nanny should know>"
+                )
                 return
             reply = await self._nanny.tell(text)
             for line in reply.splitlines() or [""]:

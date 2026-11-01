@@ -12,7 +12,11 @@ from privibe.cli.textual_ui.widgets.messages import (
     UserMessage,
 )
 from privibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
-from privibe.cli.textual_ui.widgets.tools import ToolCallMessage, ToolResultMessage
+from privibe.cli.textual_ui.widgets.tools import (
+    ToolCallMessage,
+    ToolResultMessage,
+    TraceLineMessage,
+)
 from privibe.core.tools.ui import ToolUIDataAdapter
 from privibe.core.types import (
     AgentProfileChangedEvent,
@@ -24,6 +28,7 @@ from privibe.core.types import (
     ToolCallEvent,
     ToolResultEvent,
     ToolStreamEvent,
+    TraceLineEvent,
     UserMessageEvent,
     WaitingForInputEvent,
 )
@@ -49,6 +54,11 @@ class EventHandler:
         # Nanny entries mounted after a call widget, so the result line
         # lands after the nanny's verdict rather than between call and verdict.
         self.nanny_entries: dict[str, Widget] = {}
+        # Rows a sub-agent made under a running call, keyed by that parent
+        # call's id: the last one mounted (the next child goes after it) and
+        # the trace rows that can be updated in place, by entry id.
+        self.last_child: dict[str, Widget] = {}
+        self.trace_rows: dict[str, TraceLineMessage] = {}
         self.current_compact: CompactMessage | None = None
         self.current_streaming_message: AssistantMessage | None = None
         self.current_streaming_reasoning: ReasoningMessage | None = None
@@ -73,6 +83,9 @@ class EventHandler:
                 await self._handle_tool_result(sanitized_event)
             case ToolStreamEvent():
                 await self._handle_tool_stream(event)
+            case TraceLineEvent():
+                await self.finalize_streaming()
+                await self._handle_trace_line(event)
             case CompactStartEvent():
                 await self.finalize_streaming()
                 await self._handle_compact_start()
@@ -119,21 +132,45 @@ class EventHandler:
             )
         return event
 
+    @staticmethod
+    def _call_key(tool_call_id: str, parent_call_id: str | None) -> str:
+        """The registry key of a call. A sub-agent's call is keyed under its
+        parent, so a backend that numbers calls the same way in every loop
+        cannot make a worker's call-1 collide with the parent's.
+        """
+        return f"{parent_call_id}/{tool_call_id}" if parent_call_id else tool_call_id
+
+    async def _mount_child(self, parent_call_id: str, widget: Widget) -> None:
+        """Mount a row a sub-agent made: after the last row of that parent,
+        or right after the parent call itself (its nanny verdict included).
+        """
+        anchor = (
+            self.last_child.get(parent_call_id)
+            or self.nanny_entries.get(parent_call_id)
+            or self.tool_calls.get(parent_call_id)
+        )
+        await self.mount_callback(widget, after=anchor)
+        self.last_child[parent_call_id] = widget
+
     async def _handle_tool_call(
         self, event: ToolCallEvent, loading_widget: LoadingWidget | None = None
     ) -> ToolCallMessage | None:
         tool_call_id = event.tool_call_id
-        existing_tool_call = self.tool_calls.get(tool_call_id) if tool_call_id else None
+        key = self._call_key(tool_call_id, event.parent_call_id)
+        existing_tool_call = self.tool_calls.get(key) if tool_call_id else None
         if existing_tool_call:
             existing_tool_call.update_event(event)
             tool_call = existing_tool_call
         else:
             tool_call = ToolCallMessage(event, collapsed=self.get_tools_collapsed())
             if tool_call_id:
-                self.tool_calls[tool_call_id] = tool_call
-            await self.mount_callback(tool_call)
+                self.tool_calls[key] = tool_call
+            if event.parent_call_id:
+                await self._mount_child(event.parent_call_id, tool_call)
+            else:
+                await self.mount_callback(tool_call)
 
-        if loading_widget and event.tool_class:
+        if loading_widget and event.tool_class and not event.parent_call_id:
             adapter = ToolUIDataAdapter(event.tool_class)
             loading_widget.set_status(adapter.get_status_text())
 
@@ -141,17 +178,55 @@ class EventHandler:
 
     async def _handle_tool_result(self, event: ToolResultEvent) -> None:
         tools_collapsed = self.get_tools_collapsed()
-
-        call_widget = (
-            self.tool_calls.get(event.tool_call_id) if event.tool_call_id else None
-        )
+        key = self._call_key(event.tool_call_id, event.parent_call_id)
+        call_widget = self.tool_calls.get(key) if event.tool_call_id else None
 
         tool_result = ToolResultMessage(event, call_widget, collapsed=tools_collapsed)
-        anchor = self.nanny_entries.pop(event.tool_call_id, None) or call_widget
-        await self.mount_callback(tool_result, after=anchor)
+        if event.parent_call_id:
+            # Under its own call, which is the parent's last child unless a
+            # sibling ran concurrently and landed after it.
+            await self.mount_callback(tool_result, after=call_widget)
+            if (
+                call_widget is None
+                or self.last_child.get(event.parent_call_id) is call_widget
+            ):
+                self.last_child[event.parent_call_id] = tool_result
+        else:
+            anchor = (
+                self.nanny_entries.pop(event.tool_call_id, None)
+                or self.last_child.pop(event.tool_call_id, None)
+                or call_widget
+            )
+            await self.mount_callback(tool_result, after=anchor)
+            self._forget_children(event.tool_call_id)
 
-        if event.tool_call_id and event.tool_call_id in self.tool_calls:
-            del self.tool_calls[event.tool_call_id]
+        if event.tool_call_id and key in self.tool_calls:
+            del self.tool_calls[key]
+
+    def _forget_children(self, parent_call_id: str) -> None:
+        self.last_child.pop(parent_call_id, None)
+        prefix = f"{parent_call_id}/"
+        for key in [k for k in self.tool_calls if k.startswith(prefix)]:
+            del self.tool_calls[key]
+        for key in [k for k in self.trace_rows if k.startswith(prefix)]:
+            del self.trace_rows[key]
+
+    async def _handle_trace_line(self, event: TraceLineEvent) -> None:
+        """A sub-agent's non-call row: new, or an update of the row with the
+        same entry id (a section header getting its timing).
+        """
+        if event.entry_id is not None:
+            key = f"{event.tool_call_id}/{event.entry_id}"
+            existing = self.trace_rows.get(key)
+            if existing is not None:
+                existing.set_text(event.message)
+                return
+        row = TraceLineMessage(
+            event.message, depth=event.depth, entry_id=event.entry_id
+        )
+        if event.entry_id is not None:
+            self.trace_rows[f"{event.tool_call_id}/{event.entry_id}"] = row
+        await self._mount_child(event.tool_call_id, row)
 
     async def _handle_tool_stream(self, event: ToolStreamEvent) -> None:
         tool_call = self.tool_calls.get(event.tool_call_id)
@@ -221,6 +296,8 @@ class EventHandler:
         for tool_call in self.tool_calls.values():
             tool_call.stop_spinning(success=success)
         self.tool_calls.clear()
+        self.last_child.clear()
+        self.trace_rows.clear()
 
     def stop_current_compact(self) -> None:
         if self.current_compact:

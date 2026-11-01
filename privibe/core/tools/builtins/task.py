@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 import fnmatch
+from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -23,10 +24,10 @@ from privibe.core.tools.subagent_trace import Tracer
 from privibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from privibe.core.types import (
     AssistantEvent,
+    BaseEvent,
     Role,
     ToolCallEvent,
     ToolResultEvent,
-    ToolStreamEvent,
 )
 
 
@@ -42,6 +43,10 @@ class TaskResult(BaseModel):
     response: str = Field(description="The accumulated response from the subagent")
     turns_used: int = Field(description="Number of turns the subagent used")
     completed: bool = Field(description="Whether the task completed normally")
+    session_dir: str = Field(
+        default="",
+        description="The subagent's own transcript on disk (its session directory)",
+    )
     # Echoed for the user-facing result line; excluded from the model result.
     agent: str = Field(default="", exclude=True)
     task: str = Field(default="", exclude=True)
@@ -106,7 +111,7 @@ class Task(
 
     async def run(
         self, args: TaskArgs, ctx: InvokeContext | None = None
-    ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
+    ) -> AsyncGenerator[BaseEvent | TaskResult, None]:
         if not ctx or not ctx.agent_manager:
             raise ToolError("Task tool requires agent_manager in context")
 
@@ -163,11 +168,8 @@ class Task(
 
         accumulated_response: list[str] = []
         completed = True
-        tracer = Tracer(
-            self.get_name(),
-            ctx.tool_call_id,
-            agent_manager.config.tool_result_preview_lines,
-        )
+        tracer = Tracer(self.get_name(), ctx.tool_call_id)
+        session_dir = subagent_session_dir(subagent_loop)
         for entry in tracer.start_section(f"{args.agent} · {args.task.strip()}"):
             yield entry
         try:
@@ -199,6 +201,7 @@ class Task(
                 response="".join(accumulated_response),
                 turns_used=turns_used,
                 completed=False,
+                session_dir=session_dir,
             )
             raise
 
@@ -215,4 +218,14 @@ class Task(
             response="".join(accumulated_response),
             turns_used=turns_used,
             completed=completed,
+            session_dir=session_dir,
         )
+
+
+def subagent_session_dir(loop: object) -> str:
+    """Where a sub-agent loop writes its transcript, as a string, or "" when
+    it logs nowhere (no parent session dir, or a stand-in loop in tests).
+    """
+    logger = getattr(loop, "session_logger", None)
+    session_dir = getattr(logger, "session_dir", None)
+    return str(session_dir) if isinstance(session_dir, Path) else ""

@@ -541,6 +541,26 @@ StatusMessage {
     color: ansi_bright_black;
 }
 
+/* Rows a sub-agent made (task, orchestrate workers): the same call and
+   result widgets as the top level, indented one step per level. */
+.trace-line {
+    width: 100%;
+    height: auto;
+    color: ansi_bright_black;
+}
+
+.depth-1 {
+    padding-left: 2;
+}
+
+.depth-2 {
+    padding-left: 4;
+}
+
+.depth-3 {
+    padding-left: 6;
+}
+
 .tool-call-params,
 .tool-call-log {
     width: 100%;
