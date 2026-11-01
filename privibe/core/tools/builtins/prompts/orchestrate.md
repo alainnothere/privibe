@@ -15,3 +15,7 @@ Not for questions, not for one-edit fixes, and not for work that needs the user 
 - `done_command`: a shell command that exits 0 when the job is done. Give one whenever you can; without it the result is `done_unverified` and means only that the manager stopped.
 
 The result reports the status, the last verifier run, the files that changed and the ledger directory holding `plan.md`, `notes.md`, `tasks.json` and every call's answer. Check the changed files yourself before telling the user the job is done.
+
+## Continuing a stopped run
+
+A cancelled or interrupted run keeps its state in the ledger. To pick it up, call `orchestrate` with `resume_ledger` set to the earlier result's `ledger_dir` and nothing else about the job: `goal`, `files`, `scope` and `done_command` come from the ledger. It continues from the last clean boundary (a worker's unfinished edits stay in the tree and the manager sees them as changed files). `checkpoint` goes back to an earlier boundary instead, putting the listed files back as they were there. `direction` is what the user wants done differently from here on; every later role call reads it.

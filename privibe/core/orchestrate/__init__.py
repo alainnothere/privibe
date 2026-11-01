@@ -8,13 +8,20 @@ question at a time.
 
 from __future__ import annotations
 
-from privibe.core.orchestrate.ledger import Ledger, TaskItem
+from privibe.core.orchestrate.ledger import (
+    Checkpoint,
+    Ledger,
+    LedgerStateError,
+    TaskItem,
+)
 from privibe.core.orchestrate.loop import (
     JobSpec,
     Outcome,
     OutcomeStatus,
     Progress,
     RoleCall,
+    job_from_record,
+    job_record,
     run_orchestration,
 )
 from privibe.core.orchestrate.snapshot import Bundle, BundleTooLargeError
@@ -23,14 +30,18 @@ from privibe.core.orchestrate.verifier import VerifierResult, run_verifier
 __all__ = [
     "Bundle",
     "BundleTooLargeError",
+    "Checkpoint",
     "JobSpec",
     "Ledger",
+    "LedgerStateError",
     "Outcome",
     "OutcomeStatus",
     "Progress",
     "RoleCall",
     "TaskItem",
     "VerifierResult",
+    "job_from_record",
+    "job_record",
     "run_orchestration",
     "run_verifier",
 ]

@@ -62,6 +62,7 @@ def build_tail(
     last_report: str,
     report_chars: int,
     role_text: str,
+    direction: str = "",
 ) -> str:
     parts: list[str] = []
     parts.append("# Plan\n\n" + (plan if plan else "(none yet)"))
@@ -75,6 +76,13 @@ def build_tail(
     parts.append("# Last verifier run\n\n" + _render_verifier(verifier))
     if last_report:
         parts.append("# Last worker report\n\n" + cap_text(last_report, report_chars))
+    if direction.strip():
+        # What the user said when they resumed the run. In the tail, not the
+        # head, so the frozen head stays byte-identical for the prefix cache.
+        parts.append(
+            "# Direction from the user (given while the job was running; follow it)"
+            "\n\n" + direction.strip()
+        )
     parts.append(role_text.strip())
     return "\n\n".join(parts) + "\n"
 

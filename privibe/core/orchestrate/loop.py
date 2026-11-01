@@ -8,13 +8,21 @@ the real one (a fresh AgentLoop per call).
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 import re
 
 from privibe.core.config import OrchestrateConfig
-from privibe.core.orchestrate.ledger import Ledger, TaskItem
+from privibe.core.orchestrate.ledger import (
+    PHASE_BRAINSTORMED,
+    PHASE_PLANNED,
+    PHASE_ROUND_END,
+    Checkpoint,
+    Ledger,
+    LedgerStateError,
+    TaskItem,
+)
 from privibe.core.orchestrate.parse import (
     ManageAnswer,
     ParseError,
@@ -69,6 +77,32 @@ class Outcome:
     changed_files: list[str]
     ledger_dir: Path
     detail: str = ""
+    # The last clean boundary the ledger holds; what a later run can resume from.
+    checkpoint: int | None = None
+
+
+def job_record(job: JobSpec, *, max_rounds: int, cwd: Path) -> dict[str, object]:
+    """The job as job.json stores it: everything a resume needs that the caller
+    would otherwise have to repeat, with the round cap already resolved.
+    """
+    return {
+        "goal": job.goal,
+        "files": list(job.files),
+        "scope": list(job.scope),
+        "done_command": job.done_command,
+        "max_rounds": max_rounds,
+        "cwd": str(cwd),
+    }
+
+
+def job_from_record(raw: dict[str, object]) -> JobSpec:
+    return JobSpec(
+        goal=str(raw["goal"]),
+        files=[str(f) for f in raw.get("files", [])],  # type: ignore[union-attr]
+        scope=[str(s) for s in raw.get("scope", [])],  # type: ignore[union-attr]
+        done_command=str(raw.get("done_command", "")),
+        max_rounds=int(raw["max_rounds"]),  # type: ignore[call-overload]
+    )
 
 
 @dataclass(frozen=True)
@@ -96,10 +130,50 @@ class _Run:
     done_keys: set[str] = field(default_factory=set)
     calls: int = 0
     rounds: int = 0
+    last_checkpoint: int | None = None
 
     @property
     def max_rounds(self) -> int:
         return self.job.max_rounds or self.config.max_rounds
+
+    def checkpoint(self, phase: str) -> Checkpoint:
+        """Write the run as it stands to state/NNN.json: a clean boundary a
+        later run can continue from. The listed files go in as they are now,
+        so an earlier boundary can be returned to, files included.
+        """
+        cp = Checkpoint(
+            number=self.ledger.next_checkpoint_number(),
+            phase=phase,
+            rounds=self.rounds,
+            calls=self.calls,
+            verifier=asdict(self.verifier) if self.verifier is not None else None,
+            last_report=self.last_report,
+            last_task_key=self.last_task_key,
+            done_keys=sorted(self.done_keys),
+            tasks=list(self.tasks),
+            notes=self.ledger.read_notes(),
+            files=self.bundle.current_contents(),
+        )
+        self.ledger.write_checkpoint(cp)
+        self.last_checkpoint = cp.number
+        self.ledger.log(f"checkpoint {cp.number} ({phase}, round {cp.rounds})")
+        return cp
+
+    def restore(self, cp: Checkpoint) -> None:
+        """Take the run back to `cp`: counters, stall keys, verifier, report,
+        task list and notes. The notes and the task list are written back to
+        the ledger too, so the files the roles read match the checkpoint.
+        """
+        self.rounds = cp.rounds
+        self.calls = cp.calls
+        self.verifier = VerifierResult(**cp.verifier) if cp.verifier else None
+        self.last_report = cp.last_report
+        self.last_task_key = cp.last_task_key
+        self.done_keys = set(cp.done_keys)
+        self.tasks = list(cp.tasks)
+        self.last_checkpoint = cp.number
+        self.ledger.write_tasks(self.tasks)
+        self.ledger.write_notes(cp.notes)
 
     def plan_budget_text(self) -> str:
         # One task per round, and the last round must still run the verifier.
@@ -140,6 +214,7 @@ class _Run:
                 ),
                 report_chars=_WORKER_REPORT_CHARS,
                 role_text=role_text(role, task=task) + extra,
+                direction=self.ledger.read_steer(),
             ),
         )
         answer = await self._call_with_retry(role, message, effort, answer_only)
@@ -180,6 +255,7 @@ class _Run:
             changed_files=self.bundle.changed_files(),
             ledger_dir=self.ledger.root,
             detail=detail,
+            checkpoint=self.last_checkpoint,
         )
 
     async def plan(self) -> PlanAnswer:
@@ -236,6 +312,9 @@ class _Run:
         return result
 
 
+_PHASE_ORDER = {PHASE_PLANNED: 1, PHASE_BRAINSTORMED: 2, PHASE_ROUND_END: 3}
+
+
 async def run_orchestration(
     job: JobSpec,
     *,
@@ -244,9 +323,37 @@ async def run_orchestration(
     call: RoleCall,
     config: OrchestrateConfig,
     cwd: Path,
+    checkpoint: int | None = None,
+    direction: str = "",
 ) -> AsyncGenerator[Progress | Outcome, None]:
+    """Run the job, or continue it. The ledger says which: with no checkpoint
+    on disk this is a fresh start and job.json plus snapshot.json are written;
+    with checkpoints the run is restored from the latest one, or from
+    `checkpoint` when given, and every phase that boundary already covers is
+    skipped. `direction` is a word from the user, kept in the ledger and shown
+    to every later role call.
+    """
     run = _Run(job=job, bundle=bundle, ledger=ledger, call=call, config=config, cwd=cwd)
-    ledger.write_task(job.goal)
+    latest = ledger.latest_checkpoint()
+    if latest is None:
+        if checkpoint is not None:
+            raise LedgerStateError(f"no checkpoint to resume from in {ledger.root}")
+        ledger.write_job(job_record(job, max_rounds=run.max_rounds, cwd=cwd))
+        ledger.write_snapshot(bundle.paths, bundle.contents)
+        ledger.write_task(job.goal)
+        phase_done = 0
+    else:
+        target = latest if checkpoint is None else ledger.checkpoint(checkpoint)
+        for line in _resume(run, target, latest):
+            ledger.log(line)
+        phase_done = _PHASE_ORDER[target.phase]
+        yield Progress(
+            f"resumed from checkpoint {target.number} ({target.phase}, "
+            f"round {target.rounds}/{run.max_rounds})"
+        )
+    if direction.strip():
+        ledger.append_steer(direction)
+        ledger.log("direction from the user added to steer.md")
     run.head = build_head(
         goal=job.goal,
         scope=job.scope,
@@ -255,22 +362,55 @@ async def run_orchestration(
     )
 
     # 1. plan
-    yield Progress("manager · plan", section=True)
-    plan_answer = await run.plan()
-    ledger.write_plan(plan_answer.plan)
-    run.tasks = plan_answer.tasks
-    ledger.write_tasks(run.tasks)
-    ledger.log(f"plan written, {len(run.tasks)} seed tasks")
+    if phase_done < _PHASE_ORDER[PHASE_PLANNED]:
+        yield Progress("manager · plan", section=True)
+        plan_answer = await run.plan()
+        ledger.write_plan(plan_answer.plan)
+        run.tasks = plan_answer.tasks
+        ledger.write_tasks(run.tasks)
+        ledger.log(f"plan written, {len(run.tasks)} seed tasks")
+        run.checkpoint(PHASE_PLANNED)
 
     # 2. brainstorm
-    yield Progress("brainstorm", section=True)
-    notes = await run.ask(Role.BRAINSTORM, config.effort_brainstorm, answer_only=True)
-    ledger.write_notes(notes)
-    ledger.log("brainstorm written to notes")
+    if phase_done < _PHASE_ORDER[PHASE_BRAINSTORMED]:
+        yield Progress("brainstorm", section=True)
+        notes = await run.ask(
+            Role.BRAINSTORM, config.effort_brainstorm, answer_only=True
+        )
+        ledger.write_notes(notes)
+        ledger.log("brainstorm written to notes")
+        run.checkpoint(PHASE_BRAINSTORMED)
 
     # 3. manage -> 4. execute -> 5. verify, up to max_rounds times
     async for event in _rounds(run):
         yield event
+
+
+def _resume(run: _Run, target: Checkpoint, latest: Checkpoint) -> list[str]:
+    """Put the run back at `target`. Continuing from the latest boundary keeps
+    the tree as it is, a worker's unfinished edits included, since they are
+    progress the next manager call will see as changed files. Going back to an
+    earlier boundary puts the listed files back as they were there and drops
+    the later checkpoints, the way a rewind does. Returns the log lines.
+    """
+    lines = [f"resume from checkpoint {target.number} ({target.phase})"]
+    run.restore(target)
+    inflight = run.ledger.read_inflight()
+    if inflight is not None:
+        lines.append(
+            f"a worker was running task {inflight['id']} in round "
+            f"{inflight['round']} when the run stopped; its edits stay in the tree"
+        )
+        run.ledger.clear_inflight()
+    if target.number != latest.number:
+        restored = run.bundle.restore(target.files)
+        dropped = run.ledger.drop_checkpoints_after(target.number)
+        lines.append(
+            f"went back to checkpoint {target.number}: restored "
+            f"{len(restored)} listed file(s), dropped checkpoints {dropped}; "
+            f"transcripts after call {target.calls} will be overwritten"
+        )
+    return lines
 
 
 async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
@@ -308,6 +448,7 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
         assert task is not None  # _stall_reason returns a reason for None
         run.last_task_key = _task_key(task.text)
         run.done_keys.add(run.last_task_key)
+        ledger.write_inflight(round_no=run.rounds, task_id=task.id, text=task.text)
 
         yield Progress(f"worker · {tag} · task {task.id}: {task.text}", section=True)
         report = await run.ask(
@@ -326,8 +467,11 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
             yield _verifier_progress(run.verifier)
             if run.verifier is not None and run.verifier.passed:
                 # Ground truth: the job is done whatever the task list says.
+                ledger.clear_inflight()
                 yield run.outcome(OutcomeStatus.DONE, "verifier passes after a worker")
                 return
+        ledger.clear_inflight()
+        run.checkpoint(PHASE_ROUND_END)
 
     async for event in _finalize(
         run, OutcomeStatus.ROUNDS_EXHAUSTED, f"{run.max_rounds} rounds used"

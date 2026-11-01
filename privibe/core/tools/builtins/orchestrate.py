@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+import json
 from pathlib import Path
 import tempfile
 from typing import ClassVar
@@ -10,17 +11,20 @@ from pydantic import BaseModel, Field
 
 from privibe.core.agent_loop import AgentLoop
 from privibe.core.agents.models import MUTATING_TOOLS, BuiltinAgentName
-from privibe.core.config import SessionLoggingConfig, VibeConfig
+from privibe.core.config import OrchestrateConfig, SessionLoggingConfig, VibeConfig
 from privibe.core.orchestrate import (
     Bundle,
     BundleTooLargeError,
     JobSpec,
     Ledger,
+    LedgerStateError,
     Outcome,
     OutcomeStatus,
     Progress,
+    job_from_record,
     run_orchestration,
 )
+from privibe.core.orchestrate.ledger import JOB_FILENAME
 from privibe.core.orchestrate.prompt import Role
 from privibe.core.tools.base import (
     BaseTool,
@@ -57,7 +61,11 @@ def summarize_goal(goal: str, limit: int = _SUMMARY_GOAL_CHARS) -> str:
 
 class OrchestrateArgs(BaseModel):
     goal: str = Field(
-        description="What needs to be done, in full. The workers see nothing else about the request."
+        default="",
+        description=(
+            "What needs to be done, in full. The workers see nothing else about "
+            "the request. Required unless resume_ledger is given."
+        ),
     )
     files: list[str] = Field(
         default_factory=list,
@@ -80,6 +88,29 @@ class OrchestrateArgs(BaseModel):
     max_rounds: int | None = Field(
         default=None, ge=1, description="Manager/worker rounds; default from config."
     )
+    resume_ledger: str = Field(
+        default="",
+        description=(
+            "ledger_dir of an earlier run to continue instead of starting a new "
+            "job. goal, files, scope, done_command and max_rounds are taken from "
+            "that ledger and must be left empty here."
+        ),
+    )
+    checkpoint: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "With resume_ledger: the checkpoint number to go back to (the listed "
+            "files are put back as they were there). Default: the latest."
+        ),
+    )
+    direction: str = Field(
+        default="",
+        description=(
+            "With resume_ledger: what the user wants done differently from here "
+            "on. Every later role call sees it."
+        ),
+    )
 
 
 class OrchestrateResult(BaseModel):
@@ -94,6 +125,13 @@ class OrchestrateResult(BaseModel):
     changed_files: list[str] = Field(default_factory=list)
     ledger_dir: str = Field(
         description="Where plan.md, notes.md, tasks.json and the call transcripts are"
+    )
+    checkpoint: int | None = Field(
+        default=None,
+        description=(
+            "Last clean boundary saved in the ledger; pass ledger_dir as "
+            "resume_ledger to continue from it"
+        ),
     )
 
 
@@ -115,6 +153,13 @@ class Orchestrate(
         """Scope, files, what ends the job and the round cap, indented: the
         part of the call that is the same however long the goal is.
         """
+        if args.resume_ledger:
+            lines = [f"  resume: {args.resume_ledger}"]
+            if args.checkpoint is not None:
+                lines.append(f"  checkpoint: {args.checkpoint}")
+            if args.direction.strip():
+                lines.append(f"  direction: {summarize_goal(args.direction)}")
+            return lines
         lines = ["  scope: " + (", ".join(args.scope) if args.scope else "(none)")]
         lines.append("  files: " + (", ".join(args.files) if args.files else "(none)"))
         lines.append(
@@ -138,7 +183,10 @@ class Orchestrate(
         left out when the first line already is the whole goal.
         """
         goal = summarize_goal(args.goal)
-        lines = [f'orchestrate "{goal}"' if goal else "orchestrate"]
+        if args.resume_ledger and not goal:
+            lines = ["orchestrate (resume)"]
+        else:
+            lines = [f'orchestrate "{goal}"' if goal else "orchestrate"]
         lines.extend(cls._parameter_lines(args))
         full_goal = args.goal.strip()
         content = full_goal if full_goal and full_goal != goal else None
@@ -176,7 +224,15 @@ class Orchestrate(
 
     def resolve_permission(self, args: OrchestrateArgs) -> PermissionContext | None:
         protected = self.config.protected_paths
-        for p in [*args.files, *args.scope]:
+        files, scope, done_command = args.files, args.scope, args.done_command
+        if args.resume_ledger:
+            # The job comes from the ledger: check what it says, not the
+            # (empty) arguments. A ledger without a job is refused in run().
+            record = _read_job_record(Path(args.resume_ledger).expanduser())
+            if record is not None:
+                job = job_from_record(record)
+                files, scope, done_command = job.files, job.scope, job.done_command
+        for p in [*files, *scope]:
             if protected and is_protected_path(p, protected):
                 return PermissionContext(
                     permission=ToolPermission.NEVER,
@@ -191,8 +247,8 @@ class Orchestrate(
                     permission=ToolPermission.NEVER,
                     reason=f"Access denied: {p} is outside the working directory.",
                 )
-        if args.done_command and protected:
-            hit = _find_protected_token(_extract_commands(args.done_command), protected)
+        if done_command and protected:
+            hit = _find_protected_token(_extract_commands(done_command), protected)
             if hit:
                 return PermissionContext(
                     permission=ToolPermission.NEVER,
@@ -200,7 +256,7 @@ class Orchestrate(
                 )
         return None
 
-    async def run(  # noqa: PLR0914, PLR0915
+    async def run(  # noqa: PLR0914
         self, args: OrchestrateArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | OrchestrateResult, None]:
         if not ctx or not ctx.agent_manager:
@@ -208,38 +264,12 @@ class Orchestrate(
         parent_config = ctx.agent_manager.config
         settings = parent_config.orchestrate
 
-        files = [str(Path(f).expanduser().resolve()) for f in args.files]
-        scope = [str(Path(s).expanduser().resolve()) for s in args.scope]
-        for f in files:
-            if not Path(f).is_file():
-                raise ToolError(f"not a file: {f}")
-        for s in scope:
-            if not Path(s).is_dir():
-                raise ToolError(f"scope entry is not a directory: {s}")
-        try:
-            bundle = Bundle.load(files, max_bytes=settings.bundle_bytes)
-        except BundleTooLargeError as e:
-            raise ToolError(str(e)) from e
-        except (UnicodeDecodeError, ValueError, OSError) as e:
-            raise ToolError(f"cannot read a pre-fed file as text: {e}") from e
-
-        ledger_root = (
-            ctx.session_dir / "orchestrate" / ctx.tool_call_id
-            if ctx.session_dir is not None
-            else Path(tempfile.mkdtemp(prefix="privibe-orchestrate-"))
-        )
-        ledger = Ledger(
-            ledger_root,
-            plan_chars=settings.plan_chars,
-            notes_chars=settings.notes_chars,
-        )
-        job = JobSpec(
-            goal=args.goal,
-            files=files,
-            scope=scope,
-            done_command=args.done_command,
-            max_rounds=args.max_rounds,
-        )
+        if args.resume_ledger:
+            job, bundle, ledger, cwd = _open_resume(args, settings)
+        else:
+            job, bundle, ledger = _open_fresh(args, ctx, settings)
+            cwd = Path.cwd()
+        scope = job.scope
         worker_config = self._worker_config(ctx, parent_config, scope)
         queue: asyncio.Queue[ToolStreamEvent | Outcome] = asyncio.Queue()
         tracer = Tracer(
@@ -269,7 +299,9 @@ class Orchestrate(
                 ledger=ledger,
                 call=call,
                 config=settings,
-                cwd=Path.cwd(),
+                cwd=cwd,
+                checkpoint=args.checkpoint,
+                direction=args.direction,
             ):
                 if isinstance(event, Progress):
                     entries = (
@@ -296,7 +328,10 @@ class Orchestrate(
                 else:
                     getter.cancel()
                     # The driver ended without an Outcome: it raised.
-                    driver.result()
+                    try:
+                        driver.result()
+                    except LedgerStateError as e:
+                        raise ToolError(str(e)) from e
                     raise ToolError("orchestration ended without a result")
                 if isinstance(item, ToolStreamEvent):
                     yield item
@@ -400,6 +435,95 @@ class Orchestrate(
         return answer
 
 
+def _read_job_record(ledger_dir: Path) -> dict[str, object] | None:
+    """job.json of an earlier run, or None. Reads the file directly: opening a
+    Ledger would create the directory, and a permission check must not.
+    """
+    job_path = ledger_dir / JOB_FILENAME
+    if not job_path.is_file():
+        return None
+    try:
+        raw = json.loads(job_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _open_fresh(
+    args: OrchestrateArgs, ctx: InvokeContext, settings: OrchestrateConfig
+) -> tuple[JobSpec, Bundle, Ledger]:
+    """A new job: check the files and scope, load the bundle, make the ledger
+    under the session dir (or a temp dir when there is none).
+    """
+    if not args.goal.strip():
+        raise ToolError("goal is required (or resume_ledger to continue a run)")
+    files = [str(Path(f).expanduser().resolve()) for f in args.files]
+    scope = [str(Path(s).expanduser().resolve()) for s in args.scope]
+    for f in files:
+        if not Path(f).is_file():
+            raise ToolError(f"not a file: {f}")
+    for s in scope:
+        if not Path(s).is_dir():
+            raise ToolError(f"scope entry is not a directory: {s}")
+    try:
+        bundle = Bundle.load(files, max_bytes=settings.bundle_bytes)
+    except BundleTooLargeError as e:
+        raise ToolError(str(e)) from e
+    except (UnicodeDecodeError, ValueError, OSError) as e:
+        raise ToolError(f"cannot read a pre-fed file as text: {e}") from e
+    ledger_root = (
+        ctx.session_dir / "orchestrate" / ctx.tool_call_id
+        if ctx.session_dir is not None
+        else Path(tempfile.mkdtemp(prefix="privibe-orchestrate-"))
+    )
+    ledger = Ledger(
+        ledger_root, plan_chars=settings.plan_chars, notes_chars=settings.notes_chars
+    )
+    job = JobSpec(
+        goal=args.goal,
+        files=files,
+        scope=scope,
+        done_command=args.done_command,
+        max_rounds=args.max_rounds,
+    )
+    return job, bundle, ledger
+
+
+def _open_resume(
+    args: OrchestrateArgs, settings: OrchestrateConfig
+) -> tuple[JobSpec, Bundle, Ledger, Path]:
+    """An earlier run's ledger: the job, the file snapshot and the working
+    directory all come from it. The arguments that describe a new job must be
+    empty, so two descriptions of the job can never disagree.
+    """
+    if args.goal.strip() or args.files or args.scope or args.done_command:
+        raise ToolError(
+            "resume_ledger takes the job from the ledger: leave goal, files, "
+            "scope and done_command empty"
+        )
+    root = Path(args.resume_ledger).expanduser().resolve()
+    if not root.is_dir():
+        raise ToolError(f"resume_ledger is not a directory: {root}")
+    ledger = Ledger(
+        root, plan_chars=settings.plan_chars, notes_chars=settings.notes_chars
+    )
+    record = ledger.read_job()
+    snapshot = ledger.read_snapshot()
+    if record is None or snapshot is None:
+        raise ToolError(
+            f"{root} holds no resumable run (job.json or snapshot.json missing)"
+        )
+    if ledger.latest_checkpoint() is None:
+        raise ToolError(f"{root} has no checkpoint to resume from")
+    job = job_from_record(record)
+    paths, contents = snapshot
+    bundle = Bundle(paths=paths, contents=contents)
+    cwd = Path(str(record.get("cwd", ""))) if record.get("cwd") else Path.cwd()
+    if not cwd.is_dir():
+        raise ToolError(f"the run's working directory is gone: {cwd}")
+    return job, bundle, ledger, cwd
+
+
 def _closing_entry(outcome: Outcome) -> tuple[str, str, str]:
     """Label, stamp and detail for the trace's last rule: how the run ended,
     its size, and the loop's own reason.
@@ -412,6 +536,7 @@ def _closing_entry(outcome: Outcome) -> tuple[str, str, str]:
 
 def _to_result(outcome: Outcome) -> OrchestrateResult:
     return OrchestrateResult(
+        checkpoint=outcome.checkpoint,
         status=outcome.status,
         detail=outcome.detail,
         rounds=outcome.rounds,

@@ -97,6 +97,34 @@ class Bundle:
                 changed.append(p)
         return changed
 
+    def current_contents(self) -> dict[str, str | None]:
+        """Every listed file as it is on disk now; None for a missing one. What
+        a checkpoint stores so an earlier boundary can be returned to.
+        """
+        return {p: self._read_current(p) for p in self.paths}
+
+    def restore(self, contents: dict[str, str | None]) -> list[str]:
+        """Put the listed files back as `contents` says, deleting the ones it
+        records as missing. Returns the paths that actually changed on disk.
+        Only listed files: whatever a worker wrote elsewhere stays.
+        """
+        changed: list[str] = []
+        for p in self.paths:
+            if p not in contents:
+                continue
+            wanted = contents[p]
+            current = self._read_current(p)
+            if wanted == current:
+                continue
+            file = Path(p)
+            if wanted is None:
+                file.unlink(missing_ok=True)
+            else:
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(wanted, encoding="utf-8")
+            changed.append(p)
+        return changed
+
     def render_changed(self) -> str:
         parts: list[str] = []
         for p in self.changed_files():

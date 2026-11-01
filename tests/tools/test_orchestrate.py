@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 import sys
 from unittest.mock import MagicMock, patch
@@ -85,6 +87,25 @@ class ScriptedLoops:
                 LLMMessage(role=Role.assistant, content=answer),
             ]
             yield AssistantEvent(content=answer)
+
+        loop.act = act
+        return loop
+
+
+class CancelAtManage(ScriptedLoops):
+    """The scripted loops, except the manager call is a user cancel: what the
+    loop sees when ctrl+c lands while the manager is thinking.
+    """
+
+    def __call__(self, config, agent_name, entrypoint_metadata=None):
+        loop = super().__call__(config, agent_name, entrypoint_metadata)
+        scripted_act = loop.act
+
+        async def act(message: str, *, answer_only: bool = False):
+            if "# Your role: manager, curating" in message:
+                raise asyncio.CancelledError
+            async for ev in scripted_act(message, answer_only=answer_only):
+                yield ev
 
         loop.act = act
         return loop
@@ -250,8 +271,10 @@ class TestRun:
         assert stamped
         # The trace ends on a rule that says how the run ended, with the detail.
         assert stream[-1].startswith("── end · done ")
-        assert stream[-1].rstrip().endswith(
-            " 1 round · 4 calls\n  verifier passes after a worker"
+        assert (
+            stream[-1]
+            .rstrip()
+            .endswith(" 1 round · 4 calls\n  verifier passes after a worker")
         )
         # Role calls: efforts and answer-only flags.
         assert loops.efforts == ["low", "medium", "low", "medium"]
@@ -305,6 +328,119 @@ class TestRun:
 
 
 class TestInternalProfile:
+    @pytest.mark.asyncio
+    async def test_resume_takes_the_job_from_the_ledger(
+        self, tool: Orchestrate, ctx: InvokeContext, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "t.py"
+        target.write_text("def f():\n    return 1\n")
+        first = CancelAtManage(
+            {"plan": [PLAN], "brainstorm": [BRAINSTORM]}, target=target
+        )
+        args = OrchestrateArgs(
+            goal="make f return 2",
+            files=[str(target)],
+            scope=[str(tmp_path)],
+            done_command=_check_cmd(target),
+            max_rounds=2,
+        )
+        with (
+            patch("privibe.core.tools.builtins.orchestrate.AgentLoop", first),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            async for _ in tool.run(args, ctx):
+                pass
+        ledger_dir = ctx.session_dir / "orchestrate" / "call-1"
+        assert (ledger_dir / "job.json").is_file()
+        assert (ledger_dir / "state" / "002.json").is_file()
+
+        second = ScriptedLoops(
+            {
+                "manage": ["1. [todo] make f return 2\nNEXT: 1"],
+                "execute": ["edited\n## Notes\nf returns 2\n## Next steps\nnone"],
+            },
+            target=target,
+        )
+        resume = OrchestrateArgs(
+            resume_ledger=str(ledger_dir), direction="Keep the function name."
+        )
+        with patch("privibe.core.tools.builtins.orchestrate.AgentLoop", second):
+            events = []
+            async for item in tool.run(resume, ctx):
+                events.append(item)
+        result = events[-1]
+        assert isinstance(result, OrchestrateResult)
+        assert result.status == "done", result.detail
+        assert result.ledger_dir == str(ledger_dir)
+        assert result.checkpoint == 2
+        # No plan, no brainstorm: the ledger had them.
+        assert second.answer_only_flags == [True, False]
+        assert all("Keep the function name." in m for m in second.messages_seen)
+        # Scope came from job.json and still binds the worker's edit tools.
+        wcfg = second.configs[0]
+        assert wcfg.tools["write_file"]["allowlist"] == [str(tmp_path.resolve() / "*")]
+        stream = [e.message for e in events[:-1]]
+        assert stream[0].startswith("resumed from checkpoint 2 (brainstormed")
+        assert (
+            (ledger_dir / "steer.md").read_text().endswith("Keep the function name.\n")
+        )
+
+    @pytest.mark.asyncio
+    async def test_resume_refuses_a_job_description_and_a_bare_dir(
+        self, tool: Orchestrate, ctx: InvokeContext, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ToolError, match="leave goal, files, scope"):
+            async for _ in tool.run(
+                OrchestrateArgs(resume_ledger=str(tmp_path), goal="again"), ctx
+            ):
+                pass
+        with pytest.raises(ToolError, match="no resumable run"):
+            async for _ in tool.run(OrchestrateArgs(resume_ledger=str(tmp_path)), ctx):
+                pass
+        with pytest.raises(ToolError, match="not a directory"):
+            async for _ in tool.run(
+                OrchestrateArgs(resume_ledger=str(tmp_path / "nope")), ctx
+            ):
+                pass
+
+    def test_resume_permission_reads_the_ledger_job(self, tmp_path: Path) -> None:
+        ledger_dir = tmp_path / "ledger"
+        ledger_dir.mkdir()
+        (ledger_dir / "job.json").write_text(
+            json.dumps({
+                "goal": "g",
+                "files": [str(tmp_path / "secrets" / "k.txt")],
+                "scope": [],
+                "done_command": "",
+                "max_rounds": 2,
+                "cwd": str(tmp_path),
+            })
+        )
+        tool = Orchestrate(
+            config=OrchestrateToolConfig(protected_paths=["**/secrets/**"]),
+            state=BaseToolState(),
+        )
+        ctx = tool.resolve_permission(OrchestrateArgs(resume_ledger=str(ledger_dir)))
+        assert ctx is not None and ctx.permission == ToolPermission.NEVER
+        # A directory that does not exist yet is not created by the check.
+        missing = tmp_path / "missing"
+        assert (
+            tool.resolve_permission(OrchestrateArgs(resume_ledger=str(missing))) is None
+        )
+        assert not missing.exists()
+
+    def test_resume_call_line_names_the_ledger(self) -> None:
+        display = Orchestrate.format_call_display(
+            OrchestrateArgs(resume_ledger="/tmp/x", checkpoint=3, direction="go")
+        )
+        assert display.summary.splitlines() == [
+            "orchestrate (resume)",
+            "  resume: /tmp/x",
+            "  checkpoint: 3",
+            "  direction: go",
+        ]
+
     def test_worker_profile_is_internal_subagent(self) -> None:
         p = BUILTIN_AGENTS["orchestrate-worker"]
         assert p.agent_type is AgentType.SUBAGENT and p.internal
