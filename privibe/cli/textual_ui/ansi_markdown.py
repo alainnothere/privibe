@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from pygments.token import Token
+from textual.app import ComposeResult
 from textual.content import Content
 from textual.highlight import HighlightTheme, highlight
 from textual.widgets import Markdown
-from textual.widgets._markdown import MarkdownFence
+from textual.widgets._markdown import (
+    MarkdownFence,
+    MarkdownTable,
+    MarkdownTableCellContents,
+    MarkdownTableContent,
+)
 
 
 class AnsiHighlightTheme(HighlightTheme):
@@ -50,9 +56,45 @@ class AnsiMarkdownFence(MarkdownFence):
         return highlight(code, language=language or None, theme=AnsiHighlightTheme)
 
 
+class LinkableTableContent(MarkdownTableContent):
+    """Streamed table rows that keep their links clickable.
+
+    Textual 8.2.3's ``_update_rows`` mounts streamed rows as bare ``Static``
+    cells, which have no ``action_link``; Textual does not bubble actions, so
+    every link in a streamed table body is dead. Only the one-shot
+    ``compose`` path uses ``MarkdownTableCellContents``. This mirrors
+    upstream ``_update_rows`` with the right cell class. Delete once fixed
+    upstream; tests/cli/textual_ui/test_markdown_table_links.py guards it.
+    """
+
+    async def _update_rows(self, updated_rows: list[list[Content]]) -> None:
+        self.styles.grid_size_columns = len(self.headers)
+        await self.query_children(f".cell.row{self.last_row}").remove()
+        new_cells: list[MarkdownTableCellContents] = []
+        row_index = self.last_row
+        for row_index, row in enumerate(updated_rows, self.last_row):
+            for cell in row:
+                new_cells.append(
+                    MarkdownTableCellContents(
+                        cell, classes=f"row{row_index} cell"
+                    ).with_tooltip(cell.plain)
+                )
+        self.last_row = row_index
+        await self.mount_all(new_cells)
+
+
+class LinkableMarkdownTable(MarkdownTable):
+    def compose(self) -> ComposeResult:
+        headers, rows = self._get_headers_and_rows()
+        self._headers = headers
+        self._rows = rows
+        yield LinkableTableContent(headers, rows)
+
+
 class AnsiMarkdown(Markdown):
     BLOCKS = {
         **Markdown.BLOCKS,
         "fence": AnsiMarkdownFence,
         "code_block": AnsiMarkdownFence,
+        "table_open": LinkableMarkdownTable,
     }
