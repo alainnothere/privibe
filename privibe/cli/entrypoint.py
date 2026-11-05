@@ -85,6 +85,26 @@ def parse_arguments() -> argparse.Namespace:
         "The override is not persisted.",
     )
     parser.add_argument(
+        "--nanny",
+        metavar="ALIAS",
+        help="Model alias of the nanny that reviews tool-approval prompts for "
+        "this run, overriding nanny_model from config. Must match a model "
+        "alias configured in config.toml; it may be the same as --model. "
+        "On --continue / --resume it wins over the nanny the session had "
+        "saved. With -p the run uses the default agent instead of "
+        "auto-approve and the nanny is the only approver: what it does not "
+        "approve is refused. The override is not persisted.",
+    )
+    parser.add_argument(
+        "--nanny-brief",
+        metavar="TEXT",
+        help="Standing instructions for the nanny on this run, overriding "
+        "nanny_brief from config: what the task is, what to look for, what "
+        "is fine. Sent once, right after the nanny's session header and "
+        "before the first call it reviews, like /ensure-commands-safety "
+        "tell. With -p it needs --nanny. The override is not persisted.",
+    )
+    parser.add_argument(
         "--list-tools",
         action="store_true",
         help="List all available tools with their descriptions and exit.",

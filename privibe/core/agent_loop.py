@@ -2438,9 +2438,10 @@ class AgentLoop:
         """
         await self.session_logger.set_nanny_model(alias)
 
-    # Parts of the run state ("model", "agent") the command line chose with
-    # --model / --agent; set by the CLI and honored once, at startup, so an
-    # explicit flag beats what a resumed conversation had saved.
+    # Parts of the run state ("model", "agent", "nanny") the command line
+    # chose with --model / --agent / --nanny; set by the CLI and honored once,
+    # at startup, so an explicit flag beats what a resumed conversation had
+    # saved.
     pinned_run_state: frozenset[str] = frozenset()
 
     async def persist_run_state(self) -> None:

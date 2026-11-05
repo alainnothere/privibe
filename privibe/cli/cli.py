@@ -43,7 +43,14 @@ def _print_available_tools() -> None:
 
 
 def get_initial_agent_name(args: argparse.Namespace) -> str:
-    if args.prompt is not None and args.agent == BuiltinAgentName.DEFAULT:
+    # -p answers no approval prompt, so it runs on auto-approve unless told
+    # otherwise. With --nanny there is an approver: keep the asking agent, or
+    # the nanny would have nothing to review.
+    if (
+        args.prompt is not None
+        and args.agent == BuiltinAgentName.DEFAULT
+        and not getattr(args, "nanny", None)
+    ):
         return BuiltinAgentName.AUTO_APPROVE
     return args.agent
 
@@ -97,6 +104,41 @@ def validate_model_override(config: VibeConfig, alias: str) -> str | None:
             f"is not set."
         )
     return None
+
+
+def load_config_with_cli_overrides(
+    model_alias: str | None,
+    nanny_alias: str | None,
+    nanny_brief: str | None = None,
+    *,
+    programmatic: bool = False,
+) -> VibeConfig:
+    """Load the config with --model / --nanny / --nanny-brief applied, or
+    exit on an alias that cannot run. No override is written back to
+    config.toml.
+    """
+    if nanny_brief and programmatic and not nanny_alias:
+        print(
+            "Error: --nanny-brief needs --nanny in programmatic mode (-p): "
+            "without one nothing is reviewed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    config_overrides: dict[str, Any] = {}
+    if model_alias:
+        config_overrides["active_model"] = model_alias
+    if nanny_alias:
+        config_overrides["nanny_model"] = nanny_alias
+    if nanny_brief and nanny_brief.strip():
+        config_overrides["nanny_brief"] = nanny_brief.strip()
+    config = load_config_or_exit(**config_overrides)
+    if model_alias and (error := validate_model_override(config, model_alias)):
+        print(error, file=sys.stderr)
+        sys.exit(1)
+    if nanny_alias and (reason := config.unusable_model_reason(nanny_alias)):
+        print(f"Error: --nanny: {reason}", file=sys.stderr)
+        sys.exit(1)
+    return config
 
 
 def bootstrap_config_files() -> None:
@@ -273,11 +315,14 @@ def run_cli(args: argparse.Namespace) -> None:
 
     try:
         initial_agent_name = get_initial_agent_name(args)
-        config_overrides = {"active_model": args.model} if getattr(args, "model", None) else {}
-        config = load_config_or_exit(**config_overrides)
-        if args.model and (error := validate_model_override(config, args.model)):
-            print(error, file=sys.stderr)
-            sys.exit(1)
+        model_alias = getattr(args, "model", None)
+        nanny_alias = getattr(args, "nanny", None)
+        config = load_config_with_cli_overrides(
+            model_alias,
+            nanny_alias,
+            getattr(args, "nanny_brief", None),
+            programmatic=args.prompt is not None,
+        )
 
         if args.enabled_tools:
             config.enabled_tools = args.enabled_tools
@@ -306,6 +351,7 @@ def run_cli(args: argparse.Namespace) -> None:
                     output_format=output_format,
                     session_path=loaded_session[1] if loaded_session else None,
                     agent_name=initial_agent_name,
+                    nanny_alias=nanny_alias,
                 )
                 if final_response:
                     print(final_response)
@@ -334,7 +380,8 @@ def run_cli(args: argparse.Namespace) -> None:
             agent_loop.pinned_run_state = frozenset(
                 part
                 for part, given in (
-                    ("model", bool(getattr(args, "model", None))),
+                    ("model", bool(model_alias)),
+                    ("nanny", bool(nanny_alias)),
                     ("agent", args.agent != BuiltinAgentName.DEFAULT),
                 )
                 if given

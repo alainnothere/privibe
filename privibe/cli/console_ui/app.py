@@ -194,7 +194,7 @@ class ConsoleUI(NannyListener):
             await self._pick_and_resume_session()
         elif len(self.agent_loop.messages) > 1:
             # History restored before we started (--resume <id> / --continue).
-            await self._nanny_follow_session()
+            await self._nanny_follow_session(self.agent_loop.pinned_run_state)
             await self._restore_run_state(self.agent_loop.pinned_run_state)
             self._print_transcript(_REPLAY_TAIL_ENTRIES)
 
@@ -967,13 +967,16 @@ class ConsoleUI(NannyListener):
         if ctx_msg:
             print(ctx_msg)
 
-    async def _nanny_follow_session(self) -> None:
+    async def _nanny_follow_session(
+        self, pinned: frozenset[str] = frozenset()
+    ) -> None:
         """After a session restore: the nanny recorded in the session's
         meta.json wins over the config default, then its transcript stored
-        beside the session is reloaded, when there is one.
+        beside the session is reloaded, when there is one. A nanny the
+        command line pinned (--nanny) keeps its seat.
         """
         alias = self.agent_loop.session_nanny_model
-        if alias:
+        if alias and "nanny" not in pinned:
             try:
                 if self._nanny is None:
                     await self._attach_nanny(

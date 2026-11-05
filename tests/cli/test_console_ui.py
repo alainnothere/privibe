@@ -877,3 +877,47 @@ async def test_nanny_failure_notice_is_shown(ui: ConsoleUI, capsys) -> None:
     assert response is ApprovalResponse.NO
     assert review.human_choice == "no"
     assert "[nanny] nanny did not answer" in capsys.readouterr().out
+
+
+class StubNanny:
+    def __init__(self, alias: str) -> None:
+        self.model_alias = alias
+        self.changed_to: list[str] = []
+        self.resumed: list[tuple[Path, str]] = []
+
+    async def change_model(self, alias: str) -> None:
+        self.changed_to.append(alias)
+        self.model_alias = alias
+
+    def resume(self, session_dir: Path, session_id: str) -> bool:
+        self.resumed.append((session_dir, session_id))
+        return False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pinned", "expected_switches"),
+    [(frozenset({"nanny"}), []), (frozenset(), ["saved"])],
+)
+async def test_nanny_pinned_on_the_command_line_outranks_the_one_the_session_saved(
+    ui: ConsoleUI, tmp_path: Path, pinned: frozenset[str], expected_switches: list[str]
+) -> None:
+    recorded: list[str | None] = []
+
+    async def set_session_nanny_model(alias: str | None) -> None:
+        recorded.append(alias)
+
+    loop = ui.agent_loop
+    loop.session_nanny_model = "saved"
+    loop.set_session_nanny_model = set_session_nanny_model
+    loop.session_id = "aaaaaaaa-1111"
+    loop.session_logger = SimpleNamespace(session_dir=tmp_path)
+    nanny = StubNanny("flagged")
+    ui._nanny = nanny
+
+    await ui._nanny_follow_session(pinned)
+
+    assert nanny.changed_to == expected_switches
+    assert recorded == expected_switches
+    # Either way the transcript stored beside the session is picked up.
+    assert nanny.resumed == [(tmp_path, "aaaaaaaa-1111")]

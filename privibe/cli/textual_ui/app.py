@@ -471,7 +471,7 @@ class VibeApp(App):  # noqa: PLR0904
         # _resume_history_from_messages early-exits if #messages already has
         # children, so a warning/info widget mounted first would silently drop
         # the resumed conversation when --continue / --resume <id> is used.
-        await self._nanny_follow_session()
+        await self._nanny_follow_session(self.agent_loop.pinned_run_state)
         await self._resume_history_from_messages()
         await self._show_dangerous_directory_warning()
         await self._show_clipboard_warning()
@@ -2790,14 +2790,18 @@ class VibeApp(App):  # noqa: PLR0904
             await self._mount_and_scroll(WarningMessage(ctx_msg, show_border=False))
         self._refresh_banner()
 
-    async def _nanny_follow_session(self) -> None:
+    async def _nanny_follow_session(
+        self, pinned: frozenset[str] = frozenset()
+    ) -> None:
         """After a session restore: the nanny recorded in the session's
         meta.json wins over the config default (attach or switch to it), then
         the nanny transcript stored beside the session is reloaded, when
         there is one. A session with no record keeps whatever is running.
+        A nanny the command line pinned (--nanny) keeps its seat and only
+        picks up the transcript.
         """
         alias = self.agent_loop.session_nanny_model
-        if alias:
+        if alias and "nanny" not in pinned:
             try:
                 if self._nanny is None:
                     await self._attach_nanny(
