@@ -47,6 +47,10 @@ def print_session_resume_message(
     print()
     print(format_session_usage(stats))
     print()
+    # Two lines, two promises. --resume <id> is always this session.
+    # --continue is "the most recently written session on this machine",
+    # which is this one only if nothing else wrote since. Deliberate; the
+    # full contract is in privibe/cli/cli.py, load_session.
     if plain:
         print("To continue this session, run: privibe --continue")
         print(f"Or: privibe --resume {session_id}")

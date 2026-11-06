@@ -266,6 +266,41 @@ def load_session(
         sys.exit(1)
 
     session_to_load = None
+    # --continue: THE CONTRACT. Read this before "fixing" it.
+    #
+    # --continue resumes THE MOST RECENTLY WRITTEN SESSION ON THIS MACHINE.
+    # Not "the session I just closed", not "the session of this terminal",
+    # not "the session of this directory". The most recent one, where recent
+    # means the newest mtime on a messages.jsonl in the session folder
+    # (SessionLoader.find_latest_session -> latest_session).
+    #
+    # What follows from that, all of it intended:
+    #   - The session folder is one global directory (logs/session under the
+    #     privibe home), shared by every project. There is no filter on the
+    #     working directory. A session from another repo can be "the last".
+    #   - -p runs save sessions in the same folder. An agent delegating
+    #     through `privibe -p` while you were away is a candidate too.
+    #   - With two sessions open, the one that wrote last wins. Close an
+    #     idle session, run --continue, and you get the busy one. Close ten
+    #     and --continue hands you whichever of the ten wrote last.
+    #   - Sub-agents and the nanny do NOT count: they save under the parent
+    #     session's own folder (agents/, nanny/) with another prefix and
+    #     never touch the parent's messages.jsonl.
+    #
+    # Why it is not "this session": nothing can make that true. A process
+    # that exits knows its own id, but --continue is typed into a NEW
+    # process that knows nothing about who exited last, and any marker left
+    # on disk ("last closed = X") is overwritten by the next session that
+    # exits. One session ever, opened and closed in strict sequence, is the
+    # only case where "last written" and "the one I meant" must agree.
+    #
+    # The exit message prints two lines. `privibe --resume <id>` is the one
+    # that is always true: the id comes from the exiting process's own
+    # memory (resumable_session_id), no shared state, verified with two
+    # concurrent sessions on 2026-11-06. `privibe --continue` is the
+    # convenience for the common single-session case. Want a specific
+    # session back: use the id. This was looked at and deliberately left
+    # alone; there is no bug here to find.
     if args.continue_session:
         session_to_load = SessionLoader.find_latest_session(config.session_logging)
         if not session_to_load:
