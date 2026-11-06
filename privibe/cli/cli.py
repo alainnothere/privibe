@@ -21,7 +21,11 @@ from privibe.core.config.harness_files import get_harness_files_manager
 from privibe.core.config.harness_files._paths import GLOBAL_SKILLS_DIR
 from privibe.core.logger import logger
 from privibe.core.paths import HISTORY_FILE
-from privibe.core.programmatic import run_programmatic
+from privibe.core.programmatic import (
+    CONTINUE_PROMPT,
+    ProgrammaticRunTerminated,
+    run_programmatic,
+)
 from privibe.core.session.session_loader import SessionLoader
 from privibe.core.types import EntrypointMetadata, OutputFormat
 from privibe.core.utils import ConversationLimitException
@@ -304,6 +308,111 @@ def _resume_previous_session(
     )
 
 
+def programmatic_resume_flags(args: argparse.Namespace) -> list[str]:
+    """The flags a -p run must be given again when it is resumed, because
+    the session does not bring them back: without --nanny a resumed
+    nanny-reviewed run would fall back to auto-approve.
+    """
+    flags: list[str] = []
+    if args.agent != BuiltinAgentName.DEFAULT:
+        flags += ["--agent", args.agent]
+    if nanny := getattr(args, "nanny", None):
+        flags += ["--nanny", nanny]
+    if brief := (getattr(args, "nanny_brief", None) or "").strip():
+        flags += ["--nanny-brief", brief]
+    return flags
+
+
+def _nanny_saved_with_the_session(
+    args: argparse.Namespace, config: VibeConfig, metadata: dict, agent_name: str
+) -> tuple[str | None, str]:
+    """A resumed session that was reviewed by a nanny stays reviewed: the
+    alias in its meta.json is used when --nanny was not given, and the run
+    keeps the asking agent, as with the flag. A saved nanny that cannot run
+    stops the resume; going on without it would mean auto-approve.
+    Returns (nanny alias, agent name).
+    """
+    saved = metadata.get("nanny_model")
+    if not saved:
+        return None, agent_name
+    if reason := config.unusable_model_reason(saved):
+        print(
+            f"Error: this session was reviewed by the nanny '{saved}', but "
+            f"{reason}. Pass --nanny ALIAS to resume it with another one.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if args.agent == BuiltinAgentName.DEFAULT:
+        agent_name = BuiltinAgentName.DEFAULT
+    return saved, agent_name
+
+
+def _run_programmatic_mode(
+    args: argparse.Namespace,
+    config: VibeConfig,
+    loaded_session: tuple[dict, Path] | None,
+    stdin_prompt: str | None,
+    *,
+    agent_name: str,
+    model_alias: str | None,
+    nanny_alias: str | None,
+) -> None:
+    """-p: run one prompt and exit. Never returns."""
+    config.disabled_tools = [*config.disabled_tools, "ask_user_question"]
+    if not nanny_alias and loaded_session:
+        nanny_alias, agent_name = _nanny_saved_with_the_session(
+            args, config, loaded_session[0], agent_name
+        )
+    # `-p --resume ID "text"` parses "text" as the positional prompt; a
+    # resumed session with no prompt at all is told to continue.
+    prompt = (
+        args.prompt
+        or getattr(args, "initial_prompt", None)
+        or stdin_prompt
+        or (CONTINUE_PROMPT if loaded_session else None)
+    )
+    if not prompt:
+        print("Error: No prompt provided for programmatic mode", file=sys.stderr)
+        sys.exit(1)
+    output_format = OutputFormat(args.output if hasattr(args, "output") else "text")
+
+    try:
+        final_response = run_programmatic(
+            config=config,
+            prompt=prompt,
+            max_turns=args.max_turns,
+            max_price=args.max_price,
+            output_format=output_format,
+            session_path=loaded_session[1] if loaded_session else None,
+            agent_name=agent_name,
+            nanny_alias=nanny_alias,
+            resume_flags=programmatic_resume_flags(args),
+            pinned=frozenset(
+                part
+                for part, given in (
+                    ("model", bool(model_alias)),
+                    ("agent", args.agent != BuiltinAgentName.DEFAULT),
+                )
+                if given
+            ),
+        )
+    except ConversationLimitException as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ProgrammaticRunTerminated as e:
+        sys.exit(e.exit_code)
+    except KeyboardInterrupt:
+        # 130, not the interactive "Bye!" and 0: a script must be able to
+        # tell an interrupted run from a finished one.
+        sys.exit(130)
+    if final_response:
+        print(final_response)
+    sys.exit(0)
+
+
 def run_cli(args: argparse.Namespace) -> None:
     load_dotenv_values()
     bootstrap_config_files()
@@ -331,37 +440,15 @@ def run_cli(args: argparse.Namespace) -> None:
 
         stdin_prompt = get_prompt_from_stdin()
         if args.prompt is not None:
-            config.disabled_tools = [*config.disabled_tools, "ask_user_question"]
-            programmatic_prompt = args.prompt or stdin_prompt
-            if not programmatic_prompt:
-                print(
-                    "Error: No prompt provided for programmatic mode", file=sys.stderr
-                )
-                sys.exit(1)
-            output_format = OutputFormat(
-                args.output if hasattr(args, "output") else "text"
+            _run_programmatic_mode(
+                args,
+                config,
+                loaded_session,
+                stdin_prompt,
+                agent_name=initial_agent_name,
+                model_alias=model_alias,
+                nanny_alias=nanny_alias,
             )
-
-            try:
-                final_response = run_programmatic(
-                    config=config,
-                    prompt=programmatic_prompt or "",
-                    max_turns=args.max_turns,
-                    max_price=args.max_price,
-                    output_format=output_format,
-                    session_path=loaded_session[1] if loaded_session else None,
-                    agent_name=initial_agent_name,
-                    nanny_alias=nanny_alias,
-                )
-                if final_response:
-                    print(final_response)
-                sys.exit(0)
-            except ConversationLimitException as e:
-                print(e, file=sys.stderr)
-                sys.exit(1)
-            except RuntimeError as e:
-                print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
         else:
             agent_loop = AgentLoop(
                 config,

@@ -93,7 +93,8 @@ def parse_arguments() -> argparse.Namespace:
         "On --continue / --resume it wins over the nanny the session had "
         "saved. With -p the run uses the default agent instead of "
         "auto-approve and the nanny is the only approver: what it does not "
-        "approve is refused. The override is not persisted.",
+        "approve is refused; a -p session resumed without the flag keeps "
+        "the nanny it was saved with. The override is not persisted.",
     )
     parser.add_argument(
         "--nanny-brief",
