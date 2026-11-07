@@ -96,6 +96,12 @@ For the most part... exactly the same, clone the source and uv run privibe... I 
   system prompt instead of regenerating it (which would invalidate the cache).
 - Context-size auto-detection with a `/detect-context-size` toggle (re-runs on
   model swap), and an opt-in model warmup.
+- A resumed session knows how full it is before you type: the context bar
+  shows the saved count, and `privibe --context --resume <id>` prints
+  `Context: 426,952 of 687,104 tokens (62%)` and exits without sending
+  anything to the model (exit 2 when it no longer fits). A conversation past
+  the server's context size is refused up front with "rewind it" instead of
+  being sent to a server that will 400 it, turn after turn.
 - Per-message reasoning effort: `/effort` cycles off/low/medium/xhigh for new
   messages without invalidating the KV cache. Needs the companion
   [llama-server build](https://github.com/alainnothere/llama.cpp/tree/disk-cache-eviction);

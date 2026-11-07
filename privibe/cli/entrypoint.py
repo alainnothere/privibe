@@ -18,7 +18,27 @@ from privibe.setup.trusted_folders.trust_folder_dialog import (
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Privibe interactive CLI")
+    parser = argparse.ArgumentParser(
+        description="Run the Privibe interactive CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+examples:
+  privibe                              start a new conversation (TUI)
+  privibe --resume                     pick a saved session to resume
+  privibe --resume 9d98cb2c            resume that session (id as printed on exit)
+  privibe --continue                   resume the most recently written session
+  privibe --context --resume 9d98cb2c  how full is that session; nothing is sent
+      Session 9d98cb2c "big one" on local
+      Context: 426,952 of 687,104 tokens (62%), as of 2026-11-07 11:27
+    exit 0 fits, 2 does not fit (rewind it or raise the server's context
+    size; compaction cannot summarize what the server cannot read), 1 no
+    such session. The ceiling is asked of the server (/props, /v1/models)
+    when the backend is generic; otherwise the configured threshold is
+    used and the line says "(from config)".
+  privibe -p "fix the tests"           one prompt, print the answer, exit
+  privibe --resume 9d98cb2c -p "go on" continue a session non-interactively
+""",
+    )
     parser.add_argument(
         "-v", "--version", action="version", version=f"%(prog)s {__version__}"
     )
