@@ -66,6 +66,7 @@ from privibe.core.rewind import RewindManager
 from privibe.core.rewind.diffing import build_file_diff
 from privibe.core.rewind.manager import FileSnapshot
 from privibe.core.rewind.undo_stack import FileUndoStack
+from privibe.core.session.session_loader import SessionLoader
 from privibe.core.session.session_logger import SessionLogger
 from privibe.core.session.session_migration import migrate_sessions_entrypoint
 from privibe.core.skills.manager import SkillManager
@@ -325,6 +326,12 @@ class AgentLoop:
         # written to config). Stored with the alias it was detected for so a
         # stale name is never shown next to a different active model.
         self._detected_model_name: str | None = None
+        # Context window the server reported, per model alias, from the same
+        # probe that sets auto_compact_threshold. The threshold is where
+        # compaction starts; this is where the server stops reading. A
+        # conversation at or past it cannot be compacted (the summary
+        # request sends the same conversation to the same server).
+        self._detected_context_sizes: dict[str, int] = {}
         self._detected_model_alias: str | None = None
         # Last server-reported model id seen on a response; a change means the
         # model behind a static endpoint was swapped (kill+reload), triggering a
@@ -834,9 +841,33 @@ class AgentLoop:
                 if model.alias == active_model.alias:
                     model.auto_compact_threshold = ctx_size
                     break
+        self._detected_context_sizes[alias] = ctx_size
         _context_size_resolved_for = alias
         _context_size_attempts.pop(alias, None)
         return None
+
+    def detected_context_size(self) -> int | None:
+        """The context window the server reported for the active model, or
+        None when nothing was detected (auto-detect off, non-generic backend,
+        probe failed). The configured auto_compact_threshold is not this: it
+        is where compaction starts, which may be well below the ceiling.
+        """
+        return self._detected_context_sizes.get(self.config.get_active_model().alias)
+
+    def context_overflow_message(self) -> str | None:
+        """Why the conversation cannot be sent, or None when it fits (or the
+        ceiling is unknown). Checked before compaction: a conversation the
+        server cannot read cannot be summarized by it either.
+        """
+        ceiling = self.detected_context_size()
+        if ceiling is None or self.stats.context_tokens < ceiling:
+            return None
+        return (
+            f"This conversation does not fit the model's context: "
+            f"{self.stats.context_tokens:,} tokens, context size {ceiling:,}. "
+            "Compaction cannot summarize what the server cannot read. "
+            "Rewind it (/rewind) or start the server with a larger context."
+        )
 
     def _record_context_failure(self, active_model: ModelConfig, detail: str) -> str:
         """Count a failed detection attempt and build the user-facing message.
@@ -1130,6 +1161,13 @@ class AgentLoop:
                     self._tools_suspended_for_step = True
 
             case MiddlewareAction.COMPACT:
+                if overflow := self.context_overflow_message():
+                    result.action = MiddlewareAction.STOP
+                    yield AssistantEvent(
+                        content=f"<{VIBE_STOP_EVENT_TAG}>{overflow}</{VIBE_STOP_EVENT_TAG}>",
+                        stopped_by_middleware=True,
+                    )
+                    return
                 old_tokens = result.metadata.get(
                     "old_tokens", self.stats.context_tokens
                 )
@@ -2452,6 +2490,33 @@ class AgentLoop:
         await self.session_logger.persist_run_state(
             self._base_config.active_model, self.agent_profile.name
         )
+
+    def adopt_saved_session(self, session_id: str, session_path: Path) -> None:
+        """Continue the session at `session_path`: same id, same directory,
+        its messages, and the stats its last save wrote (so the context bar
+        and auto-compact see the real size before anything is sent, not
+        zero). Every resume path goes through here.
+        """
+        self.session_id = session_id
+        self.session_logger.resume_existing_session(session_id, session_path)
+        self.messages.restore(session_path)
+        self.restore_saved_stats()
+
+    def restore_saved_stats(self) -> int | None:
+        """Bring back the stats meta.json saved for the session the logger
+        is on. Returns the restored context_tokens, or None when the session
+        never saved any. A freshly resumed loop otherwise reports zero
+        context, which lets a full conversation be sent to a server that
+        will refuse it, turn after turn.
+        """
+        session_dir = self.session_logger.session_dir
+        if not self.session_logger.enabled or session_dir is None:
+            return None
+        saved = SessionLoader.load_saved_stats(session_dir)
+        if saved is None:
+            return None
+        self.stats.restore_saved(saved)
+        return self.stats.context_tokens
 
     async def restore_run_state(
         self, pinned: frozenset[str] = frozenset()

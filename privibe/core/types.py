@@ -4,7 +4,7 @@ from abc import ABC
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from enum import StrEnum, auto
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -61,6 +61,33 @@ class AgentStats(BaseModel):
         self, attr_name: str, listener: Callable[[AgentStats], None]
     ) -> None:
         self._listeners[attr_name] = listener
+
+    # What a resume brings back from the stats block meta.json saved. The
+    # speeds and last-turn numbers are left at zero: they describe a turn
+    # this process never ran. Pricing stays whatever the current model says.
+    RESTORED_FIELDS: ClassVar[tuple[str, ...]] = (
+        "steps",
+        "session_prompt_tokens",
+        "session_completion_tokens",
+        "tool_calls_agreed",
+        "tool_calls_rejected",
+        "tool_calls_failed",
+        "tool_calls_succeeded",
+    )
+
+    def restore_saved(self, saved: dict[str, Any]) -> None:
+        """Bring back the numbers a saved session had, context_tokens last so
+        the context-bar listener fires once with everything else in place.
+        Unknown or malformed entries are ignored; a session saved before a
+        field existed restores what it has.
+        """
+        for field in self.RESTORED_FIELDS:
+            value = saved.get(field)
+            if isinstance(value, int) and not isinstance(value, bool):
+                setattr(self, field, value)
+        context_tokens = saved.get("context_tokens")
+        if isinstance(context_tokens, int) and not isinstance(context_tokens, bool):
+            self.context_tokens = context_tokens
 
     @staticmethod
     def create_fresh(previous: AgentStats) -> AgentStats:

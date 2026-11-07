@@ -111,6 +111,15 @@ def parse_arguments() -> argparse.Namespace:
         help="List all available tools with their descriptions and exit.",
     )
     parser.add_argument(
+        "--context",
+        action="store_true",
+        help=(
+            "With --continue or --resume SESSION_ID: print how much of the "
+            "model's context that session uses (from its last save, nothing is "
+            "sent to the model) and exit."
+        ),
+    )
+    parser.add_argument(
         "--console",
         action="store_true",
         help="Use plain console mode instead of the TUI (no colors, no formatting).",

@@ -345,6 +345,21 @@ class SessionLoader:
             ) from e
 
     @staticmethod
+    def load_saved_stats(session_dir: Path) -> dict[str, Any] | None:
+        """The stats block the last save wrote to meta.json (context_tokens,
+        session totals, ...), or None when there is no meta.json, no stats
+        in it, or it cannot be read. Never raises: the stats are a display
+        convenience, a resume must not fail over them.
+        """
+        metadata_path = session_dir / METADATA_FILENAME
+        try:
+            metadata = json.loads(read_safe(metadata_path))
+        except Exception:
+            return None
+        stats = metadata.get("stats") if isinstance(metadata, dict) else None
+        return stats if isinstance(stats, dict) else None
+
+    @staticmethod
     def load_base(session_dir: Path) -> dict[str, Any] | None:
         """The frozen session base (system prompt + tools), or None when the
         session predates base.json. Corruption raises: silently falling back

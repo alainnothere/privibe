@@ -280,8 +280,12 @@ def run_programmatic(  # noqa: PLR0913
     async def _load_history() -> None:
         if session_path is not None:
             agent_loop.messages.restore(session_path)
+            if resumed:
+                agent_loop.restore_saved_stats()
             logger.info(
-                "Loaded %d messages from previous session", len(agent_loop.messages)
+                "Loaded %d messages from previous session (%d context tokens)",
+                len(agent_loop.messages),
+                agent_loop.stats.context_tokens,
             )
             if resumed:
                 # The session goes on as it was: its saved model and agent

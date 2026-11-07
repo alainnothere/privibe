@@ -1314,14 +1314,13 @@ class ConsoleUI(NannyListener):
 
         # Same steps as cli._resume_previous_session.
         session_id = cast(str, metadata.get("session_id", self.agent_loop.session_id))
-        self.agent_loop.session_id = session_id
-        self.agent_loop.session_logger.resume_existing_session(session_id, session_path)
-        self.agent_loop.messages.restore(session_path)
+        self.agent_loop.adopt_saved_session(session_id, session_path)
         await self._nanny_follow_session()
         await self._restore_run_state()
         print(
             f"Resumed session {session_id} "
-            f"with {len(self.agent_loop.messages)} messages."
+            f"with {len(self.agent_loop.messages)} messages, "
+            f"{self.agent_loop.stats.context_tokens:,} context tokens."
         )
         self._print_transcript(_REPLAY_TAIL_ENTRIES)
 

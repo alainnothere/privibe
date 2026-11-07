@@ -1335,11 +1335,7 @@ class VibeApp(App):  # noqa: PLR0904
         if self._chat_input_container:
             self._chat_input_container.set_custom_border(None)
 
-        self.agent_loop.session_id = session.session_id
-        self.agent_loop.session_logger.resume_existing_session(
-            session.session_id, session_path
-        )
-        self.agent_loop.messages.restore(session_path)
+        self.agent_loop.adopt_saved_session(session.session_id, session_path)
         await self._nanny_follow_session()
         await self._restore_run_state()
         self._refresh_profile_widgets()

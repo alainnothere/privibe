@@ -334,12 +334,13 @@ def _resume_previous_session(
     agent_loop: AgentLoop, metadata: dict, session_path: Path
 ) -> None:
     session_id = metadata.get("session_id", agent_loop.session_id)
-    agent_loop.session_id = session_id
-    agent_loop.session_logger.resume_existing_session(session_id, session_path)
-    agent_loop.messages.restore(session_path)
+    agent_loop.adopt_saved_session(session_id, session_path)
 
     logger.info(
-        "Resumed session %s with %d messages", session_id, len(agent_loop.messages)
+        "Resumed session %s with %d messages, %d context tokens",
+        session_id,
+        len(agent_loop.messages),
+        agent_loop.stats.context_tokens,
     )
 
 
@@ -472,6 +473,11 @@ def run_cli(args: argparse.Namespace) -> None:
             config.enabled_tools = args.enabled_tools
 
         loaded_session = load_session(args, config)
+
+        if getattr(args, "context", False):
+            from privibe.cli.context_report import run_context_query
+
+            sys.exit(run_context_query(config, loaded_session))
 
         stdin_prompt = get_prompt_from_stdin()
         if args.prompt is not None:

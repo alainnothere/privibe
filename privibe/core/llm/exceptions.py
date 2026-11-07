@@ -63,6 +63,15 @@ class BackendError(RuntimeError):
         if self.status == HTTPStatus.TOO_MANY_REQUESTS:
             return "Rate limit exceeded. Please wait a moment before trying again."
 
+        if self.status == HTTPStatus.BAD_REQUEST and self.mentions_context_size():
+            return (
+                "The conversation does not fit the model's context window "
+                "(the server refused the prompt as too large). Compaction cannot "
+                "summarize what the server cannot read: rewind it (/rewind) or "
+                "start the server with a larger context.\n"
+                f"  provider_message: {self.parsed_error or self._excerpt(self.body_text)}"
+            )
+
         rid = self.headers.get("x-request-id") or self.headers.get("request-id")
         if self.status:
             try:
@@ -83,6 +92,17 @@ class BackendError(RuntimeError):
             f"  payload_summary: {self.payload_summary.model_dump_json(exclude_none=True)}",
         ]
         return "\n".join(parts)
+
+    _CONTEXT_SIZE_MARKERS = (
+        "exceeds the available context size",  # llama.cpp
+        "context size",
+        "context length",  # vLLM / OpenAI: "maximum context length is"
+        "context window",
+    )
+
+    def mentions_context_size(self) -> bool:
+        text = f"{self.parsed_error or ''} {self.body_text}".lower()
+        return any(marker in text for marker in self._CONTEXT_SIZE_MARKERS)
 
     @staticmethod
     def _excerpt(s: str, *, n: int = 400) -> str:
