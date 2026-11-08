@@ -80,12 +80,17 @@ class Tracer:
         self._ids = count(1)
         self._section_id: str | None = None
         self._section_label = ""
+        self._section_tag = ""
         self._section_started = 0.0
         self._section_calls = 0
 
     @property
     def section_label(self) -> str:
         return self._section_label
+
+    @property
+    def section_tag(self) -> str:
+        return self._section_tag
 
     def _row(
         self, message: str, entry_id: str | None = None, resume_hint: str | None = None
@@ -107,9 +112,13 @@ class Tracer:
         """
         return [self._row(text, resume_hint=resume_hint)]
 
-    def start_section(self, label: str) -> list[BaseEvent]:
+    def start_section(self, label: str, *, tag: str = "") -> list[BaseEvent]:
+        """Open a section: `label` is the header row's text, `tag` the short
+        form every call made in it carries ("worker 2/10 · task 3").
+        """
         self._section_id = self._new_id()
         self._section_label = label
+        self._section_tag = tag
         self._section_started = time.time()
         self._section_calls = 0
         return [self._row(section_line(label), self._section_id)]
@@ -123,11 +132,14 @@ class Tracer:
         if isinstance(event, (ToolCallEvent, ToolResultEvent)):
             if isinstance(event, ToolCallEvent):
                 self._section_calls += 1
+            # A grandchild keeps the tag of the section closest to it.
+            section = event.section or (self._section_tag or None)
             return [
                 event.model_copy(
                     update={
                         "parent_call_id": self.tool_call_id,
                         "depth": self.depth + event.depth,
+                        "section": section,
                     }
                 )
             ]

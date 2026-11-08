@@ -361,7 +361,11 @@ class ConsoleUI(NannyListener):
                 self._close_block()
                 summary = self._call_summary(event)
                 indent = "  " * event.depth
-                print(f"{indent}[tool] {event.tool_name}: {summary}", flush=True)
+                print(
+                    f"{indent}[tool] {_section_prefix(event)}{event.tool_name}: "
+                    f"{summary}",
+                    flush=True,
+                )
 
             case ToolStreamEvent():
                 self._close_block()
@@ -418,13 +422,14 @@ class ConsoleUI(NannyListener):
         return "running"
 
     def _result_line(self, event: ToolResultEvent) -> str:
+        lead = f"[tool] {_section_prefix(event)}"
         if event.error:
-            return f"[tool] {event.tool_name}: ERROR: {event.error}"
+            return f"{lead}{event.tool_name}: ERROR: {event.error}"
         if event.cancelled:
-            return f"[tool] {event.tool_name}: cancelled"
+            return f"{lead}{event.tool_name}: cancelled"
         if event.skipped:
             reason = f" ({event.skip_reason})" if event.skip_reason else ""
-            return f"[tool] {event.tool_name}: skipped{reason}"
+            return f"{lead}{event.tool_name}: skipped{reason}"
 
         message = f"{event.tool_name} done"
         if event.tool_class is not None:
@@ -433,7 +438,7 @@ class ConsoleUI(NannyListener):
                 message = adapter.get_result_display(event).message
             except Exception:
                 pass
-        return f"[tool] {message}"
+        return f"{lead}{message}"
 
     def _print_result_body(self, event: ToolResultEvent) -> None:
         """Print the tool result content below the status line.
@@ -1349,3 +1354,8 @@ def run_console_ui(
     print_session_resume_message(
         resumable_session_id(agent_loop.session_logger), agent_loop.stats, plain=True
     )
+
+
+def _section_prefix(event: ToolCallEvent | ToolResultEvent) -> str:
+    """The tag a sub-agent's row carries before its tool name, or ""."""
+    return f"{event.section} · " if event.section else ""

@@ -110,6 +110,8 @@ class Progress:
     message: str
     # A role call is starting: the tool opens a section in its trace.
     section: bool = False
+    # The section's short name, stamped on every tool call made in it.
+    tag: str = ""
     # A checkpoint was just saved: what a rewind to this row should ask for.
     resume_hint: str = ""
 
@@ -381,7 +383,7 @@ async def run_orchestration(
 
     # 1. plan
     if phase_done < _PHASE_ORDER[PHASE_PLANNED]:
-        yield Progress("manager · plan", section=True)
+        yield Progress("manager · plan", section=True, tag="plan")
         plan_answer = await run.plan()
         ledger.write_plan(plan_answer.plan)
         run.tasks = plan_answer.tasks
@@ -391,7 +393,7 @@ async def run_orchestration(
 
     # 2. brainstorm
     if phase_done < _PHASE_ORDER[PHASE_BRAINSTORMED]:
-        yield Progress("brainstorm", section=True)
+        yield Progress("brainstorm", section=True, tag="brainstorm")
         notes = await run.ask(
             Role.BRAINSTORM, config.effort_brainstorm, answer_only=True
         )
@@ -436,7 +438,8 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
     while run.rounds < run.max_rounds:
         run.rounds += 1
         tag = f"round {run.rounds}/{run.max_rounds}"
-        yield Progress(f"manager · {tag}", section=True)
+        short = f"{run.rounds}/{run.max_rounds}"
+        yield Progress(f"manager · {tag}", section=True, tag=f"manager {short}")
         decision = await run.manage() or _fallback_decision(run)
         if decision is None:
             async for event in _finalize(
@@ -468,7 +471,11 @@ async def _rounds(run: _Run) -> AsyncGenerator[Progress | Outcome, None]:
         run.done_keys.add(run.last_task_key)
         ledger.write_inflight(round_no=run.rounds, task_id=task.id, text=task.text)
 
-        yield Progress(f"worker · {tag} · task {task.id}: {task.text}", section=True)
+        yield Progress(
+            f"worker · {tag} · task {task.id}: {task.text}",
+            section=True,
+            tag=f"worker {short} · task {task.id}",
+        )
         report = await run.ask(
             Role.EXECUTE, config.effort_execute, answer_only=False, task=task.render()
         )
@@ -609,7 +616,7 @@ async def _finalize(
         yield run.outcome(OutcomeStatus.DONE, f"verifier passes: {reason}")
         return
     run.ledger.log(f"finalizer: {reason}")
-    yield Progress("finalizer", section=True)
+    yield Progress("finalizer", section=True, tag="finalizer")
     report = await run.ask(
         Role.FINALIZE,
         run.config.effort_finalize,

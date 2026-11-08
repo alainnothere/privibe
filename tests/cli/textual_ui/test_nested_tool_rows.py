@@ -84,7 +84,14 @@ def _parent_result() -> ToolResultEvent:
     )
 
 
-def _bash(call_id: str, command: str, *, parent: str, depth: int = 1):
+def _bash(
+    call_id: str,
+    command: str,
+    *,
+    parent: str,
+    depth: int = 1,
+    section: str | None = None,
+):
     call = ToolCallEvent(
         tool_call_id=call_id,
         tool_name="bash",
@@ -92,6 +99,7 @@ def _bash(call_id: str, command: str, *, parent: str, depth: int = 1):
         args=BashArgs(command=command),
         parent_call_id=parent,
         depth=depth,
+        section=section,
     )
     result = ToolResultEvent(
         tool_call_id=call_id,
@@ -100,6 +108,7 @@ def _bash(call_id: str, command: str, *, parent: str, depth: int = 1):
         result=BashResult(command=command, stdout="", stderr="", returncode=0),
         parent_call_id=parent,
         depth=depth,
+        section=section,
     )
     return call, result
 
@@ -157,6 +166,38 @@ async def test_live_children_land_under_the_parent_in_order_and_indented() -> No
         # Registry is clean once the parent finished.
         assert handler.tool_calls == {} and handler.last_child == {}
         assert handler.trace_rows == {}
+
+
+@pytest.mark.asyncio
+async def test_a_nested_row_names_its_section_before_the_tool_live_and_done() -> None:
+    app = _Host()
+    async with app.run_test() as pilot:
+        handler = EventHandler(app.mount_message, lambda: True)
+        await handler.handle_event(_parent_call())
+        call, result = _bash(
+            "call-1", "ls", parent="orch-1", section="worker 2/10 · task 3"
+        )
+        await handler.handle_event(call)
+        await pilot.pause()
+        row = _rows(app)[1]
+        assert isinstance(row, ToolCallMessage)
+        assert row.get_content() == "worker 2/10 · task 3 · bash $ ls"
+        await handler.handle_event(result)
+        await pilot.pause()
+        # The finished line keeps the tag; bash keeps its command as its result.
+        assert row._text_widget is not None
+        assert str(row._text_widget.render()) == "worker 2/10 · task 3 · bash $ ls"
+        # A top-level call has no tag and reads as it always did.
+        top = ToolCallMessage(
+            ToolCallEvent(
+                tool_call_id="t",
+                tool_name="bash",
+                tool_class=Bash,
+                args=BashArgs(command="pwd"),
+            )
+        )
+        assert top.get_content() == "bash $ pwd"
+        await handler.handle_event(_parent_result())
 
 
 @pytest.mark.asyncio
@@ -260,8 +301,14 @@ def test_subagent_children_from_task_and_orchestrate_results(tmp_path: Path) -> 
         )
         == []
     )
-    task = TaskResult(response="r", turns_used=1, completed=True, session_dir="/s/one")
-    assert subagent_children("task", task) == [("", Path("/s/one"))]
+    task = TaskResult(
+        agent="explore",
+        response="r",
+        turns_used=1,
+        completed=True,
+        session_dir="/s/one",
+    )
+    assert subagent_children("task", task) == [("", "explore", Path("/s/one"))]
     assert (
         subagent_children(
             "task", TaskResult(response="r", turns_used=1, completed=True)
@@ -272,14 +319,15 @@ def test_subagent_children_from_task_and_orchestrate_results(tmp_path: Path) -> 
     ledger.mkdir()
     (ledger / "calls.json").write_text(
         json.dumps([
-            {"label": "manager · plan", "session_dir": "/s/p"},
+            {"label": "manager · plan", "session_dir": "/s/p", "tag": "plan"},
+            # A ledger from before tags: the row tag is simply empty.
             {"label": "worker · round 1/2 · task 1: x", "session_dir": ""},
         ])
     )
     orch = OrchestrateResult(status="done", ledger_dir=str(ledger))
     assert subagent_children("orchestrate", orch) == [
-        ("manager · plan", Path("/s/p")),
-        ("worker · round 1/2 · task 1: x", Path("")),
+        ("manager · plan", "plan", Path("/s/p")),
+        ("worker · round 1/2 · task 1: x", "", Path("")),
     ]
     assert (
         subagent_children(
@@ -347,7 +395,11 @@ def test_resume_rebuilds_orchestrate_role_calls_with_headers(tmp_path: Path) -> 
     (ledger / "calls.json").write_text(
         json.dumps([
             {"label": "manager · plan", "session_dir": str(tmp_path / "gone")},
-            {"label": "worker · round 1/1 · task 1: x", "session_dir": str(worker_dir)},
+            {
+                "label": "worker · round 1/1 · task 1: x",
+                "session_dir": str(worker_dir),
+                "tag": "worker 1/1 · task 1",
+            },
         ])
     )
     history = [
@@ -384,6 +436,9 @@ def test_resume_rebuilds_orchestrate_role_calls_with_headers(tmp_path: Path) -> 
     assert widgets[2].text.startswith("── worker · round 1/1 · task 1: x ──")
     assert all(w.has_class("depth-1") for w in widgets[1:5])
     assert not widgets[5].has_class("depth-1")
+    # The worker's rows say which role call made them, like the live ones.
+    assert isinstance(widgets[3], ToolCallMessage)
+    assert widgets[3].get_content().startswith("worker 1/1 · task 1 · bash")
 
 
 def test_without_a_loader_resume_is_what_it_was(tmp_path: Path) -> None:

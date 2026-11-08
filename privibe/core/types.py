@@ -613,6 +613,10 @@ class ToolCallEvent(BaseEvent):
     # them as rows indented under the parent call.
     parent_call_id: str | None = None
     depth: int = 0
+    # Which part of the parent's run made this call ("worker 2/10 · task 3",
+    # "explore"): a display tag the UIs put before the tool name on nested
+    # rows. Never content; the model does not see it.
+    section: str | None = None
     # Wall-clock time.time() when the LLM request that produced this call was
     # sent. Display only; not persisted, so resumed history has none.
     requested_at: float | None = None
@@ -631,6 +635,7 @@ class ToolResultEvent(BaseEvent):
     file_diff: FileDiff | None = None
     parent_call_id: str | None = None
     depth: int = 0
+    section: str | None = None
     # The two MessageMeta the finished line derives its times from: the
     # assistant message that made the call and the tool response message.
     # The request's prefill/decode belong to the first call of a batch only

@@ -305,7 +305,7 @@ class Orchestrate(
             ):
                 if isinstance(event, Progress):
                     if event.section:
-                        entries = tracer.start_section(event.message)
+                        entries = tracer.start_section(event.message, tag=event.tag)
                     elif event.resume_hint:
                         entries = tracer.line(
                             event.message, resume_hint=event.resume_hint
@@ -424,7 +424,9 @@ class Orchestrate(
         loop.set_reasoning_effort(effort)
         # The ledger keeps which worker session played which role call, so a
         # resumed conversation can draw the run's rows again.
-        ledger.record_call(tracer.section_label, subagent_session_dir(loop))
+        ledger.record_call(
+            tracer.section_label, subagent_session_dir(loop), tag=tracer.section_tag
+        )
 
         async for event in loop.act(message, answer_only=answer_only):
             for entry in tracer.on_event(event):

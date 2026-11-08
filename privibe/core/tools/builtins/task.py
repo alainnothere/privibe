@@ -170,7 +170,9 @@ class Task(
         completed = True
         tracer = Tracer(self.get_name(), ctx.tool_call_id)
         session_dir = subagent_session_dir(subagent_loop)
-        for entry in tracer.start_section(f"{args.agent} · {args.task.strip()}"):
+        for entry in tracer.start_section(
+            f"{args.agent} · {args.task.strip()}", tag=args.agent
+        ):
             yield entry
         try:
             async for event in subagent_loop.act(args.task):

@@ -89,6 +89,25 @@ class TestPassThrough:
         assert out_call.tool_call_id == "b1" and out_call.args is call.args
         assert out_result.result is result.result
 
+    def test_calls_and_results_carry_the_sections_tag(self) -> None:
+        tracer = _tracer()
+        tracer.start_section(
+            "worker · round 2/10 · task 3: x", tag="worker 2/10 · task 3"
+        )
+        call, result = _bash_events("ls", "")
+        [out_call] = tracer.on_event(call)
+        [out_result] = tracer.on_event(result)
+        assert out_call.section == "worker 2/10 · task 3"
+        assert out_result.section == "worker 2/10 · task 3"
+        # A grandchild already tagged by the section closest to it keeps that.
+        [inner] = tracer.on_event(call.model_copy(update={"section": "explore"}))
+        assert inner.section == "explore"
+        # No tag given: nothing is stamped.
+        plain = Tracer("task", "t-1")
+        plain.start_section("explore · look")
+        [untagged] = plain.on_event(call)
+        assert untagged.section is None
+
     def test_a_grandchild_keeps_its_own_depth_on_top(self) -> None:
         tracer = _tracer(depth=1)
         call, _ = _bash_events("ls", "")

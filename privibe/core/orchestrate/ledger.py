@@ -346,12 +346,13 @@ class Ledger:  # noqa: PLR0904  every write of the run goes through here
     def read_steer(self) -> str:
         return self._read(self.steer_path)
 
-    def record_call(self, label: str, session_dir: str) -> None:
-        """Append one role call: its section label and the worker session
-        that played it ("" when the worker logged nowhere).
+    def record_call(self, label: str, session_dir: str, *, tag: str = "") -> None:
+        """Append one role call: its section label, the worker session that
+        played it ("" when the worker logged nowhere) and the short tag its
+        rows carry.
         """
         calls = self.read_calls()
-        calls.append({"label": label, "session_dir": session_dir})
+        calls.append({"label": label, "session_dir": session_dir, "tag": tag})
         write_atomic(self.calls_path, _dumps(calls))
 
     def read_calls(self) -> list[dict[str, str]]:
@@ -362,6 +363,7 @@ class Ledger:  # noqa: PLR0904  every write of the run goes through here
             {
                 "label": str(c.get("label", "")),
                 "session_dir": str(c.get("session_dir", "")),
+                "tag": str(c.get("tag", "")),
             }
             for c in raw
         ]

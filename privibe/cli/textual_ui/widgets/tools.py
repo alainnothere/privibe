@@ -77,18 +77,24 @@ class ToolCallMessage(StatusMessage):
         history: bool = False,
         collapsed: bool = True,
         depth: int | None = None,
+        section: str | None = None,
     ) -> None:
         """A tool call line. Live: built from the event as it streams in.
         History (resume / load-more): built from the stored message, with an
         event when the tool is known and without one otherwise; never spins.
         `collapsed` is the fold-out body's initial state (ctrl+o's global one).
-        `depth` indents a call a sub-agent made (default: the event's own).
+        `depth` indents a call a sub-agent made (default: the event's own);
+        `section` is the tag such a call shows before its tool name
+        ("worker 2/10 · task 3"), default the event's own.
         """
         if event is None and tool_name is None:
             raise ValueError("Either event or tool_name must be provided")
 
         self._event = event
         self.depth = depth if depth is not None else (event.depth if event else 0)
+        self.section = (
+            section if section is not None else (event.section if event else None)
+        )
         self._tool_name = tool_name or (event.tool_name if event else None) or "unknown"
         self._is_history = history or event is None
         self._stream_widget: NoMarkupStatic | None = None
@@ -219,8 +225,17 @@ class ToolCallMessage(StatusMessage):
         if self._event:
             adapter = ToolUIDataAdapter(self._event.tool_class)
             display = adapter.get_call_display(self._event)
-            return display.summary
-        return self._tool_name
+            return self.with_section(display.summary)
+        return self.with_section(self._tool_name)
+
+    def with_section(self, text: str) -> str:
+        """`text` with the section tag before its first line, when the call
+        has one: "worker 2/10 · task 3 · bash $ ls".
+        """
+        if not self.section:
+            return text
+        first, newline, rest = text.partition("\n")
+        return f"{self.section} · {first}{newline}{rest}"
 
     def update_event(self, event: ToolCallEvent) -> None:
         self._event = event
@@ -272,7 +287,7 @@ class ToolCallMessage(StatusMessage):
 
     def set_result_text(self, text: str) -> None:
         if self._text_widget:
-            self._text_widget.update(text)
+            self._text_widget.update(self.with_section(text))
 
     def finished_text(self, result_text: str) -> str:
         """`result_text` plus whatever the tool keeps from its own call (see

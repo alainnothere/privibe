@@ -951,10 +951,12 @@ def _nested_row_text(event: ToolCallEvent | ToolResultEvent | TraceLineEvent) ->
     if isinstance(event, TraceLineEvent):
         return "\n".join(indent + line for line in event.message.splitlines())
     adapter = ToolUIDataAdapter(event.tool_class) if event.tool_class else None
+    tag = f"{event.section} · " if event.section else ""
     if isinstance(event, ToolCallEvent):
         text = adapter.get_call_display(event).summary if adapter else event.tool_name
-        return indent + "⋯ " + text
+        return indent + "⋯ " + tag + text
     if adapter is not None:
         display = adapter.get_result_display(event)
-        return indent + ("✓ " if display.success else "✕ ") + display.message
-    return indent + ("✕ " if event.error or event.skipped else "✓ ") + event.tool_name
+        return indent + ("✓ " if display.success else "✕ ") + tag + display.message
+    mark = "✕ " if event.error or event.skipped else "✓ "
+    return indent + mark + tag + event.tool_name

@@ -40,17 +40,20 @@ _CALLS_FILENAME = "calls.json"
 
 def subagent_children(
     tool_name: str, result: BaseModel | None
-) -> list[tuple[str, Path]]:
-    """(section label, session dir) for every sub-agent run a stored result
-    points at: the task tool's one session, or each role call of an
+) -> list[tuple[str, str, Path]]:
+    """(section label, row tag, session dir) for every sub-agent run a stored
+    result points at: the task tool's one session, or each role call of an
     orchestrate run as its ledger's calls.json lists them. Labels are "" for
-    a run with no header (task). Missing paths are kept; the loader decides.
+    a run with no header (task); the tag is what its rows carry before the
+    tool name (the agent name, "worker 2/10 · task 3"). Missing paths are
+    kept; the loader decides.
     """
     if result is None or tool_name not in _SUBAGENT_TOOLS:
         return []
     if tool_name == "task":
         session_dir = getattr(result, "session_dir", "")
-        return [("", Path(session_dir))] if session_dir else []
+        agent = str(getattr(result, "agent", "") or "")
+        return [("", agent, Path(session_dir))] if session_dir else []
     ledger_dir = getattr(result, "ledger_dir", "")
     if not ledger_dir:
         return []
@@ -61,12 +64,16 @@ def subagent_children(
         raw = json.loads(calls_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    children: list[tuple[str, Path]] = []
+    children: list[tuple[str, str, Path]] = []
     for entry in raw:
         if not isinstance(entry, dict):
             continue
         session_dir = str(entry.get("session_dir", ""))
-        children.append((str(entry.get("label", "")), Path(session_dir)))
+        children.append((
+            str(entry.get("label", "")),
+            str(entry.get("tag", "")),
+            Path(session_dir),
+        ))
     return children
 
 
@@ -189,7 +196,7 @@ def build_tool_call_map(messages: Sequence[LLMMessage]) -> dict[str, str]:
     return tool_call_map
 
 
-def build_history_widgets(
+def build_history_widgets(  # noqa: PLR0913
     batch: Sequence[LLMMessage],
     tool_call_map: dict[str, str],
     *,
@@ -200,8 +207,11 @@ def build_history_widgets(
     nanny_decisions: Mapping[str, Any] | None = None,
     child_loader: ChildLoader | None = None,
     depth: int = 0,
+    section: str | None = None,
 ) -> list[Widget]:
     """Widgets for a batch of stored messages (resume and load-more).
+    `section` is the tag every call row of this batch carries before its
+    tool name (a sub-agent session's rows).
 
     With `child_loader`, a task or orchestrate result also brings back the
     rows its sub-agents made: each worker session the result points at is
@@ -261,7 +271,11 @@ def build_history_widgets(
                             tool_call, msg, tool_classes
                         )
                         widget = ToolCallMessage(
-                            call_event, tool_name=tool_name, history=True, depth=depth
+                            call_event,
+                            tool_name=tool_name,
+                            history=True,
+                            depth=depth,
+                            section=section,
                         )
                         if tool_call.id:
                             call_widgets[tool_call.id] = widget
@@ -363,7 +377,7 @@ def _child_widgets(
     under its section header when the run had one (orchestrate's role calls).
     """
     widgets: list[Widget] = []
-    for label, session_dir in subagent_children(tool_name, result):
+    for label, tag, session_dir in subagent_children(tool_name, result):
         if label:
             widgets.append(TraceLineMessage(section_line(label), depth=depth))
         if not str(session_dir):
@@ -381,6 +395,7 @@ def _child_widgets(
             tool_classes=tool_classes,
             child_loader=child_loader,
             depth=depth,
+            section=tag or None,
         )
         # Tool rows only, as the live trace shows them: the worker's prompt
         # and its written answer stay in its own session.

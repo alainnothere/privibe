@@ -278,6 +278,12 @@ class TestRun:
             "manager · round 1/10",
             "worker · round 1/10 · task 1: make f return 2",
         ]
+        assert [c["tag"] for c in calls] == [
+            "plan",
+            "brainstorm",
+            "manager 1/10",
+            "worker 1/10 · task 1",
+        ]
         assert all(c["session_dir"] == "" for c in calls)
         # The trace ends on a rule that says how the run ended, with the detail.
         assert stream[-1].startswith("── end · done ")
