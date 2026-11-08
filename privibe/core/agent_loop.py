@@ -521,6 +521,7 @@ class AgentLoop:
             active_model=self._base_config.active_model
         )
         self.agent_manager.invalidate_config()
+        self._reapply_detected_context_sizes()
 
     def current_reasoning_effort(self) -> str:
         """The effort value to stamp on the next user message.
@@ -758,6 +759,10 @@ class AgentLoop:
         active_model = self.config.get_active_model()
         alias = active_model.alias
         if alias == _context_size_resolved_for:
+            # Settled, but the config objects may have been rebuilt from the
+            # file since (a /reload, a settings command): put the detected
+            # value back where the bar and the compactor read it.
+            self._reapply_detected_context_sizes()
             return None
         if _context_size_attempts.get(alias, 0) >= _CONTEXT_SIZE_MAX_ATTEMPTS:
             # Abandoned after _CONTEXT_SIZE_MAX_ATTEMPTS consecutive failures;
@@ -834,17 +839,33 @@ class AgentLoop:
             active_model.auto_compact_threshold,
         )
 
-        # Update every config layer that holds this model so the context bar,
-        # auto-compact middleware, and compaction all see the live value.
-        for cfg in (self._base_config, self.agent_manager.config):
-            for model in cfg.models:
-                if model.alias == active_model.alias:
-                    model.auto_compact_threshold = ctx_size
-                    break
         self._detected_context_sizes[alias] = ctx_size
+        self._reapply_detected_context_sizes()
         _context_size_resolved_for = alias
         _context_size_attempts.pop(alias, None)
+        # The context bar redraws on stats changes only; a probe that lands
+        # between two turns would otherwise show until the next reply.
+        self.stats.trigger_listeners()
         return None
+
+    def _reapply_detected_context_sizes(self) -> None:
+        """Write every detected context size into both config layers (the
+        file-loaded base and the profile-applied view) so the context bar,
+        auto-compact middleware and compaction see the server's value.
+
+        The file never holds it: every VibeConfig.load (model switch, /reload,
+        a settings command) rebuilds the models with the configured
+        auto_compact_threshold, and a global `auto_compact_threshold` in
+        config.toml would otherwise come back as the ceiling of a model the
+        server already said is smaller.
+        """
+        if not self._detected_context_sizes:
+            return
+        for cfg in (self._base_config, self.agent_manager.config):
+            for model in cfg.models:
+                detected = self._detected_context_sizes.get(model.alias)
+                if detected is not None and model.auto_compact_threshold != detected:
+                    model.auto_compact_threshold = detected
 
     def detected_context_size(self) -> int | None:
         """The context window the server reported for the active model, or
@@ -2772,6 +2793,7 @@ class AgentLoop:
             ]
             self._base_config = base_config
             self.agent_manager.invalidate_config()
+            self._reapply_detected_context_sizes()
             if changed:
                 notice = (
                     "Configuration changes to "
