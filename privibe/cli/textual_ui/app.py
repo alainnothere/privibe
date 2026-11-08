@@ -27,6 +27,7 @@ from privibe.cli.clipboard import (
     is_reliable_clipboard_available,
 )
 from privibe.cli.commands import (
+    BareClearGuard,
     CommandRegistry,
     effort_cycle_notice,
     nanny_unknown_argument,
@@ -343,6 +344,7 @@ class VibeApp(App):  # noqa: PLR0904
         self._pending_approval: asyncio.Future | None = None
         # The nanny review attached to the approval prompt on screen, if any.
         self._pending_review: NannyReview | None = None
+        self._bare_clear = BareClearGuard()
         # The nanny reviewing approval prompts, when nanny_model is set.
         self._nanny: NannyManager | None = None
         self._pending_question: asyncio.Future | None = None
@@ -554,6 +556,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         if await self._handle_command(value):
             return
+        self._bare_clear.disarm()
 
         # agent steering — When the agent is running, instead of cancelling
         # (which breaks the LLM/harness cycle and forces full reprocess),
@@ -854,6 +857,7 @@ class VibeApp(App):  # noqa: PLR0904
     async def _handle_command(self, user_input: str) -> bool:
         command, args = self.commands.parse_command(user_input)
         if command:
+            self._bare_clear.submission()
             await self._mount_and_scroll(UserMessage(user_input))
             handler = getattr(self, command.handler)
             call_args = (args,) if command.takes_args else ()
@@ -2555,6 +2559,19 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def _set_conversation_name(self, args: str = "") -> None:
         name = args.strip() or None
+        current = self.agent_loop.conversation_name
+        if name is None and current and not self._bare_clear.bare_clears("name"):
+            # Bare with a name set: load it for editing, clear nothing. The
+            # next bare submission (the user emptied the line) clears.
+            self._prefill_input(f"/set-conversation-name {current}")
+            self._bare_clear.arm("name")
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    f"Conversation name is `{current}`. Edit it and press Enter; "
+                    "empty the line and press Enter to clear it."
+                )
+            )
+            return
         try:
             await self.agent_loop.set_conversation_name(name)
         except Exception as e:
@@ -2577,6 +2594,17 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def _set_context_file(self, args: str = "") -> None:
         raw = args.strip()
+        current = self.agent_loop.context_file
+        if not raw and current and not self._bare_clear.bare_clears("context_file"):
+            self._prefill_input(f"/set-context-file {current}")
+            self._bare_clear.arm("context_file")
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    f"Context file is `{current}`. Edit it and press Enter; "
+                    "empty the line and press Enter to clear it."
+                )
+            )
+            return
         if not raw:
             await self.agent_loop.set_context_file(None)
             await self._mount_and_scroll(UserCommandMessage("Context file cleared."))

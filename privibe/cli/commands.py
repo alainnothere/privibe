@@ -154,13 +154,13 @@ class CommandRegistry:
             ),
             "set_conversation_name": Command(
                 aliases=frozenset(["/set-conversation-name", "/name"]),
-                description="Name this conversation (shown in the tab title and the UI, kept across rewind/compact, saved with the session); /set-conversation-name <name>, bare to clear",
+                description="Name this conversation (shown in the tab title and the UI, kept across rewind/compact, saved with the session); /set-conversation-name <name>; bare loads the current name to edit, empty it to clear",
                 handler="_set_conversation_name",
                 takes_args=True,
             ),
             "set_context_file": Command(
                 aliases=frozenset(["/set-context-file", "/context-file"]),
-                description="Associate a context file with this conversation (saved with the session, shown on resume); /set-context-file <path>, bare to clear",
+                description="Associate a context file with this conversation (saved with the session, shown on resume); /set-context-file <path>; bare loads the current path to edit, empty it to clear",
                 handler="_set_context_file",
                 takes_args=True,
             ),
@@ -300,3 +300,30 @@ def nanny_unknown_argument(arg: str, aliases: list[str]) -> str:
         )
     known = ", ".join(aliases) if aliases else "none configured"
     return f"Unknown model alias: {arg}\nAliases: {known}\n{usage}"
+
+
+class BareClearGuard:
+    """Keeps a bare /set-conversation-name or /set-context-file from wiping
+    the value by accident. With a value set, the first bare call loads the
+    current value into the input for editing and arms the guard; a bare
+    call that comes right after it (the user emptied the loaded line and
+    pressed Enter) clears. Anything else submitted in between disarms.
+    """
+
+    def __init__(self) -> None:
+        self._armed: str | None = None
+        self._was: str | None = None
+
+    def submission(self) -> None:
+        """Call once per submitted slash command, before it is dispatched."""
+        self._was, self._armed = self._armed, None
+
+    def disarm(self) -> None:
+        """A plain message or anything that is not a slash command."""
+        self._was = self._armed = None
+
+    def arm(self, key: str) -> None:
+        self._armed = key
+
+    def bare_clears(self, key: str) -> bool:
+        return self._was == key

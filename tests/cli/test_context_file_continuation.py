@@ -103,6 +103,11 @@ async def test_set_context_file_resolves_and_records(tmp_path: Path) -> None:
         assert app.agent_loop.context_file == str(ctx.resolve())
         assert any("not found" in str(m._error) for m in app.query(ErrorMessage))
 
+        # Bare loads the current path for editing; the next bare clears.
+        assert await app._handle_command("/context-file")
+        await pilot.pause(0.1)
+        assert app.agent_loop.context_file == str(ctx.resolve())
+        assert _input_text(app) == f"/set-context-file {ctx.resolve()}"
         assert await app._handle_command("/context-file")
         await pilot.pause(0.1)
         assert app.agent_loop.context_file is None
@@ -152,7 +157,9 @@ async def test_resume_starts_a_continuation_with_read_prompt_loaded(
         assert len(app.agent_loop.messages) == 1
         assert _input_text(app) == f"Read {ctx}"
         notices = [str(m._content) for m in app.query(UserCommandMessage)]
-        assert any("Continuation of `Really long and tedious work`" in n for n in notices)
+        assert any(
+            "Continuation of `Really long and tedious work`" in n for n in notices
+        )
 
         # Running it again replaces the tail instead of stacking.
         assert await app._handle_command("/resume-from-context-file")

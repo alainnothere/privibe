@@ -118,7 +118,18 @@ async def test_command_paints_every_surface_and_clears() -> None:
         notices = [str(m._content) for m in app.query(UserCommandMessage)]
         assert any("fix the parser" in n for n in notices)
 
-        # Bare command clears.
+        # Bare command loads the current name for editing, clears nothing.
+        assert await app._handle_command("/set-conversation-name")
+        await pilot.pause(0.1)
+        assert app.agent_loop.conversation_name == "fix the parser"
+        input_text = app.query_one(
+            ChatInputContainer
+        )._body.input_widget.get_full_text()
+        assert input_text == "/set-conversation-name fix the parser"
+        notices = [str(m._content) for m in app.query(UserCommandMessage)]
+        assert any("empty the line" in n for n in notices)
+
+        # The user emptied the loaded line and pressed Enter: that clears.
         assert await app._handle_command("/set-conversation-name")
         await pilot.pause(0.1)
 
@@ -139,6 +150,8 @@ async def test_tab_title_follows_name() -> None:
         assert await app._handle_command("/name parser")
         notifier.set_default_title.assert_called_with("parser")
 
+        assert await app._handle_command("/name")
+        notifier.set_default_title.assert_called_with("parser")
         assert await app._handle_command("/name")
         notifier.set_default_title.assert_called_with("Privibe")
 
@@ -168,3 +181,38 @@ async def test_current_value_shown_in_completion_entries() -> None:
         await app.agent_loop.set_conversation_name("parser")
         entries = dict(app.query_one(ChatInputContainer)._get_slash_entries())
         assert "(current: parser)" in entries["/set-conversation-name"]
+
+
+@pytest.mark.asyncio
+async def test_anything_else_between_two_bare_calls_disarms_the_clear() -> None:
+    """Bare, then some other command, then bare again: the second bare is a
+    fresh load, not the clear the first one armed.
+    """
+    app = build_test_vibe_app()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        assert await app._handle_command("/name keep me")
+        assert await app._handle_command("/name")
+        assert await app._handle_command("/help")
+        assert await app._handle_command("/name")
+        await pilot.pause(0.1)
+        assert app.agent_loop.conversation_name == "keep me"
+        input_text = app.query_one(
+            ChatInputContainer
+        )._body.input_widget.get_full_text()
+        assert (
+            input_text == "/name keep me"
+            or input_text == "/set-conversation-name keep me"
+        )
+
+
+@pytest.mark.asyncio
+async def test_bare_with_no_name_set_just_clears() -> None:
+    app = build_test_vibe_app()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        assert await app._handle_command("/name")
+        await pilot.pause(0.1)
+        assert app.agent_loop.conversation_name is None
+        notices = [str(m._content) for m in app.query(UserCommandMessage)]
+        assert any("cleared" in n for n in notices)

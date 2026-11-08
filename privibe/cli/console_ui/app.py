@@ -21,7 +21,7 @@ from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING, cast
 
-from privibe.cli.commands import nanny_unknown_argument
+from privibe.cli.commands import BareClearGuard, nanny_unknown_argument
 from privibe.cli.continuation import (
     continuation_name,
     read_context_file_prompt,
@@ -145,8 +145,8 @@ Available commands:
   /log       Show the current session log directory
   /preview-lines  Cycle how many tool output lines are shown (3 / 5 / 10)
   /llm-calls-per-turn  Cycle the LLM-call budget per message (30 / 60 / 90)
-  /set-conversation-name <name>  Name this conversation (saved with the session; bare clears it)
-  /set-context-file <path>  Associate a context file with this conversation (saved with the session; bare clears it)
+  /set-conversation-name <name>  Name this conversation (saved with the session; bare loads the current one to edit, empty it to clear)
+  /set-context-file <path>  Associate a context file with this conversation (saved with the session; bare loads the current one to edit, empty it to clear)
   /resume-from-context-file  Continuation: new history named '<name> -- continuation <time>', same context file, 'Read <file>' preloaded at the prompt
   /ascii     Write policy for non-ASCII in model-written content: /ascii on|off (toggles without an argument)
   /continue  Tell the model to go on from where it stopped
@@ -182,6 +182,7 @@ class ConsoleUI(NannyListener):
         # The nanny reviewing approval prompts, when nanny_model is set.
         # Text preloaded at the next prompt (continuation flow); consumed once.
         self._next_input_default = ""
+        self._bare_clear = BareClearGuard()
         self._nanny: NannyManager | None = None
 
     async def run(
@@ -262,6 +263,7 @@ class ConsoleUI(NannyListener):
             await self._run_turn(skill_prompt)
             return
 
+        self._bare_clear.disarm()
         await self._run_turn(user_input)
 
     def _resolve_skill(self, user_input: str) -> str | None:
@@ -805,6 +807,7 @@ class ConsoleUI(NannyListener):
         """Run a builtin command. Returns True when the input was consumed."""
         parts = command.split(maxsplit=1)
         cmd = parts[0].lower()
+        self._bare_clear.submission()
 
         match cmd:
             case "/exit" | "/quit":
@@ -1143,6 +1146,15 @@ class ConsoleUI(NannyListener):
 
     async def _command_set_conversation_name(self, args: str) -> None:
         name = args.strip() or None
+        current = self.agent_loop.conversation_name
+        if name is None and current and not self._bare_clear.bare_clears("name"):
+            self._next_input_default = f"/set-conversation-name {current}"
+            self._bare_clear.arm("name")
+            print(
+                f"Conversation name is: {current}. Edit it and press Enter; "
+                "empty the line and press Enter to clear it."
+            )
+            return
         try:
             await self.agent_loop.set_conversation_name(name)
         except Exception as e:
@@ -1155,6 +1167,15 @@ class ConsoleUI(NannyListener):
 
     async def _command_set_context_file(self, args: str) -> None:
         raw = args.strip()
+        current = self.agent_loop.context_file
+        if not raw and current and not self._bare_clear.bare_clears("context_file"):
+            self._next_input_default = f"/set-context-file {current}"
+            self._bare_clear.arm("context_file")
+            print(
+                f"Context file is: {current}. Edit it and press Enter; "
+                "empty the line and press Enter to clear it."
+            )
+            return
         if not raw:
             await self.agent_loop.set_context_file(None)
             print("Context file cleared.")
