@@ -21,6 +21,7 @@ from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING, cast
 
+from privibe.cli.commands import nanny_unknown_argument
 from privibe.cli.continuation import (
     continuation_name,
     read_context_file_prompt,
@@ -1062,8 +1063,9 @@ class ConsoleUI(NannyListener):
                 )
             return
         alias = arg
-        if alias not in {m.alias for m in config.models}:
-            print(f"Unknown model alias: {alias}")
+        aliases = [m.alias for m in config.models]
+        if alias not in aliases:
+            print(nanny_unknown_argument(alias, aliases))
             return
         # Session-only, like the TUI: config.toml's nanny_model is a default
         # for new sessions and is never written from here.

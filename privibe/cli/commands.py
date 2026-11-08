@@ -7,7 +7,10 @@ ALT_KEY = "⌥" if sys.platform == "darwin" else "Alt"
 
 
 def effort_cycle_notice(
-    new_value: str, provider_name: str, provider_sends_effort: bool, already_noticed: bool
+    new_value: str,
+    provider_name: str,
+    provider_sends_effort: bool,
+    already_noticed: bool,
 ) -> str:
     """User-facing message for an /effort cycle, shared by both UIs.
 
@@ -279,3 +282,21 @@ class CommandRegistry:
             aliases = ", ".join(f"`{alias}`" for alias in sorted(cmd.aliases))
             lines.append(f"- {aliases}: {cmd.description}")
         return "\n".join(lines)
+
+
+def nanny_unknown_argument(arg: str, aliases: list[str]) -> str:
+    """The error for a /ensure-commands-safety argument that is no subcommand
+    and no model alias. A sentence was almost certainly meant for `tell`; a
+    bare word gets the alias list.
+    """
+    usage = "/ensure-commands-safety off | <alias> | log | tell <message>"
+    if any(ch.isspace() for ch in arg.strip()):
+        shown = arg.strip()
+        if len(shown) > 60:  # noqa: PLR2004
+            shown = shown[:57] + "..."
+        return (
+            f"That is a sentence, not a model alias: {shown}\n"
+            f"To talk to the nanny: /ensure-commands-safety tell <message>\n{usage}"
+        )
+    known = ", ".join(aliases) if aliases else "none configured"
+    return f"Unknown model alias: {arg}\nAliases: {known}\n{usage}"

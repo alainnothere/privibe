@@ -78,3 +78,21 @@ async def test_tell_command(ui: ConsoleUI, capsys) -> None:
     out = capsys.readouterr().out
     assert "[nanny] Understood." in out
     assert "[nanny] I will refuse anything touching the Garmin." in out
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_is_not_an_alias(ui: ConsoleUI, capsys) -> None:
+    """Forgetting `tell` used to echo the whole sentence back as an unknown
+    model alias. It is pointed at tell instead.
+    """
+    ui.agent_loop.config.models = []
+    await ui._command_nanny("that's fine, he is allowed to ask for help")
+    out = capsys.readouterr().out
+    assert "That is a sentence, not a model alias" in out
+    assert "/ensure-commands-safety tell <message>" in out
+    assert "Unknown model alias" not in out
+
+    await ui._command_nanny("nope")
+    out = capsys.readouterr().out
+    assert "Unknown model alias: nope" in out
+    assert "off | <alias> | log | tell <message>" in out

@@ -26,7 +26,11 @@ from privibe.cli.clipboard import (
     copy_selection_to_clipboard,
     is_reliable_clipboard_available,
 )
-from privibe.cli.commands import CommandRegistry, effort_cycle_notice
+from privibe.cli.commands import (
+    CommandRegistry,
+    effort_cycle_notice,
+    nanny_unknown_argument,
+)
 from privibe.cli.continuation import (
     continuation_name,
     read_context_file_prompt,
@@ -2945,10 +2949,12 @@ class VibeApp(App):  # noqa: PLR0904
                 await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
 
     async def _apply_nanny_model(self, alias: str) -> None:
-        if alias not in {m.alias for m in self.config.models}:
+        aliases = [m.alias for m in self.config.models]
+        if alias not in aliases:
             await self._mount_and_scroll(
                 ErrorMessage(
-                    f"Unknown model alias: {alias}", collapsed=self._tools_collapsed
+                    nanny_unknown_argument(alias, aliases),
+                    collapsed=self._tools_collapsed,
                 )
             )
             return

@@ -138,3 +138,21 @@ async def test_session_recorded_nanny_is_attached_on_startup() -> None:
         assert app._nanny is not None
         assert app._nanny.model_alias == "devstral-latest"
         assert app.agent_loop.nanny is app._nanny
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_is_not_an_alias() -> None:
+    from privibe.cli.textual_ui.widgets.messages import ErrorMessage
+
+    app = build_test_vibe_app()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        assert await app._handle_command(
+            "/ensure-commands-safety that's fine, he is allowed to ask for help"
+        )
+        await pilot.pause(0.2)
+        errors = [str(m._error) for m in app.query(ErrorMessage)]
+        assert len(errors) == 1
+        assert "That is a sentence, not a model alias" in errors[0]
+        assert "tell <message>" in errors[0]
+        assert app._nanny is None

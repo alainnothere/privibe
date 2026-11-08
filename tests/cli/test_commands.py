@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from privibe.cli.commands import Command, CommandRegistry
+from privibe.cli.commands import Command, CommandRegistry, nanny_unknown_argument
 
 
 class TestCommandRegistry:
@@ -11,6 +11,7 @@ class TestCommandRegistry:
         assert registry.get_command_name("/model") == "model"
         assert registry.get_command_name("/clear") == "clear"
         assert registry.get_command_name("/exit") == "exit"
+
     def test_get_command_name_normalizes_input(self) -> None:
         registry = CommandRegistry()
         assert registry.get_command_name("  /help  ") == "help"
@@ -127,7 +128,6 @@ class TestCommandRegistry:
             )
 
 
-
 def test_ensure_commands_safety_is_registered() -> None:
     registry = CommandRegistry()
     cmd = registry.find_command("/ensure-commands-safety")
@@ -136,3 +136,21 @@ def test_ensure_commands_safety_is_registered() -> None:
     assert cmd.takes_args
     command, args = registry.parse_command("/ensure-commands-safety off")
     assert command is cmd and args == "off"
+
+
+def test_nanny_unknown_argument_tells_a_sentence_from_a_word() -> None:
+    sentence = nanny_unknown_argument("that's fine, he may ask", ["a", "b"])
+    assert sentence.startswith("That is a sentence, not a model alias: that's fine")
+    assert "tell <message>" in sentence
+    assert "Unknown model alias" not in sentence
+
+    long = nanny_unknown_argument("x " * 50, ["a"])
+    assert "..." in long and len(long.splitlines()[0]) < 110
+
+    word = nanny_unknown_argument("nope", ["a", "b"])
+    assert word.splitlines() == [
+        "Unknown model alias: nope",
+        "Aliases: a, b",
+        "/ensure-commands-safety off | <alias> | log | tell <message>",
+    ]
+    assert "none configured" in nanny_unknown_argument("nope", [])
