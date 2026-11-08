@@ -42,8 +42,9 @@ class NannyDecision:
     # and the refusal is a stand-in; `notice` says what happened.
     failed: bool = False
     notice: str | None = None
-    # Set once the human decided a refused call: "allow", "allow_always",
-    # "no", "deny_always", "refuse", "cancelled".
+    # Set once a refused call was decided: "allow", "allow_always", "no",
+    # "deny_always", "refuse", "cancelled", or "allowed_unasked" when the
+    # approval callback returned YES without a human recording a choice.
     human_decision: str | None = None
     human_feedback: str | None = None
     talk: list[TalkExchange] = field(default_factory=list)

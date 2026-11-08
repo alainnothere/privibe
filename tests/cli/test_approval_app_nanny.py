@@ -137,3 +137,27 @@ async def test_failed_review_shows_the_notice_and_existing_keys_record_the_choic
         assert response is ApprovalResponse.YES
         assert review.human_choice == "allow_always"
         assert app._current_bottom_app == BottomApp.Approval or True
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_does_not_skip_a_nanny_refusal() -> None:
+    """The callback's auto-approve shortcut is for calls nobody reviewed.
+    A refused review reaches the prompt even in auto-approve mode.
+    """
+    app = build_test_vibe_app()
+    app.agent_loop.config.auto_approve = True
+    review = StubReview()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        task = asyncio.ensure_future(
+            app._approval_callback("bash", ToolArgs(), "t1", None, review=review)
+        )
+        await pilot.pause(0.3)
+        assert not task.done()
+        assert app._current_bottom_app == BottomApp.Approval
+        await pilot.press("r")
+        await pilot.pause(0.2)
+        response, feedback = await task
+        assert response is ApprovalResponse.NO
+        assert feedback == "Refused by the reviewer: deletes a directory"
+        assert review.human_choice == "refuse"

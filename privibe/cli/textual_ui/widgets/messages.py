@@ -471,6 +471,7 @@ class NannyMessage(Static):
         if choice:
             labels = {
                 "allow": "you allowed it once",
+                "allowed_unasked": "allowed without asking you",
                 "allow_always": "you allowed it for this session",
                 "no": "you said no",
                 "deny_always": "you denied it for this session",

@@ -380,3 +380,12 @@ async def test_retry_still_unreadable_falls_back_to_the_human(tmp_path: Path) ->
         assert not review.answer.readable
         assert review.notice == "nanny answer could not be read; asking you instead"
     assert len(nanny.loop.messages) == 7
+
+
+@pytest.mark.asyncio
+async def test_unasked_yes_is_recorded_as_such(tmp_path: Path) -> None:
+    """A YES with no recorded key is not a human allowing anything."""
+    nanny = build_nanny(tmp_path, [READY, REFUSE])
+    async with nanny.review(ask()) as review:
+        review.human_decided(ApprovalResponse.YES, None)
+    assert nanny.decisions[-1].human_decision == "allowed_unasked"

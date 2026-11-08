@@ -137,7 +137,12 @@ class NannyReview:
 
     def human_decided(self, response: ApprovalResponse, feedback: str | None) -> None:
         if self.human_choice is None:
-            self.human_choice = "allow" if response is ApprovalResponse.YES else "no"
+            # No front end recorded a key: a YES here means the callback let
+            # the call through without asking anyone, and the record says so
+            # instead of inventing a keypress.
+            self.human_choice = (
+                "allowed_unasked" if response is ApprovalResponse.YES else "no"
+            )
         self.decision.human_decision = self.human_choice
         self.decision.human_feedback = feedback
 

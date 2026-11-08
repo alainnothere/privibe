@@ -553,9 +553,11 @@ class ConsoleUI(NannyListener):
     ) -> tuple[ApprovalResponse, str | None]:
         # Mirror the TUI: auto-approve only when configured AND the tool is
         # enabled in the main agent, so subagents respect tool restrictions.
-        # Escalated permissions always reach the human.
+        # Escalated permissions always reach the human, and so does a nanny
+        # refusal (see the TUI callback).
         if (
-            self.agent_loop.config.auto_approve
+            review is None
+            and self.agent_loop.config.auto_approve
             and tool_name in self.agent_loop.tool_manager.available_tools
             and not any(rp.escalated for rp in required_permissions or [])
         ):

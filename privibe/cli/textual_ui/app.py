@@ -1071,8 +1071,10 @@ class VibeApp(App):  # noqa: PLR0904
     ) -> tuple[ApprovalResponse, str | None]:
         # Auto-approve only if parent is in auto-approve mode AND tool is enabled
         # This ensures subagents respect the main agent's tool restrictions.
-        # Escalated permissions always reach the human.
-        if self.agent_loop and self.agent_loop.config.auto_approve:
+        # Escalated permissions always reach the human, and so does a nanny
+        # refusal: a call only carries a review because something made it
+        # ask, and auto-approve must not overrule the reviewer unseen.
+        if review is None and self.agent_loop and self.agent_loop.config.auto_approve:
             if self._is_tool_enabled_in_main_agent(tool) and not any(
                 rp.escalated for rp in required_permissions or []
             ):

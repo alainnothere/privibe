@@ -93,3 +93,11 @@ def test_no_decisions_means_no_entries() -> None:
         tool_classes={"bash": Bash},
     )
     assert not any(isinstance(w, NannyMessage) for w in widgets)
+
+
+def test_unasked_allow_is_not_drawn_as_a_keypress() -> None:
+    unasked = decision("c", "refuse", human_decision="allowed_unasked")
+    assert NannyMessage.format_lines(unasked) == [
+        "nanny refused: lists files",
+        "allowed without asking you",
+    ]

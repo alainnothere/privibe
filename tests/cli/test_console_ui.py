@@ -845,6 +845,27 @@ async def test_nanny_refuse_option_returns_the_reason_untagged(
 
 
 @pytest.mark.asyncio
+async def test_auto_approve_does_not_skip_a_nanny_refusal(
+    ui: ConsoleUI, capsys
+) -> None:
+    """Auto-approve mode lets calls through unseen, but a refused review is
+    not one of them: the human gets the prompt, and the record says what
+    the human pressed, not an invented 'allow'.
+    """
+    ui.agent_loop.config.auto_approve = True
+    ui.agent_loop.tool_manager.available_tools = {"bash": object}
+    review = StubReview()
+    queue_replies(ui, ["r"])
+    response, feedback = await ui._approval_callback(
+        "bash", ToolArgs(), "t1", None, review=review
+    )
+    assert response is ApprovalResponse.NO
+    assert feedback == "Refused by the reviewer: deletes the build dir"
+    assert review.human_choice == "refuse"
+    assert "[approval needed] bash" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
 async def test_nanny_talk_then_allow(ui: ConsoleUI, capsys) -> None:
     review = StubReview()
     queue_replies(ui, ["t", "it is the temp dir, allowed just this once", "y"])
